@@ -1,0 +1,58 @@
+name: Token Lens downstream CI
+
+on:
+  push:
+    branches:
+      - work/hardened-v1
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Materialize downstream hardening
+        run: node scripts/downstream/apply-hardening.js
+
+      - name: Verify downstream invariants
+        run: node --test tests/downstream/securityPolicy.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Diff hygiene
+        run: git diff --check
+
+      - name: Commit materialized hardening
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src/electron/main.js; then
+            echo 'main.js is already materialized'
+            exit 0
+          fi
+          git config user.name 'token-lens-ci'
+          git config user.email 'token-lens-ci@users.noreply.github.com'
+          git add src/electron/main.js
+          git commit -m 'chore(downstream): materialize security gates [downstream-applied]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"

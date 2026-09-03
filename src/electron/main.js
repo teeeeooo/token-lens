@@ -5,6 +5,13 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, Notification, screen, session, shell } = require('electron');
+
+// Keep Token Lens runtime state isolated from an upstream Token Monitor install.
+// The explicit userData path also becomes the shared-data root used by archives.
+app.setName('Token Lens');
+const tokenLensUserData = path.join(app.getPath('appData'), 'Token Lens');
+app.setPath('userData', tokenLensUserData);
+process.env.TOKEN_MONITOR_SHARED_DIR = tokenLensUserData;
 const { autoUpdater } = require('electron-updater');
 const { defaultDeviceId, generateHubSecret, lanIpv4Addresses, loadDotEnv, pidFilePath, readJson, sharedDataDir } = require('../shared/config');
 const {

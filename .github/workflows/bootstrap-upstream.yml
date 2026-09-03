@@ -1,0 +1,37 @@
+name: Bootstrap upstream history
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bootstrap-upstream.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout bootstrap repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Import exact upstream history
+        shell: bash
+        run: |
+          set -euo pipefail
+          UPSTREAM_REPO='https://github.com/Javis603/token-monitor.git'
+          UPSTREAM_SHA='0b17b1ec53ccd60508a645144ccb7db74027168c'
+          TARGET_BRANCH='import/upstream-v0.53.0'
+
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch --no-tags upstream "$UPSTREAM_SHA"
+          test "$(git rev-parse FETCH_HEAD)" = "$UPSTREAM_SHA"
+
+          git checkout --detach "$UPSTREAM_SHA"
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH" --force
+
+          echo "Imported $UPSTREAM_SHA to $TARGET_BRANCH"

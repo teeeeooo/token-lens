@@ -1,30 +1,24 @@
 'use strict';
 
-// Keep provider order stable: it is also the default order for a new install.
-// Saved user ordering is parsed separately and must not be overwritten.
-const LIMIT_PROVIDER_IDS = Object.freeze([
-  'claude', 'codex', 'opencode', 'cursor', 'antigravity', 'kimi', 'grok',
-  'copilot', 'zed', 'commandcode', 'mimo', 'zai', 'zaiteam', 'kiro', 'workbuddy',
-  'qoder', 'deepseek', 'openrouter', 'minimax', 'volcengine', 'ollama', 'trae',
-  'thirdparty'
-]);
+const { ALLOWED_LIMIT_PROVIDERS } = require('./downstreamPolicy');
+
+// Token Lens intentionally exposes limits only for the focused provider set.
+// Provider implementations remain upstream-compatible in the repository, but
+// this shared list is the validation boundary used by the limits runtime.
+const LIMIT_PROVIDER_IDS = Object.freeze([...ALLOWED_LIMIT_PROVIDERS]);
 
 // Collection client ids normally match their Limits provider id. Keep the
-// exceptions explicit here.
+// upstream exceptions documented for easy future patch review, although none
+// are reachable through Token Lens's active client allowlist.
 const LIMIT_PROVIDER_BY_CLIENT = Object.freeze({
   micode: 'mimo',
   zcode: 'zai',
   qodercn: 'qoder'
 });
 
-// These are the only window metrics that cross the shared limits schema.
 const LIMIT_WINDOW_METRICS = Object.freeze(['credits', 'spend']);
 const VALID_LIMIT_WINDOW_METRICS = new Set(LIMIT_WINDOW_METRICS);
 
-// Initial discovery is deliberately narrower than the provider list: only a
-// provider mapped from a currently detected local source can be seeded.
-// Usage-derived client status can remain active after a source disappears, so
-// source health is the authoritative signal here.
 function limitProvidersForDetectedClients(clientHealth) {
   const clients = clientHealth?.clients;
   if (!clients || typeof clients !== 'object' || Array.isArray(clients)) return [];

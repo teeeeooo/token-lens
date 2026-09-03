@@ -6,24 +6,14 @@ const { Worker } = require('node:worker_threads');
 const { readSessionDetail } = require('./sessionDetail');
 const { readDshSessionDetail } = require('./dshSessionDetail');
 const { wslUsageHomes } = require('./wslUsage');
+const { scrubSessionDetail } = require('./downstreamPolicy');
 
-// wslUsage.js's MARKER_CLIENTS also scans `.dsh/sessions`, so a DSH session
-// surfaced from a WSL distro on Windows is a real, reachable case, not just
-// claude/codex — dsh must get the same native-miss -> WSL-hit fallback, just
-// through its own reader (it parses zstd transcripts directly, not tokscale
-// JSONL).
 const WSL_FALLBACK_CLIENTS = new Set(['claude', 'codex', 'dsh']);
 const SESSION_DETAIL_WORKER_TIMEOUT_MS = 20_000;
 
 function resolveSessionDetailForPlatform(args = {}, deps = {}) {
   const nativeHome = (deps.homedir || os.homedir)();
   const platform = deps.platform || process.platform;
-  // dshPaths.js's resolveDshHome checks env.DSH_HOME before the homeDir it's
-  // given, same as tokscale's own PathRoot::EnvVar. tokscale's own scanner
-  // never lets that leak into an explicit --home lookup (use_env_roots:
-  // false, lib.rs) — a WSL distro's session root must not silently resolve
-  // back to a host-configured DSH_HOME. Only the native attempt gets the
-  // real env; every WSL attempt gets none, forcing `home` to be authoritative.
   const readDetail = args.client === 'dsh'
     ? (detailArgs, scoped) => (deps.readDshSessionDetail || readDshSessionDetail)({ ...detailArgs, platform, env: scoped ? {} : deps.env, cwdDir: deps.cwdDir })
     : (detailArgs, scoped) => (deps.readSessionDetail || readSessionDetail)({
@@ -35,14 +25,14 @@ function resolveSessionDetailForPlatform(args = {}, deps = {}) {
   const nativeDetail = readDetail({ ...args, home: nativeHome }, false);
 
   if (nativeDetail.found || platform !== 'win32' || !WSL_FALLBACK_CLIENTS.has(args.client)) {
-    return nativeDetail;
+    return scrubSessionDetail(nativeDetail);
   }
 
   let wslHomes;
   try {
     wslHomes = (deps.wslUsageHomes || wslUsageHomes)();
   } catch (_) {
-    return nativeDetail;
+    return scrubSessionDetail(nativeDetail);
   }
 
   const searched = new Set([nativeHome]);
@@ -50,9 +40,9 @@ function resolveSessionDetailForPlatform(args = {}, deps = {}) {
     if (!home || searched.has(home)) continue;
     searched.add(home);
     const detail = readDetail({ ...args, home }, true);
-    if (detail.found) return detail;
+    if (detail.found) return scrubSessionDetail(detail);
   }
-  return nativeDetail;
+  return scrubSessionDetail(nativeDetail);
 }
 
 function workerError(payload) {
@@ -100,7 +90,7 @@ function runSessionDetailWorker(args = {}, deps = {}) {
     }, timeoutMs);
 
     worker.once('message', (message) => {
-      if (message?.ok) finish(resolve, message.detail);
+      if (message?.ok) finish(resolve, scrubSessionDetail(message.detail));
       else finish(reject, workerError(message?.error));
     });
     worker.once('messageerror', (error) => finish(reject, error));

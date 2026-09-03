@@ -7,8 +7,9 @@ const target = path.join(__dirname, '..', '..', 'src', 'electron', 'main.js');
 let source = fs.readFileSync(target, 'utf8');
 
 function replaceExactlyOnce(before, after, label) {
+  if (source.includes(after)) return;
   const first = source.indexOf(before);
-  if (first < 0) throw new Error(`downstream patch anchor missing: ${label}`);
+  if (first < 0) throw new Error(`downstream patch anchor missing or changed upstream: ${label}`);
   if (source.indexOf(before, first + before.length) >= 0) {
     throw new Error(`downstream patch anchor is ambiguous: ${label}`);
   }
@@ -70,4 +71,4 @@ replaceExactlyOnce(
 );
 
 fs.writeFileSync(target, source);
-console.log('Applied Token Lens downstream hardening to src/electron/main.js');
+console.log('Token Lens downstream hardening is applied to src/electron/main.js');

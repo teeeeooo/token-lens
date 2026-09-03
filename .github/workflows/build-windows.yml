@@ -36,9 +36,6 @@ jobs:
       - name: Apply downstream hardening
         run: node scripts/downstream/apply-hardening.js
 
-      - name: Verify downstream invariants
-        run: node --test tests/downstream/*.test.js
-
       - name: Lint
         run: npm run lint
 

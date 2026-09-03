@@ -3,6 +3,8 @@ name: Build Token Lens Windows
 on:
   workflow_dispatch:
   push:
+    branches:
+      - work/hardened-v1
     tags:
       - 'token-lens-v*'
 

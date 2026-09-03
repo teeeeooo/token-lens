@@ -15,6 +15,7 @@ permissions:
 jobs:
   verify-and-materialize:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -30,6 +31,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Materialize downstream hardening
         run: node scripts/downstream/apply-hardening.js
 
@@ -37,6 +41,7 @@ jobs:
         run: node --test tests/downstream/securityPolicy.test.js
 
       - name: Run upstream regression suite
+        timeout-minutes: 3
         run: npm test
 
       - name: Lint

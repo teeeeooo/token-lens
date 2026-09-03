@@ -17,6 +17,12 @@ function replaceExactlyOnce(before, after, label) {
 }
 
 replaceExactlyOnce(
+  "const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, Notification, screen, session, shell } = require('electron');",
+  "const { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, nativeTheme, net, Notification, screen, session, shell } = require('electron');\n\n// Keep Token Lens runtime state isolated from an upstream Token Monitor install.\n// The explicit userData path also becomes the shared-data root used by archives.\napp.setName('Token Lens');\nconst tokenLensUserData = path.join(app.getPath('appData'), 'Token Lens');\napp.setPath('userData', tokenLensUserData);\nprocess.env.TOKEN_MONITOR_SHARED_DIR = tokenLensUserData;",
+  'Token Lens runtime identity'
+);
+
+replaceExactlyOnce(
   "const { DEFAULT_CLIENTS, KNOWN_CLIENTS, clientsCsvForSetting } = require('../shared/clientTracking');",
   "const { DEFAULT_CLIENTS, KNOWN_CLIENTS, clientsCsvForSetting } = require('../shared/clientTracking');\nconst { DOWNSTREAM_POLICY, enforceDownstreamSettings } = require('../shared/downstreamPolicy');",
   'downstream policy import'

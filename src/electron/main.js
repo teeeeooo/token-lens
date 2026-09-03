@@ -70,6 +70,7 @@ function electronProviderDeps(deps = {}) {
   return { ...deps, fetch: electronLimitsFetch() };
 }
 const { DEFAULT_CLIENTS, KNOWN_CLIENTS, clientsCsvForSetting } = require('../shared/clientTracking');
+const { DOWNSTREAM_POLICY, enforceDownstreamSettings } = require('../shared/downstreamPolicy');
 const {
   antigravitySyncLockPath,
   clientDiagnosticRoots,
@@ -456,7 +457,8 @@ app.on('open-url', (event, url) => {
 });
 
 function defaultSettings() {
-  const envHubUrl = process.env.TOKEN_MONITOR_HUB_URL || '';
+  // Token Lens is local-only by policy. Ignore upstream Hub environment configuration.
+  const envHubUrl = '';
   const windowBehavior = process.env.TOKEN_MONITOR_ALWAYS_ON_TOP === '0' ? 'normal' : 'floating';
   return {
     hubMode: envHubUrl ? 'client' : 'local',
@@ -1975,7 +1977,7 @@ function floatingBubblePayload() {
 // from the persisted snapshot so a cold start reopens the last-used view.
 function ensureSettingsLoaded() {
   if (settings) return settings;
-  settings = readSettings();
+  settings = enforceDownstreamSettings(readSettings());
   const persistedCodexAccounts = settings.codexManagedAccounts;
   const hydratedCodexAccounts = hydrateCodexManagedAccounts(persistedCodexAccounts);
   persistedSettingsSnapshot = cloneSettingsSnapshot(settings);
@@ -5878,6 +5880,7 @@ async function maybeDownloadAutomaticAppUpdate(updateState) {
 }
 
 function maybeRunBackgroundUpdateCheck() {
+  if (!DOWNSTREAM_POLICY.appUpdateChecks) return;
   runAppUpdateCheck({ force: false }).catch(() => {});
 }
 
@@ -6738,6 +6741,7 @@ app.whenReady().then(() => {
         ? normalizeCustomPricingSetting(patch.customModelPricing)
         : normalizeCustomPricingSetting(settings.customModelPricing)
     }, windowBehaviorSelection(normalizedPatch));
+    settings = enforceDownstreamSettings(settings);
     settings.archivedClientUsage = normalizeArchivedClientUsage(settings.archivedClientUsage);
     if (settings.clients !== previousClients) updateArchivedClientUsage(previousClients, settings.clients);
     delete settings.edgeDrawerEnabled;
@@ -7006,6 +7010,7 @@ app.whenReady().then(() => {
   ipcMain.handle('hub:getInfo', () => getHubInfo());
   ipcMain.handle('hub:getBuildStatus', () => getHubBuildStatus());
   ipcMain.handle('hub:regenerateSecret', () => {
+    if (!DOWNSTREAM_POLICY.hub) return { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' };
     settings.hubHostSecret = generateHubSecret();
     saveSettings({ throwOnError: true });
     if (settings.hubMode === 'host') startMode();
@@ -7101,8 +7106,12 @@ app.whenReady().then(() => {
   ipcMain.handle('mimo:setAccountEnabled', (_event, id, enabled) => setMimoManagedAccountEnabled(id, enabled));
   ipcMain.handle('mimo:removeAccount', async (_event, id) => removeMimoManagedAccount(id));
   ipcMain.handle('tokscale:getStatus', () => getTokscaleStatus());
-  ipcMain.handle('tokscale:checkNpm', () => checkTokscaleNpm());
-  ipcMain.handle('tokscale:downloadFromNpm', () => downloadTokscaleFromNpm());
+  ipcMain.handle('tokscale:checkNpm', () => DOWNSTREAM_POLICY.runtimeDownloads
+    ? checkTokscaleNpm()
+    : { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
+  ipcMain.handle('tokscale:downloadFromNpm', () => DOWNSTREAM_POLICY.runtimeDownloads
+    ? downloadTokscaleFromNpm()
+    : { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
   ipcMain.handle('tokscale:resetToBundled', async () => {
     tokScaleNpmMetadata = null;
     const status = await resetToBundled();
@@ -7110,9 +7119,15 @@ app.whenReady().then(() => {
     return status;
   });
   ipcMain.handle('appUpdate:getState', () => deriveAppUpdateState());
-  ipcMain.handle('appUpdate:checkNow', () => runAppUpdateCheck({ force: true }));
-  ipcMain.handle('appUpdate:download', () => downloadAndPrepareAppUpdate());
-  ipcMain.handle('appUpdate:install', () => installDownloadedAppUpdate());
+  ipcMain.handle('appUpdate:checkNow', () => DOWNSTREAM_POLICY.appUpdateChecks
+    ? runAppUpdateCheck({ force: true })
+    : { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
+  ipcMain.handle('appUpdate:download', () => DOWNSTREAM_POLICY.appUpdates
+    ? downloadAndPrepareAppUpdate()
+    : { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
+  ipcMain.handle('appUpdate:install', () => DOWNSTREAM_POLICY.appUpdates
+    ? installDownloadedAppUpdate()
+    : { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
   ipcMain.handle('appUpdate:dismiss', (_event, version) => dismissAppUpdateVersion(version));
   ipcMain.handle('cursor:loginManual', async (_event, raw) => {
     if (isExternalAgentActive()) {
@@ -7145,6 +7160,7 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.handle('claude:saveCookie', async (_event, raw) => {
+    if (!DOWNSTREAM_POLICY.claudeWebCookie) return { ok: false, disabled: true, reason: 'disabled-by-downstream-policy' };
     const requestRevision = ++claudeWebCookieMutationRevision;
     let cookie;
     try {

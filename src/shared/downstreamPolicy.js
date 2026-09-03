@@ -45,6 +45,8 @@ function filterLimitProviders(value) {
 }
 
 function enforceDownstreamSettings(input = {}) {
+  const hasClients = Object.prototype.hasOwnProperty.call(input, 'clients');
+  const hasLimitProviders = Object.prototype.hasOwnProperty.call(input, 'limitProviders');
   const clients = filterClientsCsv(input.clients);
   const limitProviders = filterLimitProviders(input.limitProviders);
   return {
@@ -59,8 +61,8 @@ function enforceDownstreamSettings(input = {}) {
     discordRpcEnabled: false,
     automaticAppUpdates: false,
     claudeWebCookie: '',
-    clients: clients || ALLOWED_CLIENTS.join(','),
-    limitProviders: limitProviders || ALLOWED_LIMIT_PROVIDERS.join(',')
+    clients: hasClients ? clients : ALLOWED_CLIENTS.join(','),
+    limitProviders: hasLimitProviders ? limitProviders : ALLOWED_LIMIT_PROVIDERS.join(',')
   };
 }
 

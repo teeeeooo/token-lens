@@ -36,6 +36,9 @@ jobs:
       - name: Verify downstream invariants
         run: node --test tests/downstream/securityPolicy.test.js
 
+      - name: Run upstream regression suite
+        run: npm test
+
       - name: Lint
         run: npm run lint
 

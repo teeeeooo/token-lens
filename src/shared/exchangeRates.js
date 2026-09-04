@@ -1,6 +1,7 @@
 'use strict';
 
 const { CURRENCY_CODES } = require('./currency');
+const { DOWNSTREAM_POLICY } = require('./downstreamPolicy');
 
 const SOURCES = [
   'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
@@ -23,6 +24,7 @@ function parseUsdRates(json) {
 }
 
 async function fetchRates({ fetchImpl = globalThis.fetch, timeoutMs = 8000, sources = SOURCES } = {}) {
+  if (!DOWNSTREAM_POLICY.ancillaryNetwork) throw new Error('disabled-by-downstream-policy');
   let lastErr = null;
   for (const url of sources) {
     const controller = new AbortController();

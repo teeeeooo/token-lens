@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { codexAuthIdentity, codexManagedAccountMatchesIdentity } = require('./codexAuth');
 const { authWithSelectedCodexWorkspace, normalizeWorkspaceId } = require('./codexWorkspaces');
+const { DOWNSTREAM_POLICY } = require('./downstreamPolicy');
 
 function liveCodexAuthPath(env = process.env, homeDir = os.homedir()) {
   const codexHome = String(env?.CODEX_HOME || '').trim();
@@ -52,6 +53,11 @@ function codexAuthMaterialForWorkspace(material, workspaceId) {
 }
 
 async function writeCodexAuthFile(authPath, data, deps = {}) {
+  if (!DOWNSTREAM_POLICY.credentialMutation) {
+    const error = new Error('Token Lens treats Codex authentication as read-only.');
+    error.code = 'TOKEN_LENS_READ_ONLY_AUTH';
+    throw error;
+  }
   const mkdir = deps.mkdir || fs.promises.mkdir;
   const writeFile = deps.writeFile || fs.promises.writeFile;
   const rename = deps.rename || fs.promises.rename;

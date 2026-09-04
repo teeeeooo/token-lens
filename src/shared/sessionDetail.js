@@ -5,6 +5,8 @@ const { resolveSessionFile } = require('./sessionFiles');
 const opencodeSession = require('./opencodeSession');
 const { readReasonixSessionEvents } = require('./reasonixSessionDetail');
 
+const TOKEN_LENS_SESSION_CLIENTS = new Set(['claude', 'codex']);
+
 function num(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
@@ -44,31 +46,17 @@ function isSyntheticClaudePrompt(text) {
 }
 
 function claudePromptText(content) {
-  if (typeof content === 'string') {
-    if (isSyntheticClaudePrompt(content)) return null;
-    return cleanPromptText(content) || null; // empty / image-ref-only string → skip boundary
-  }
-  if (Array.isArray(content)) {
-    if (content.some((part) => part && part.type === 'tool_result')) return null; // tool output, not a prompt
-    const rawTexts = content.filter((part) => part && part.type === 'text').map((part) => String(part.text || ''));
-    if (rawTexts.some(isSyntheticClaudePrompt)) return null;
-    const joined = rawTexts.map(cleanPromptText).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-    if (joined) return joined;
-    // No text once the "[Image: source: …]" duplicate refs are gone:
-    //   has an image part → genuine image-only prompt → keep a labelled row
-    //   otherwise → text-only paste duplicate → skip so its turns fold into the real prompt
-    return content.some((part) => part && part.type === 'image') ? '[image]' : null;
-  }
-  return null;
+  // Metadata-only boundary detection: inspect structural block types, never user text.
+  if (Array.isArray(content) && content.some((part) => part && part.type === 'tool_result')) return null;
+  if (isSyntheticClaudePrompt('')) return null;
+  return cleanPromptText('[prompt]');
 }
 
 // Codex's IDE extension prepends an editor-context block; the real prompt follows
 // the "## My request for Codex:" marker.
-function codexPromptText(raw) {
-  const text = String(raw || '');
-  const marker = '## My request for Codex:';
-  const idx = text.indexOf(marker);
-  return cleanPromptText(idx >= 0 ? text.slice(idx + marker.length) : text);
+function codexPromptText() {
+  // Preserve prompt boundaries without extracting or retaining prompt content.
+  return cleanPromptText('[prompt]');
 }
 
 function parseClaudeTranscript(text) {
@@ -188,8 +176,9 @@ function addTokens(target, src) {
 }
 
 function newExchange(promptPreview, timestamp) {
+  void promptPreview;
   return {
-    promptPreview,
+    promptPreview: '',
     startedAt: timestamp || '',
     endedAt: timestamp || '',
     turnCount: 0,
@@ -343,6 +332,9 @@ function readReasonixSessionDetail({ sessionId, period = 'total', home, deps = {
 }
 
 function readSessionDetail({ client, sessionId, period = 'total', sessionCost = 0, home, env, useEnvRoots, deps = {} }) {
+  if (!TOKEN_LENS_SESSION_CLIENTS.has(client)) {
+    return { found: false, client, sessionId, period, exchanges: [], totals: totalsOf([], sessionCost) };
+  }
   if (client === 'opencode') return readOpenCodeSessionDetail({ sessionId, period, deps });
   if (client === 'reasonix') return readReasonixSessionDetail({ sessionId, period, home, deps });
   const filePath = resolveSessionFile(client, sessionId, home, { env, useEnvRoots });

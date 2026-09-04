@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const http = require('node:http');
 const antigravityOAuth = require('../shared/antigravityOAuth');
+const { DOWNSTREAM_POLICY } = require('../shared/downstreamPolicy');
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -21,6 +22,9 @@ function callbackPage(ok) {
 }
 
 async function runAntigravityOAuthLogin(options = {}) {
+  if (!DOWNSTREAM_POLICY.managedAccountLogin) {
+    throw loginError('DISABLED_BY_DOWNSTREAM_POLICY', 'Token Lens uses existing local Antigravity authentication read-only.');
+  }
   const client = options.client || antigravityOAuth.discoverOAuthClient({
     env: options.env,
     logger: options.logger

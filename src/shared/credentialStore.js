@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { DOWNSTREAM_POLICY } = require('./downstreamPolicy');
 
 const CREDENTIALS_VERSION = 1;
 const SETTINGS_MIGRATION_VERSION = 1;
@@ -277,6 +278,7 @@ class CredentialStore {
   }
 
   readDocument() {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return emptyDocument();
     let raw;
     try {
       raw = readRegularFileNoFollow(this.filePath, {
@@ -293,6 +295,7 @@ class CredentialStore {
   }
 
   writeDocument(document) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return emptyDocument();
     const normalized = normalizeDocument(document);
     writePrivateJsonAtomic(this.filePath, normalized, { fs: this.fs });
     return normalized;
@@ -308,6 +311,7 @@ class CredentialStore {
   }
 
   migrateLegacySettings(legacySettings) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return { migrated: false, document: emptyDocument() };
     const document = this.readDocument();
     if (Number(document.migrations.settings || 0) >= SETTINGS_MIGRATION_VERSION) {
       return { migrated: false, document };
@@ -327,6 +331,7 @@ class CredentialStore {
   }
 
   replaceSettingsCredentials(settings, baseDocument = this.readDocument()) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return emptyDocument();
     const document = normalizeDocument(baseDocument);
     for (const [key, segments] of Object.entries(CREDENTIAL_SETTING_PATHS)) {
       const value = settings?.[key];
@@ -363,6 +368,7 @@ class CredentialStore {
   }
 
   readAntigravityCredential(id, document = this.readDocument()) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return null;
     const accountId = safeDynamicKey(id);
     if (!accountId) return null;
     const value = valueAt(document.credentials, ['providers', 'antigravity', 'accounts', accountId, 'credentials']);
@@ -370,6 +376,7 @@ class CredentialStore {
   }
 
   writeAntigravityCredential(id, credentials) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return false;
     const accountId = safeDynamicKey(id);
     if (!accountId || !credentialValuePresent(credentials)) return false;
     const document = this.readDocument();
@@ -379,6 +386,7 @@ class CredentialStore {
   }
 
   removeAntigravityCredential(id) {
+    if (!DOWNSTREAM_POLICY.credentialPersistence) return false;
     const accountId = safeDynamicKey(id);
     if (!accountId) return false;
     const document = this.readDocument();

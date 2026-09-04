@@ -2464,6 +2464,7 @@ function codexIndividualCreditWindow(rateLimits, canonicalLimitId) {
   return {
     kind: 'billing',
     metric: 'credits',
+    currency: 'CREDITS',
     label: 'Monthly',
     limitId: canonicalLimitId,
     used,

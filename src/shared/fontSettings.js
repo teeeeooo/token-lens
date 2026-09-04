@@ -5,14 +5,15 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.TokenMonitorFontSettings = api;
 })(typeof window !== 'undefined' ? window : null, function createFontSettingsApi() {
-  const DEFAULT_INTERFACE_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  const MONOSPACE_INTERFACE_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  const SYSTEM_UI_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const DEFAULT_INTERFACE_FONT = SYSTEM_UI_FONT;
   const DEFAULT_DASHBOARD_INTERFACE_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   const DEFAULT_DISPLAY_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif';
-  const SYSTEM_UI_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const FONT_PRESETS = Object.freeze({
     app: '',
     system: SYSTEM_UI_FONT,
-    mono: DEFAULT_INTERFACE_FONT
+    mono: MONOSPACE_INTERFACE_FONT
   });
   const MAX_FONT_FAMILY_LENGTH = 160;
   const UNSAFE_FONT_FAMILY_CHARACTERS = /[\u0000-\u001f\u007f;{}<>]/;

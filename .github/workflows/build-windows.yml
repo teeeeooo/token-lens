@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - work/hardened-v1
+      - main
     tags:
       - 'token-lens-v*'
 
@@ -35,6 +36,9 @@ jobs:
 
       - name: Apply downstream hardening
         run: node scripts/downstream/apply-hardening.js
+
+      - name: Security invariant suite
+        run: node --test tests-downstream/security-invariants.test.js
 
       - name: Lint
         run: npm run lint

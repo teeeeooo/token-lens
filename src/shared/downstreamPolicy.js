@@ -8,6 +8,16 @@ const ALLOWED_LIMIT_PROVIDERS = Object.freeze(['claude', 'codex', 'antigravity']
 const ALLOWED_CLIENT_SET = new Set(ALLOWED_CLIENTS);
 const ALLOWED_LIMIT_PROVIDER_SET = new Set(ALLOWED_LIMIT_PROVIDERS);
 
+const SENSITIVE_SETTING_KEYS = Object.freeze([
+  'hubHostSecret', 'secret', 'claudeWebCookie', 'opencodeCookie', 'opencodeProfiles',
+  'openrouterProfiles', 'thirdPartyProfiles', 'deepseekApiKey', 'minimaxApiKey',
+  'copilotApiToken', 'zaiApiKey', 'zaiTeamApiKey', 'zaiTeamOrganizationId',
+  'zaiTeamProjectId', 'volcengineAccessKeyId', 'volcengineSecretAccessKey',
+  'volcengineAgentAccessKeyId', 'volcengineAgentSecretAccessKey', 'qoderCookie',
+  'traeAccessToken', 'traeDeviceId', 'zedCookie', 'commandcodeCookie', 'kimiApiKey',
+  'kimiWebAccessToken', 'ollamaCookie'
+]);
+
 const DOWNSTREAM_POLICY = Object.freeze({
   hub: false,
   remoteSync: false,
@@ -17,7 +27,11 @@ const DOWNSTREAM_POLICY = Object.freeze({
   appUpdateChecks: false,
   appUpdates: false,
   claudeWebCookie: false,
-  promptPreview: false
+  promptPreview: false,
+  credentialPersistence: false,
+  credentialMutation: false,
+  managedAccountLogin: false,
+  ancillaryNetwork: false
 });
 
 function normalizedIds(value) {
@@ -47,13 +61,15 @@ function filterLimitProviders(value) {
 function enforceDownstreamSettings(input = {}) {
   const hasClients = Object.prototype.hasOwnProperty.call(input, 'clients');
   const hasLimitProviders = Object.prototype.hasOwnProperty.call(input, 'limitProviders');
+  const sanitized = { ...input };
+  for (const key of SENSITIVE_SETTING_KEYS) delete sanitized[key];
   const clients = filterClientsCsv(input.clients);
   const limitProviders = filterLimitProviders(input.limitProviders);
   return {
-    ...input,
+    ...sanitized,
     // Local-only is a security boundary, not a UI preference. A stale settings
-    // file or environment variable must not silently re-enable a Hub listener or
-    // remote synchronization after an upstream merge.
+    // file or environment variable must not silently re-enable a Hub listener,
+    // credential mutation, or remote synchronization after an upstream merge.
     hubMode: 'local',
     hubUrl: '',
     hubHostSecret: '',
@@ -61,6 +77,12 @@ function enforceDownstreamSettings(input = {}) {
     discordRpcEnabled: false,
     automaticAppUpdates: false,
     claudeWebCookie: '',
+    codexManagedAccounts: [],
+    antigravityManagedAccounts: [],
+    mimoManagedAccounts: [],
+    cursorManualAccountIds: [],
+    cursorDisabledAccountIds: [],
+    codexResetForecastEnabled: false,
     clients: hasClients ? clients : ALLOWED_CLIENTS.join(','),
     limitProviders: hasLimitProviders ? limitProviders : ALLOWED_LIMIT_PROVIDERS.join(',')
   };
@@ -73,8 +95,6 @@ function scrubSessionDetail(detail) {
     ...detail,
     exchanges: detail.exchanges.map((exchange) => ({
       ...exchange,
-      // Keep the upstream shape so the renderer remains compatible, but never
-      // pass user prompt text across the session-detail boundary.
       promptPreview: ''
     }))
   };
@@ -84,6 +104,7 @@ module.exports = {
   ALLOWED_CLIENTS,
   ALLOWED_LIMIT_PROVIDERS,
   DOWNSTREAM_POLICY,
+  SENSITIVE_SETTING_KEYS,
   enforceDownstreamSettings,
   filterClientsCsv,
   filterLimitProviders,

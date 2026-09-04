@@ -2,21 +2,12 @@
 
 const { ALLOWED_CLIENTS, filterClientsCsv } = require('./downstreamPolicy');
 
-// Keep upstream client implementations in the tree for low-conflict upstream
-// patching, but Token Lens only registers the focused local clients below.
+// Token Lens has a deliberately narrow execution and presentation surface.
+// Upstream provider implementations remain in the source tree for selective
+// patching, but they are not advertised or registered by this downstream build.
 const PARSE_LOCAL_CLIENTS = Object.freeze([]);
 const DEFAULT_CLIENTS = ALLOWED_CLIENTS.join(',');
-
-// Preserve the upstream display vocabulary so renderer code and future upstream
-// patches remain structurally compatible. This is NOT an execution allowlist;
-// clientsCsvForSetting below is the fail-closed runtime boundary.
-const UPSTREAM_KNOWN_CLIENTS = Object.freeze([
-  'claude', 'codex', 'opencode', 'hermes', 'openclaw', 'cursor', 'antigravity',
-  'cline', 'kimi', 'qwen', 'grok', 'copilot', 'pi', 'zed', 'kilocode',
-  'commandcode', 'micode', 'zcode', 'kiro', 'codebuddy', 'workbuddy', 'proma',
-  'qodercn', 'reasonix', 'dsh', 'cherrystudio', 'lmstudio'
-]);
-const KNOWN_CLIENTS = UPSTREAM_KNOWN_CLIENTS.join(',');
+const KNOWN_CLIENTS = DEFAULT_CLIENTS;
 
 function normalizeClientsCsv(value) {
   return String(value ?? '')

@@ -37,6 +37,9 @@ jobs:
       - name: Materialize downstream hardening
         run: node scripts/downstream/apply-hardening.js
 
+      - name: Security invariant suite
+        run: node --test tests-downstream/security-invariants.test.js
+
       - name: Lint
         run: npm run lint
 
@@ -48,12 +51,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- src/electron/main.js; then
-            echo 'main.js is already materialized'
+          MATERIALIZED=(
+            src/electron/main.js
+            src/electron/antigravityOAuthLogin.js
+            src/shared/credentialStore.js
+            src/shared/codexSystemSwitch.js
+            src/shared/sessionDetail.js
+            src/shared/exchangeRates.js
+          )
+          if git diff --quiet -- "${MATERIALIZED[@]}"; then
+            echo 'downstream hardening is already materialized'
             exit 0
           fi
           git config user.name 'token-lens-ci'
           git config user.email 'token-lens-ci@users.noreply.github.com'
-          git add src/electron/main.js
+          git add -- "${MATERIALIZED[@]}"
           git commit -m 'chore(downstream): materialize security gates [downstream-applied]'
           git push origin "HEAD:${GITHUB_REF_NAME}"

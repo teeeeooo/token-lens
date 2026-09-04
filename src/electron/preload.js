@@ -1,25 +1,27 @@
-﻿'use strict';
+'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
+
+const ALLOWED_CLIENTS = new Set(['claude', 'codex', 'antigravity']);
+const SESSION_DETAIL_CLIENTS = new Set(['claude', 'codex']);
+const disabledResult = () => Promise.resolve({ ok: false, disabled: true, reason: 'disabled-by-downstream-policy' });
+const allowedClient = (clientId) => ALLOWED_CLIENTS.has(String(clientId || '').trim().toLowerCase());
+const allowedSessionClient = (args) => SESSION_DETAIL_CLIENTS.has(String(args?.client || '').trim().toLowerCase());
 
 contextBridge.exposeInMainWorld('tokenMonitor', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
-  // Subscriptions are shared across devices when a hub is configured, so they
-  // have their own channel: the write is a network round trip main.js has to
-  // await, and it can fail in ways a settings write cannot.
   saveSubscriptions: (subscriptions, base) => ipcRenderer.invoke('subscriptions:save', subscriptions, base),
-  // Records this device held before it joined a hub that already had a list.
   adoptOrphanedSubscriptions: () => ipcRenderer.invoke('subscriptions:adoptOrphans'),
   discardOrphanedSubscriptions: () => ipcRenderer.invoke('subscriptions:discardOrphans'),
   clearSessionUsageArchive: () => ipcRenderer.invoke('sessionUsageArchive:clear'),
   lookupModelPricing: (modelId) => ipcRenderer.invoke('pricing:lookup', modelId),
   previewAppearance: (patch) => ipcRenderer.invoke('appearance:preview', patch),
   getStats: (options) => ipcRenderer.invoke('stats:get', options),
-  getSessionDetail: (args) => ipcRenderer.invoke('session:getDetail', args),
+  getSessionDetail: (args) => allowedSessionClient(args) ? ipcRenderer.invoke('session:getDetail', args) : disabledResult(),
   getStreamStatus: () => ipcRenderer.invoke('stream:status'),
-  getServiceStatus: (options) => ipcRenderer.invoke('serviceStatus:get', options),
-  getCodexResetForecast: (options) => ipcRenderer.invoke('codexResetForecast:get', options),
+  getServiceStatus: () => disabledResult(),
+  getCodexResetForecast: () => disabledResult(),
   openDashboard: () => ipcRenderer.invoke('dashboard:open'),
   getDashboardHistory: (options) => ipcRenderer.invoke('dashboard:getHistory', options),
   onDashboardHistoryChanged: (callback) => {
@@ -34,7 +36,7 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
   },
   getHubInfo: () => ipcRenderer.invoke('hub:getInfo'),
   getHubBuildStatus: () => ipcRenderer.invoke('hub:getBuildStatus'),
-  regenerateHubSecret: () => ipcRenderer.invoke('hub:regenerateSecret'),
+  regenerateHubSecret: () => disabledResult(),
   onHubPush: (callback) => {
     const listener = (_event, payload) => { try { callback(payload); } catch (_) {} };
     ipcRenderer.on('hub:push', listener);
@@ -78,19 +80,19 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
   getAppInfo: () => ipcRenderer.invoke('app:getInfo'),
   generateDiagnosticReport: () => ipcRenderer.invoke('diagnostics:generate'),
   copyText: (text) => ipcRenderer.invoke('clipboard:write', text),
-  clientSources: (clientId) => ipcRenderer.invoke('usage:clientSources', clientId),
-  revealClientSource: (clientId) => ipcRenderer.invoke('usage:revealClientSource', clientId),
-  revealClientSyncLock: (clientId) => ipcRenderer.invoke('usage:revealClientSyncLock', clientId),
-  rescanClient: (clientId) => ipcRenderer.invoke('usage:rescanClient', clientId),
-  repairClientSyncLock: (clientId) => ipcRenderer.invoke('usage:repairClientSyncLock', clientId),
+  clientSources: (clientId) => allowedClient(clientId) ? ipcRenderer.invoke('usage:clientSources', clientId) : disabledResult(),
+  revealClientSource: (clientId) => allowedClient(clientId) ? ipcRenderer.invoke('usage:revealClientSource', clientId) : disabledResult(),
+  revealClientSyncLock: (clientId) => allowedClient(clientId) ? ipcRenderer.invoke('usage:revealClientSyncLock', clientId) : disabledResult(),
+  rescanClient: (clientId) => allowedClient(clientId) ? ipcRenderer.invoke('usage:rescanClient', clientId) : disabledResult(),
+  repairClientSyncLock: (clientId) => allowedClient(clientId) ? ipcRenderer.invoke('usage:repairClientSyncLock', clientId) : disabledResult(),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   openUserData: () => ipcRenderer.invoke('app:openUserData'),
   antigravity: {
     accounts: () => ipcRenderer.invoke('antigravity:accounts'),
-    addAccount: () => ipcRenderer.invoke('antigravity:addAccount'),
-    cancelLogin: () => ipcRenderer.invoke('antigravity:cancelLogin'),
-    removeAccount: (id) => ipcRenderer.invoke('antigravity:removeAccount', id),
-    setAccountEnabled: (id, enabled) => ipcRenderer.invoke('antigravity:setAccountEnabled', id, enabled),
+    addAccount: () => disabledResult(),
+    cancelLogin: () => disabledResult(),
+    removeAccount: () => disabledResult(),
+    setAccountEnabled: () => disabledResult(),
     onAccounts: (callback) => {
       const handler = (_event, accounts) => callback(accounts);
       ipcRenderer.on('antigravity:accounts', handler);
@@ -98,27 +100,23 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
     }
   },
   mimo: {
-    accounts: () => ipcRenderer.invoke('mimo:accounts'),
-    addAccount: (cookieHeader) => ipcRenderer.invoke('mimo:addAccount', cookieHeader),
-    openConsole: () => ipcRenderer.invoke('mimo:openConsole'),
-    removeAccount: (id) => ipcRenderer.invoke('mimo:removeAccount', id),
-    setAccountEnabled: (id, enabled) => ipcRenderer.invoke('mimo:setAccountEnabled', id, enabled),
-    onAccounts: (callback) => {
-      const handler = (_event, accounts) => callback(accounts);
-      ipcRenderer.on('mimo:accounts', handler);
-      return () => ipcRenderer.removeListener('mimo:accounts', handler);
-    }
+    accounts: () => disabledResult(),
+    addAccount: () => disabledResult(),
+    openConsole: () => disabledResult(),
+    removeAccount: () => disabledResult(),
+    setAccountEnabled: () => disabledResult(),
+    onAccounts: () => () => {}
   },
   exportNow: () => ipcRenderer.invoke('export:now'),
   pickExportDir: () => ipcRenderer.invoke('export:pickAutoDir'),
   getTokscaleStatus: () => ipcRenderer.invoke('tokscale:getStatus'),
-  checkTokscaleNpm: () => ipcRenderer.invoke('tokscale:checkNpm'),
-  downloadTokscaleFromNpm: () => ipcRenderer.invoke('tokscale:downloadFromNpm'),
+  checkTokscaleNpm: () => disabledResult(),
+  downloadTokscaleFromNpm: () => disabledResult(),
   resetTokscaleToBundled: () => ipcRenderer.invoke('tokscale:resetToBundled'),
   getAppUpdateState: () => ipcRenderer.invoke('appUpdate:getState'),
-  checkAppUpdateNow: () => ipcRenderer.invoke('appUpdate:checkNow'),
-  downloadAppUpdate: () => ipcRenderer.invoke('appUpdate:download'),
-  installAppUpdate: () => ipcRenderer.invoke('appUpdate:install'),
+  checkAppUpdateNow: () => disabledResult(),
+  downloadAppUpdate: () => disabledResult(),
+  installAppUpdate: () => disabledResult(),
   dismissAppUpdate: (version) => ipcRenderer.invoke('appUpdate:dismiss', version),
   expandFloatingBubble: () => ipcRenderer.invoke('floatingBubble:expand'),
   moveFloatingBubble: (delta) => ipcRenderer.invoke('floatingBubble:move', delta),
@@ -139,53 +137,53 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
   },
   setTrayIcons: (icons) => ipcRenderer.invoke('tray:setIcons', icons),
   cursor: {
-    loginManual: (token) => ipcRenderer.invoke('cursor:loginManual', token),
-    setAccountEnabled: (accountId, enabled) => ipcRenderer.invoke('cursor:setAccountEnabled', accountId, enabled),
-    logout: (accountId) => ipcRenderer.invoke('cursor:logout', accountId),
-    status: (options = {}) => ipcRenderer.invoke('cursor:status', options)
+    loginManual: () => disabledResult(),
+    setAccountEnabled: () => disabledResult(),
+    logout: () => disabledResult(),
+    status: () => disabledResult()
   },
   claude: {
-    saveCookie: (cookie) => ipcRenderer.invoke('claude:saveCookie', cookie)
+    saveCookie: () => disabledResult()
   },
   ollama: {
-    validateCookie: (cookie) => ipcRenderer.invoke('ollama:validateCookie', cookie)
+    validateCookie: () => disabledResult()
   },
   opencode: {
-    saveCookie: (cookie) => ipcRenderer.invoke('opencode:saveCookie', cookie),
-    logout: () => ipcRenderer.invoke('opencode:logout'),
-    status: () => ipcRenderer.invoke('opencode:status'),
-    getProfiles: () => ipcRenderer.invoke('opencode:getProfiles'),
-    saveProfile: (name, credential, kind, options) => ipcRenderer.invoke('opencode:saveProfile', name, credential, kind, options),
-    deleteProfile: (name) => ipcRenderer.invoke('opencode:deleteProfile', name),
-    renameProfile: (oldName, newName, options) => ipcRenderer.invoke('opencode:renameProfile', oldName, newName, options),
-    removeCredential: (name, kind) => ipcRenderer.invoke('opencode:removeCredential', name, kind),
-    moveCredential: (name, kind, targetName, options) => ipcRenderer.invoke('opencode:moveCredential', name, kind, targetName, options),
-    setProfileEnabled: (name, enabled) => ipcRenderer.invoke('opencode:setProfileEnabled', name, enabled),
-    setAmbientEnabled: (enabled) => ipcRenderer.invoke('opencode:setAmbientEnabled', enabled)
+    saveCookie: () => disabledResult(),
+    logout: () => disabledResult(),
+    status: () => disabledResult(),
+    getProfiles: () => disabledResult(),
+    saveProfile: () => disabledResult(),
+    deleteProfile: () => disabledResult(),
+    renameProfile: () => disabledResult(),
+    removeCredential: () => disabledResult(),
+    moveCredential: () => disabledResult(),
+    setProfileEnabled: () => disabledResult(),
+    setAmbientEnabled: () => disabledResult()
   },
   openrouter: {
-    getProfiles: () => ipcRenderer.invoke('openrouter:getProfiles'),
-    saveProfile: (name, apiKey) => ipcRenderer.invoke('openrouter:saveProfile', name, apiKey),
-    deleteProfile: (name) => ipcRenderer.invoke('openrouter:deleteProfile', name),
-    renameProfile: (oldName, newName) => ipcRenderer.invoke('openrouter:renameProfile', oldName, newName),
-    setProfileEnabled: (name, enabled) => ipcRenderer.invoke('openrouter:setProfileEnabled', name, enabled)
+    getProfiles: () => disabledResult(),
+    saveProfile: () => disabledResult(),
+    deleteProfile: () => disabledResult(),
+    renameProfile: () => disabledResult(),
+    setProfileEnabled: () => disabledResult()
   },
   thirdparty: {
-    getProfiles: () => ipcRenderer.invoke('thirdparty:getProfiles'),
-    saveProfile: (profile) => ipcRenderer.invoke('thirdparty:saveProfile', profile),
-    deleteProfile: (name) => ipcRenderer.invoke('thirdparty:deleteProfile', name),
-    renameProfile: (oldName, newName) => ipcRenderer.invoke('thirdparty:renameProfile', oldName, newName),
-    setProfileEnabled: (name, enabled) => ipcRenderer.invoke('thirdparty:setProfileEnabled', name, enabled)
+    getProfiles: () => disabledResult(),
+    saveProfile: () => disabledResult(),
+    deleteProfile: () => disabledResult(),
+    renameProfile: () => disabledResult(),
+    setProfileEnabled: () => disabledResult()
   },
   codex: {
     accounts: () => ipcRenderer.invoke('codex:accounts'),
-    addAccount: (options = {}) => ipcRenderer.invoke('codex:addAccount', options),
-    selectWorkspace: (options = {}) => ipcRenderer.invoke('codex:selectWorkspace', options),
-    cancelLogin: (options = {}) => ipcRenderer.invoke('codex:cancelLogin', options),
-    removeAccount: (id) => ipcRenderer.invoke('codex:removeAccount', id),
-    setAccountEnabled: (id, enabled) => ipcRenderer.invoke('codex:setAccountEnabled', id, enabled),
-    switchSystemAccount: (id) => ipcRenderer.invoke('codex:switchSystemAccount', id),
-    refreshAccountLimits: (id) => ipcRenderer.invoke('codex:refreshAccountLimits', id),
+    addAccount: () => disabledResult(),
+    selectWorkspace: () => disabledResult(),
+    cancelLogin: () => disabledResult(),
+    removeAccount: () => disabledResult(),
+    setAccountEnabled: () => disabledResult(),
+    switchSystemAccount: () => disabledResult(),
+    refreshAccountLimits: () => disabledResult(),
     onLoginStatus: (callback) => {
       const handler = (_event, status) => callback(status);
       ipcRenderer.on('codex:loginStatus', handler);
@@ -193,13 +191,9 @@ contextBridge.exposeInMainWorld('tokenMonitor', {
     }
   },
   copilot: {
-    signIn: (options = {}) => ipcRenderer.invoke('copilot:signIn', options),
-    cancelSignIn: (options = {}) => ipcRenderer.invoke('copilot:cancelSignIn', options),
-    onLoginStatus: (callback) => {
-      const handler = (_event, status) => callback(status);
-      ipcRenderer.on('copilot:loginStatus', handler);
-      return () => ipcRenderer.removeListener('copilot:loginStatus', handler);
-    }
+    signIn: () => disabledResult(),
+    cancelSignIn: () => disabledResult(),
+    onLoginStatus: () => () => {}
   },
   minimize: () => ipcRenderer.send('window:minimize'),
   close: () => ipcRenderer.send('window:close')

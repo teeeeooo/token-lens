@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..', '..');
 const appPath = path.join(root, 'src', 'electron', 'renderer', 'app.js');
+const homeOverviewPath = path.join(root, 'src', 'electron', 'renderer', 'homeOverview.js');
 const htmlPath = path.join(root, 'src', 'electron', 'renderer', 'index.html');
 const i18nPath = path.join(root, 'src', 'electron', 'renderer', 'i18n.js');
 const stylesPath = path.join(root, 'src', 'electron', 'renderer', 'styles.css');
@@ -98,6 +99,52 @@ function patchCodexCreditPresentation() {
   fs.writeFileSync(appPath, source);
   console.log('Token Lens Codex monthly credit presentation materialized');
   return true;
+}
+
+function patchUnifiedHomeQuotaPresentation() {
+  let changed = false;
+  const overviewSource = fs.readFileSync(homeOverviewPath, 'utf8');
+  const overviewResult = replaceExactlyOnceInSource(
+    overviewSource,
+    "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              resetsAt: window.resetsAt,",
+    "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              used: finiteNumber(window.used),\n              limit: finiteNumber(window.limit),\n              resetsAt: window.resetsAt,",
+    'Home absolute quota metadata'
+  );
+  if (overviewResult.changed) {
+    fs.writeFileSync(homeOverviewPath, overviewResult.source);
+    changed = true;
+  }
+
+  const appSource = fs.readFileSync(appPath, 'utf8');
+  const before = [
+    'function formatHomeLimitWindowValue(window, showUsed) {',
+    "  if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');",
+    "  if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');",
+    '  if (isCreditsWindow(window)) {'
+  ].join('\n');
+  const after = [
+    'function formatHomeLimitWindowValue(window, showUsed) {',
+    "  if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');",
+    "  if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');",
+    '  if (',
+    '    isCreditsWindow(window)',
+    "    && String(window?.currency || '').trim().toUpperCase() === 'CREDITS'",
+    '    && optionalFiniteNumber(window?.limit) !== null',
+    '  ) {',
+    '    const percent = limitFillPercent(window?.remainingPercent, window?.usedPercent, showUsed);',
+    "    const percentage = formatPercent(percent) + ' ' + limitModeSuffix(showUsed);",
+    '    const count = formatLimitCount(window, showUsed);',
+    "    return count ? percentage + ' · ' + count + ' credits' : percentage;",
+    '  }',
+    '  if (isCreditsWindow(window)) {'
+  ].join('\n');
+  const appResult = replaceExactlyOnceInSource(appSource, before, after, 'Home fixed-credit quota formatter');
+  if (appResult.changed) {
+    fs.writeFileSync(appPath, appResult.source);
+    changed = true;
+  }
+  console.log(changed ? 'Token Lens unified Home quota presentation materialized' : 'Token Lens unified Home quota presentation is already materialized');
+  return changed;
 }
 
 function patchRendererHtml() {
@@ -228,6 +275,7 @@ function patchVisibleProductBrand(targetPath, label) {
 
 patchRendererProviderLists();
 patchCodexCreditPresentation();
+patchUnifiedHomeQuotaPresentation();
 patchRendererHtml();
 patchDefaultInterfaceFont();
 patchReadableFontSizes();

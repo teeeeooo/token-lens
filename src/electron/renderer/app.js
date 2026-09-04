@@ -4376,6 +4376,16 @@ function formatLimitWindowValue(window, fillPercent, hasPercent, showUsed) {
 function formatHomeLimitWindowValue(window, showUsed) {
   if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');
   if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');
+  if (
+    isCreditsWindow(window)
+    && String(window?.currency || '').trim().toUpperCase() === 'CREDITS'
+    && optionalFiniteNumber(window?.limit) !== null
+  ) {
+    const percent = limitFillPercent(window?.remainingPercent, window?.usedPercent, showUsed);
+    const percentage = formatPercent(percent) + ' ' + limitModeSuffix(showUsed);
+    const count = formatLimitCount(window, showUsed);
+    return count ? percentage + ' · ' + count + ' credits' : percentage;
+  }
   if (isCreditsWindow(window)) {
     if (window.remaining == null) {
       return String(window.detail || '').toLowerCase() === 'unlimited'

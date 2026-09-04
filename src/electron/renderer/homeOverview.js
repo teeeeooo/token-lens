@@ -103,6 +103,8 @@
                 ? balanceDisplay.creditsAmount(account, window)
                 : finiteNumber(window.remaining),
               currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',
+              used: finiteNumber(window.used),
+              limit: finiteNumber(window.limit),
               resetsAt: window.resetsAt,
               resetDescription: window.resetDescription || '',
               value: window.value || '',

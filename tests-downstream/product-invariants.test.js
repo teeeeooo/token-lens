@@ -9,6 +9,8 @@ const {
   fetchCodexLimits,
   mapCodexRateLimitsToProvider
 } = require('../src/shared/limitCollector');
+const homeOverview = require('../src/electron/renderer/homeOverview');
+const { formatCompactMoney } = require('../src/shared/limitBalanceDisplay');
 const {
   DEFAULT_INTERFACE_FONT,
   FONT_PRESETS,
@@ -46,6 +48,7 @@ test('Codex Business individualLimit replaces a generic monthly lane with credit
   const monthly = provider.windows.filter((window) => window.kind === 'billing' && window.additional !== true);
   assert.equal(monthly.length, 1);
   assert.equal(monthly[0].metric, 'credits');
+  assert.equal(monthly[0].currency, 'CREDITS');
   assert.equal(monthly[0].label, 'Monthly');
   assert.equal(monthly[0].used, 8000);
   assert.equal(monthly[0].limit, 25000);
@@ -121,6 +124,7 @@ test('Codex Business keeps OAuth quotas and supplements only individualLimit fro
   const monthly = provider.windows.find((window) => window.kind === 'billing' && window.additional !== true);
   assert.ok(monthly);
   assert.equal(monthly.metric, 'credits');
+  assert.equal(monthly.currency, 'CREDITS');
   assert.equal(monthly.limit, 750);
   assert.equal(monthly.used, 432.762320022503);
   assert.equal(monthly.remainingPercent, 42);
@@ -181,6 +185,37 @@ test('Codex Business RPC enrichment failure preserves the healthy OAuth result',
   assert.equal(provider.status, 'ok');
   assert.equal(provider.windows.find((window) => window.kind === 'session')?.usedPercent, 30);
   assert.equal(provider.windows.some((window) => window.kind === 'billing'), false);
+});
+
+test('Home keeps fixed credit quota metadata without provider-specific branching', () => {
+  const [row] = homeOverview.homeLimitAccounts([{
+    key: 'example',
+    providerId: 'claude',
+    windows: [{ kind: 'billing', metric: 'credits', currency: 'CREDITS', label: 'Monthly', used: 432.762320022503, limit: 750, remaining: 317.237679977497, usedPercent: 58 }]
+  }], 3, { sort: 'configured' });
+  assert.ok(row);
+  const [monthly] = row.windows;
+  assert.equal(monthly.currency, 'CREDITS');
+  assert.equal(monthly.used, 432.762320022503);
+  assert.equal(monthly.limit, 750);
+  assert.equal(monthly.remaining, 317.237679977497);
+  assert.equal(monthly.remainingPercent, 42);
+});
+
+test('CREDITS stays non-monetary while real currency formatting is unchanged', () => {
+  assert.equal(formatCompactMoney(317.237679977497, 'CREDITS'), '317.24');
+  assert.equal(formatCompactMoney(317.237679977497, 'USD'), '$317.24');
+});
+
+test('Home fixed-credit rendering is capability-based and downstream-materialized', () => {
+  const app = readRepo('src/electron/renderer/app.js');
+  const overview = readRepo('src/electron/renderer/homeOverview.js');
+  const patcher = readRepo('scripts/downstream/apply-renderer-hardening.js');
+  assert.match(overview, /used: finiteNumber\(window\.used\),\n\s+limit: finiteNumber\(window\.limit\)/);
+  assert.match(app, /toUpperCase\(\) === 'CREDITS'/);
+  assert.match(app, /formatLimitCount\(window, showUsed\)/);
+  assert.match(app, /percentage \+ ' · ' \+ count \+ ' credits'/);
+  assert.match(patcher, /patchUnifiedHomeQuotaPresentation/);
 });
 
 test('Token Lens defaults to the system UI font while preserving the mono preset', () => {

@@ -40,8 +40,8 @@ jobs:
           node scripts/downstream/apply-provider-hardening.js
           node scripts/downstream/apply-renderer-hardening.js
 
-      - name: Security invariant suite
-        run: node --test tests-downstream/security-invariants.test.js
+      - name: Downstream invariant suite
+        run: node --test tests-downstream/security-invariants.test.js tests-downstream/branding-invariants.test.js
 
       - name: Lint
         run: npm run lint
@@ -57,8 +57,10 @@ jobs:
           MATERIALIZED=(
             src/electron/main.js
             src/electron/antigravityOAuthLogin.js
+            src/electron/tray.js
             src/electron/renderer/app.js
             src/electron/renderer/index.html
+            src/electron/renderer/i18n.js
             src/shared/credentialStore.js
             src/shared/codexSystemSwitch.js
             src/shared/sessionDetail.js

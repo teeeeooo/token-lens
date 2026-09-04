@@ -20,6 +20,7 @@ const {
 } = require('../src/shared/credentialStore');
 const { writeCodexAuthFile } = require('../src/shared/codexSystemSwitch');
 const { refreshClaudeCredentials } = require('../src/shared/limitCollector');
+const { extractUsageFromTokscale } = require('../src/shared/usage');
 const {
   parseClaudeTranscript,
   parseCodexTranscript,
@@ -172,6 +173,35 @@ test('session detail refuses unsupported clients before transcript resolution', 
   assert.deepEqual(detail.exchanges, []);
 });
 
+test('unknown future model identifiers remain visible in model-level usage attribution', () => {
+  const model = 'gpt-future-codex-99';
+  const period = extractUsageFromTokscale({
+    entries: [{
+      client: 'codex',
+      model,
+      totalTokens: 42,
+      outputTokens: 7,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 3,
+      costUsd: 0.125
+    }]
+  });
+  assert.equal(period.clients.codex, 42);
+  assert.equal(period.models[model], 42);
+  assert.equal(period.modelOutputs[model], 7);
+  assert.equal(period.modelCacheReads[model], 5);
+  assert.equal(period.modelCacheWrites[model], 3);
+});
+
+test('Antigravity aliases normalize without constraining model identifiers', () => {
+  const model = 'gemini-future-antigravity-99';
+  const period = extractUsageFromTokscale({
+    entries: [{ client: 'Google Antigravity', model, totalTokens: 13 }]
+  });
+  assert.equal(period.clients.antigravity, 13);
+  assert.equal(period.models[model], 13);
+});
+
 test('preload does not expose privileged mutation/network IPC for disabled surfaces', () => {
   const preload = readRepo('src/electron/preload.js');
   const forbidden = [
@@ -191,6 +221,22 @@ test('preload does not expose privileged mutation/network IPC for disabled surfa
   ];
   for (const needle of forbidden) assert.equal(preload.includes(needle), false, needle);
   assert.match(preload, /ALLOWED_CLIENTS = new Set\(\['claude', 'codex', 'antigravity'\]\)/);
+});
+
+test('renderer provider/settings surface is focused on the three supported tools', () => {
+  const app = readRepo('src/electron/renderer/app.js');
+  const html = readRepo('src/electron/renderer/index.html');
+  assert.match(app, /TOKEN_LENS_ALLOWED_CLIENT_IDS = new Set\(\['claude', 'codex', 'antigravity'\]\)/);
+  assert.match(app, /const KNOWN_CLIENTS = UPSTREAM_KNOWN_CLIENTS\.filter/);
+  assert.match(app, /const LIMIT_PROVIDERS = UPSTREAM_LIMIT_PROVIDERS\.filter/);
+  assert.match(html, /<title>Token Lens<\/title>/);
+  assert.match(html, /id="token-lens-downstream-ui-policy"/);
+  assert.match(html, /\.settings-sync-group,/);
+  assert.match(html, /\.app-update-settings,/);
+  assert.match(html, /#tokscaleGroup,/);
+  assert.match(html, /#claudeAccountGroup,/);
+  assert.match(html, /#codexAccountGroup,/);
+  assert.match(html, /#antigravityAccountGroup,/);
 });
 
 test('Electron and runtime identity hardening remain materialized', () => {

@@ -38,6 +38,7 @@ jobs:
         run: |
           node scripts/downstream/apply-hardening.js
           node scripts/downstream/apply-provider-hardening.js
+          node scripts/downstream/apply-renderer-hardening.js
 
       - name: Security invariant suite
         run: node --test tests-downstream/security-invariants.test.js

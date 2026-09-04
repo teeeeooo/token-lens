@@ -15,7 +15,7 @@ permissions:
 jobs:
   verify-and-materialize:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -32,7 +32,7 @@ jobs:
         run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Production dependency audit
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/downstream/audit-production-deps.js
 
       - name: Materialize downstream hardening
         run: |

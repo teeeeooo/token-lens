@@ -3158,6 +3158,67 @@ function codexOAuthCanFallbackToRpc(error, deps = {}, managedRpcIsScoped = false
   return !['notConfigured', 'unauthorized', 'sourceRateLimited'].includes(error?.status);
 }
 
+function codexHasValidIndividualLimit(payload = {}) {
+  const rateLimits = codexRateLimitSnapshot(payload);
+  const canonicalLimitId = String(rateLimits.limitId ?? rateLimits.limit_id ?? 'codex').trim() || 'codex';
+  return Boolean(codexIndividualCreditWindow(rateLimits, canonicalLimitId));
+}
+
+function codexPlanMayUseIndividualLimit(payload = {}, oauthAuthSnapshot = null) {
+  const authIdentity = oauthAuthSnapshot?.auth ? codexAuthIdentity(oauthAuthSnapshot.auth) : {};
+  const raw = [...codexPlanParts(payload), authIdentity.accountLabel]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return raw.includes('business') || raw.includes('enterprise') || raw.includes('team');
+}
+
+function mergeCodexIndividualLimitFromRpc(oauthPayload = {}, rpcPayload = {}) {
+  const rpcRateLimits = codexRateLimitSnapshot(rpcPayload);
+  const canonicalLimitId = String(rpcRateLimits.limitId ?? rpcRateLimits.limit_id ?? 'codex').trim() || 'codex';
+  const individualLimit = rpcRateLimits.individualLimit ?? rpcRateLimits.individual_limit;
+  if (!codexIndividualCreditWindow(rpcRateLimits, canonicalLimitId)) return oauthPayload;
+
+  const oauthByLimitId = codexRateLimitsById(oauthPayload);
+  const oauthCanonical = Object.hasOwn(oauthByLimitId, 'codex')
+    ? (oauthByLimitId.codex || {})
+    : codexDirectRateLimits(oauthPayload);
+  return {
+    ...oauthPayload,
+    rateLimitsByLimitId: {
+      ...oauthByLimitId,
+      codex: {
+        ...oauthCanonical,
+        individualLimit
+      }
+    }
+  };
+}
+
+async function enrichCodexIndividualLimitFromRpc(oauthResult, rpcReader, deps = {}, oauthAuthSnapshot = null) {
+  if (deps.codexIndividualLimitEnrichment === false) return oauthResult;
+  if (codexHasValidIndividualLimit(oauthResult?.payload)) return oauthResult;
+  if (!codexPlanMayUseIndividualLimit(oauthResult?.payload, oauthAuthSnapshot)) return oauthResult;
+  // Managed workspaces may share the same email while selecting different
+  // ChatGPT workspace ids. Never merge an app-server snapshot unless its local
+  // auth selection is the same workspace as the OAuth request.
+  if (!codexManagedRpcMatchesSelectedWorkspace(deps, oauthAuthSnapshot)) return oauthResult;
+  try {
+    const rpcPayload = await rpcReader(deps);
+    return {
+      ...oauthResult,
+      // OAuth remains authoritative for ordinary primary/secondary/additional
+      // quotas. App Server contributes only the Business monthly spend-control
+      // field that /wham/usage may omit.
+      payload: mergeCodexIndividualLimitFromRpc(oauthResult.payload, rpcPayload)
+    };
+  } catch (_) {
+    // Enrichment is best-effort. A missing/old/busy app-server must never turn
+    // an otherwise healthy OAuth quota read into an error.
+    return oauthResult;
+  }
+}
+
 async function readCodexUsageOrRpc(deps = {}) {
   const oauthReader = deps.readCodexUsage || fetchCodexUsage;
   const rpcReader = deps.readCodexRpc || readCodexRpc;
@@ -3181,7 +3242,13 @@ async function readCodexUsageOrRpc(deps = {}) {
   let oauthError;
   let transientRpcFallback;
   try {
-    return await readOAuth();
+    const oauthResult = await readOAuth();
+    return await enrichCodexIndividualLimitFromRpc(
+      oauthResult,
+      rpcReader,
+      deps,
+      latestOAuthAuthSnapshot
+    );
   } catch (error) {
     oauthError = error;
     transientRpcFallback = codexOAuthCanFallbackToRpc(

@@ -5,7 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { mapCodexRateLimitsToProvider } = require('../src/shared/limitCollector');
+const {
+  fetchCodexLimits,
+  mapCodexRateLimitsToProvider
+} = require('../src/shared/limitCollector');
 const {
   DEFAULT_INTERFACE_FONT,
   FONT_PRESETS,
@@ -71,6 +74,113 @@ test('Codex Business individualLimit replaces a generic monthly lane with credit
   assert.equal(fallbackMonthly.length, 1);
   assert.equal(fallbackMonthly[0].metric, undefined);
   assert.equal(fallbackMonthly[0].usedPercent, 40);
+});
+
+test('Codex Business keeps OAuth quotas and supplements only individualLimit from App Server', async () => {
+  let rpcCalls = 0;
+  const provider = await fetchCodexLimits({}, {
+    now: () => Date.parse('2026-09-04T04:00:00Z'),
+    readCodexUsage: async () => ({
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: 'codex',
+          planType: 'business',
+          primary: {
+            usedPercent: 15,
+            windowDurationMins: 5 * 60,
+            resetsAt: 1790000000
+          }
+        }
+      }
+    }),
+    readCodexRpc: async () => {
+      rpcCalls += 1;
+      return {
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: 'codex',
+            planType: 'business',
+            individualLimit: {
+              limit: '750',
+              used: '432.762320022503',
+              remainingPercent: 42,
+              resetsAt: 1790812800
+            }
+          }
+        }
+      };
+    },
+    readCodexResetCredits: async () => null
+  });
+
+  assert.equal(rpcCalls, 1);
+  assert.equal(provider.source, 'oauth');
+  const session = provider.windows.find((window) => window.kind === 'session');
+  assert.ok(session);
+  assert.equal(session.usedPercent, 15);
+  const monthly = provider.windows.find((window) => window.kind === 'billing' && window.additional !== true);
+  assert.ok(monthly);
+  assert.equal(monthly.metric, 'credits');
+  assert.equal(monthly.limit, 750);
+  assert.equal(monthly.used, 432.762320022503);
+  assert.equal(monthly.remainingPercent, 42);
+  assert.equal(monthly.resetsAt, '2026-10-01T00:00:00.000Z');
+});
+
+test('Codex individualLimit enrichment is skipped for non-Business plans', async () => {
+  let rpcCalls = 0;
+  const provider = await fetchCodexLimits({}, {
+    readCodexUsage: async () => ({
+      rateLimitsByLimitId: {
+        codex: {
+          planType: 'pro',
+          primary: {
+            usedPercent: 25,
+            windowDurationMins: 5 * 60,
+            resetsAt: 1790000000
+          }
+        }
+      }
+    }),
+    readCodexRpc: async () => {
+      rpcCalls += 1;
+      throw new Error('RPC should not be called for Pro');
+    },
+    readCodexResetCredits: async () => null
+  });
+
+  assert.equal(rpcCalls, 0);
+  assert.equal(provider.status, 'ok');
+  assert.equal(provider.windows.some((window) => window.kind === 'billing'), false);
+});
+
+test('Codex Business RPC enrichment failure preserves the healthy OAuth result', async () => {
+  let rpcCalls = 0;
+  const provider = await fetchCodexLimits({}, {
+    readCodexUsage: async () => ({
+      rateLimitsByLimitId: {
+        codex: {
+          planType: 'business',
+          primary: {
+            usedPercent: 30,
+            windowDurationMins: 5 * 60,
+            resetsAt: 1790000000
+          }
+        }
+      }
+    }),
+    readCodexRpc: async () => {
+      rpcCalls += 1;
+      throw new Error('app-server temporarily unavailable');
+    },
+    readCodexResetCredits: async () => null
+  });
+
+  assert.equal(rpcCalls, 1);
+  assert.equal(provider.source, 'oauth');
+  assert.equal(provider.status, 'ok');
+  assert.equal(provider.windows.find((window) => window.kind === 'session')?.usedPercent, 30);
+  assert.equal(provider.windows.some((window) => window.kind === 'billing'), false);
 });
 
 test('Token Lens defaults to the system UI font while preserving the mono preset', () => {

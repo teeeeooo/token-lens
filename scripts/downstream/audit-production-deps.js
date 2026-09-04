@@ -7,9 +7,10 @@ const ATTEMPT_TIMEOUT_MS = 4 * 60 * 1000;
 const RETRY_DELAYS_MS = [15_000, 30_000];
 
 const transientPatterns = [
-  /\b408\b/,
-  /\b429\b/,
-  /\b5\d\d\b/,
+  /\b408\b.*(?:timeout|request)/i,
+  /\b429\b.*(?:too many requests|rate limit)/i,
+  /npm warn audit 5\d\d/i,
+  /http(?:error)?[^\n]*\b5\d\d\b/i,
   /service unavailable/i,
   /audit endpoint returned an error/i,
   /eai_again/i,
@@ -25,14 +26,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function terminateChild(child) {
+  if (process.platform !== 'win32') {
+    child.kill('SIGTERM');
+    return;
+  }
+
+  if (!child.pid) return;
+  const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  killer.on('error', () => {
+    child.kill();
+  });
+}
+
 function runAuditAttempt(attempt) {
   return new Promise((resolve, reject) => {
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const args = ['audit', '--omit=dev', '--audit-level=high'];
-    const child = spawn(npm, args, {
+    const child = spawn('npm', args, {
       cwd: process.cwd(),
       env: process.env,
       windowsHide: true,
+      shell: process.platform === 'win32',
     });
 
     let output = '';
@@ -52,7 +69,7 @@ function runAuditAttempt(attempt) {
     const timer = setTimeout(() => {
       timedOut = true;
       console.error(`npm audit attempt ${attempt}/${MAX_ATTEMPTS} exceeded ${ATTEMPT_TIMEOUT_MS / 1000}s; terminating it.`);
-      child.kill('SIGTERM');
+      terminateChild(child);
     }, ATTEMPT_TIMEOUT_MS);
 
     child.once('error', (error) => {

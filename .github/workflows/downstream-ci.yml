@@ -61,8 +61,11 @@ jobs:
             src/electron/renderer/app.js
             src/electron/renderer/index.html
             src/electron/renderer/i18n.js
+            src/electron/renderer/styles.css
+            src/electron/renderer/dashboard.css
             src/shared/credentialStore.js
             src/shared/codexSystemSwitch.js
+            src/shared/fontSettings.js
             src/shared/sessionDetail.js
             src/shared/exchangeRates.js
             src/shared/limitCollector.js

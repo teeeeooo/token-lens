@@ -6,6 +6,8 @@ const path = require('node:path');
 const root = path.join(__dirname, '..', '..');
 const appPath = path.join(root, 'src', 'electron', 'renderer', 'app.js');
 const htmlPath = path.join(root, 'src', 'electron', 'renderer', 'index.html');
+const i18nPath = path.join(root, 'src', 'electron', 'renderer', 'i18n.js');
+const trayPath = path.join(root, 'src', 'electron', 'tray.js');
 
 function patchRendererProviderLists() {
   let source = fs.readFileSync(appPath, 'utf8');
@@ -88,5 +90,23 @@ function patchRendererHtml() {
   return changed;
 }
 
+function patchVisibleProductBrand(targetPath, label) {
+  const source = fs.readFileSync(targetPath, 'utf8');
+  const branded = source.replaceAll('Token Monitor', 'Token Lens');
+  if (branded.includes('Token Monitor')) {
+    throw new Error(`Token Lens branding cleanup failed: ${label}`);
+  }
+  if (branded === source) {
+    console.log(`Token Lens ${label} branding is already materialized`);
+    return false;
+  }
+  fs.writeFileSync(targetPath, branded);
+  console.log(`Token Lens ${label} branding materialized`);
+  return true;
+}
+
 patchRendererProviderLists();
 patchRendererHtml();
+patchVisibleProductBrand(htmlPath, 'renderer HTML');
+patchVisibleProductBrand(i18nPath, 'renderer translations');
+patchVisibleProductBrand(trayPath, 'tray surface');

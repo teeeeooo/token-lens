@@ -40,8 +40,8 @@ jobs:
           node scripts/downstream/apply-provider-hardening.js
           node scripts/downstream/apply-renderer-hardening.js
 
-      - name: Security invariant suite
-        run: node --test tests-downstream/security-invariants.test.js
+      - name: Downstream invariant suite
+        run: node --test tests-downstream/security-invariants.test.js tests-downstream/branding-invariants.test.js
 
       - name: Lint
         run: npm run lint

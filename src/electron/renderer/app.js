@@ -50,7 +50,8 @@ function iconKindFor(rowData, breakdown) {
     : { kind: 'dot' };
 }
 
-const KNOWN_CLIENTS = [
+const TOKEN_LENS_ALLOWED_CLIENT_IDS = new Set(['claude', 'codex', 'antigravity']);
+const UPSTREAM_KNOWN_CLIENTS = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
@@ -79,7 +80,8 @@ const KNOWN_CLIENTS = [
   { id: 'cherrystudio', label: 'Cherry Studio' },
   { id: 'lmstudio', label: 'LM Studio' }
 ];
-const LIMIT_PROVIDERS = [
+const KNOWN_CLIENTS = UPSTREAM_KNOWN_CLIENTS.filter((provider) => TOKEN_LENS_ALLOWED_CLIENT_IDS.has(provider.id));
+const UPSTREAM_LIMIT_PROVIDERS = [
   { id: 'claude', label: 'Claude', settingsLabel: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
   { id: 'opencode', label: 'OpenCode' },
@@ -104,6 +106,7 @@ const LIMIT_PROVIDERS = [
   { id: 'trae', label: 'Trae CN' },
   { id: 'thirdparty', label: 'Third-party APIs' }
 ];
+const LIMIT_PROVIDERS = UPSTREAM_LIMIT_PROVIDERS.filter((provider) => TOKEN_LENS_ALLOWED_CLIENT_IDS.has(provider.id));
 const LIMIT_PROVIDER_ACCOUNT_GROUP_IDS = {
   claude: 'claudeAccountGroup',
   codex: 'codexAccountGroup',

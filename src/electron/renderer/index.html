@@ -3,15 +3,44 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Token Monitor</title>
+    <title>Token Lens</title>
     <script src="floatingBubbleBoot.js"></script>
     <link rel="stylesheet" href="styles.css" />
+    <style id="token-lens-downstream-ui-policy">
+      /* Token Lens is a focused monitor, not an account/update/sync manager. */
+      .app-update-settings,
+      .settings-sync-group,
+      #tokscaleGroup,
+      .settings-subgroup:has(#discordRpcInput),
+      #claudeAccountGroup,
+      #codexAccountGroup,
+      #antigravityAccountGroup,
+      #cursorAccountGroup,
+      #opencodeCookieGroup,
+      #kimiAccountGroup,
+      #zedAccountGroup,
+      #copilotAccountGroup,
+      #mimoAccountGroup,
+      #zaiAccountGroup,
+      #zaiteamAccountGroup,
+      #deepseekAccountGroup,
+      #openrouterAccountGroup,
+      #minimaxAccountGroup,
+      #volcengineAccountGroup,
+      #qoderAccountGroup,
+      #traeAccountGroup,
+      #commandcodeAccountGroup,
+      #ollamaAccountGroup,
+      #thirdpartyAccountGroup {
+        display: none !important;
+      }
+    </style>
   </head>
   <body>
     <main class="shell">
       <header class="titlebar">
         <div>
-          <div class="app-title"><span class="app-title-text">Token Monitor</span><span class="app-title-mark" aria-hidden="true">Σ</span><span id="liveDot" class="live-dot" title="Stream offline"></span><span id="tokenRateReveal" class="token-rate-reveal" aria-hidden="true"></span><span class="app-title-measure" aria-hidden="true">Token Monitor</span></div>
+          <div class="app-title"><span class="app-title-text">Token Lens</span><span class="app-title-mark" aria-hidden="true">Σ</span><span id="liveDot" class="live-dot" title="Stream offline"></span><span id="tokenRateReveal" class="token-rate-reveal" aria-hidden="true"></span><span class="app-title-measure" aria-hidden="true">Token Lens</span></div>
           <div id="status" class="status">Starting</div>
         </div>
         <div class="title-controls">

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { appVersion } = require('./appVersion');
+const { DOWNSTREAM_POLICY } = require('./downstreamPolicy');
 const { BROWSER_USER_AGENT } = require('./browserUserAgent');
 const { LIMIT_PROVIDER_IDS } = require('./limitProviders');
 const {
@@ -1521,6 +1522,13 @@ async function delegatedClaudeRefresh(currentCredentials, deps = {}) {
 }
 
 async function refreshClaudeCredentials(currentCredentials, deps = {}) {
+  // Token Lens may read Claude Code OAuth material for quota requests, but it
+  // must not refresh/rotate that material itself. A refresh can rotate the
+  // refresh token remotely and persist a replacement locally, so it is a
+  // credential mutation even before the filesystem write.
+  if (!DOWNSTREAM_POLICY.credentialMutation) {
+    throw errorWithStatus('unauthorized', 'Token Lens treats Claude authentication as read-only');
+  }
   const platform = deps.platform || process.platform;
   if (platform === 'darwin') return delegatedClaudeRefresh(currentCredentials, deps);
   if (!currentCredentials.refreshToken) {

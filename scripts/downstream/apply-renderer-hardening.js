@@ -7,7 +7,23 @@ const root = path.join(__dirname, '..', '..');
 const appPath = path.join(root, 'src', 'electron', 'renderer', 'app.js');
 const htmlPath = path.join(root, 'src', 'electron', 'renderer', 'index.html');
 const i18nPath = path.join(root, 'src', 'electron', 'renderer', 'i18n.js');
+const stylesPath = path.join(root, 'src', 'electron', 'renderer', 'styles.css');
+const dashboardStylesPath = path.join(root, 'src', 'electron', 'renderer', 'dashboard.css');
+const fontSettingsPath = path.join(root, 'src', 'shared', 'fontSettings.js');
 const trayPath = path.join(root, 'src', 'electron', 'tray.js');
+
+function replaceExactlyOnceInSource(source, before, after, label) {
+  if (source.includes(after)) return { source, changed: false };
+  const first = source.indexOf(before);
+  if (first < 0) throw new Error(`Token Lens renderer anchor changed upstream: ${label}`);
+  if (source.indexOf(before, first + before.length) >= 0) {
+    throw new Error(`Token Lens renderer anchor is ambiguous: ${label}`);
+  }
+  return {
+    source: source.slice(0, first) + after + source.slice(first + before.length),
+    changed: true
+  };
+}
 
 function patchRendererProviderLists() {
   let source = fs.readFileSync(appPath, 'utf8');
@@ -47,6 +63,40 @@ function patchRendererProviderLists() {
   source = source.slice(0, knownStart) + focused + source.slice(groupStart);
   fs.writeFileSync(appPath, source);
   console.log('Token Lens renderer provider lists materialized');
+  return true;
+}
+
+function patchCodexCreditPresentation() {
+  let source = fs.readFileSync(appPath, 'utf8');
+  const before = `    if (monthly) {
+      const monthlyNode = limitWindowNode(monthly.label || 'Monthly', monthly, color, 0.68);
+      monthlyNode.classList.add('limit-window-wide');
+      windows.append(monthlyNode);
+    }`;
+  const after = `    if (monthly) {
+      const monthlyCount = monthly.metric === 'credits'
+        ? formatLimitCount(monthly, Boolean(state.settings?.showLimitUsed))
+        : '';
+      const monthlyDetail = monthlyCount ? \`${'${monthlyCount}'} credits\` : '';
+      const monthlyNode = limitWindowNode(
+        monthly.label || 'Monthly',
+        monthly,
+        color,
+        0.68,
+        null,
+        monthlyDetail
+      );
+      monthlyNode.classList.add('limit-window-wide');
+      windows.append(monthlyNode);
+    }`;
+  const result = replaceExactlyOnceInSource(source, before, after, 'Codex monthly credit presentation');
+  if (!result.changed) {
+    console.log('Token Lens Codex monthly credit presentation is already materialized');
+    return false;
+  }
+  source = result.source;
+  fs.writeFileSync(appPath, source);
+  console.log('Token Lens Codex monthly credit presentation materialized');
   return true;
 }
 
@@ -90,6 +140,77 @@ function patchRendererHtml() {
   return changed;
 }
 
+function patchDefaultInterfaceFont() {
+  let source = fs.readFileSync(fontSettingsPath, 'utf8');
+  const before = `  const DEFAULT_INTERFACE_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  const DEFAULT_DASHBOARD_INTERFACE_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const DEFAULT_DISPLAY_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif';
+  const SYSTEM_UI_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const FONT_PRESETS = Object.freeze({
+    app: '',
+    system: SYSTEM_UI_FONT,
+    mono: DEFAULT_INTERFACE_FONT
+  });`;
+  const after = `  const MONOSPACE_INTERFACE_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
+  const SYSTEM_UI_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const DEFAULT_INTERFACE_FONT = SYSTEM_UI_FONT;
+  const DEFAULT_DASHBOARD_INTERFACE_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  const DEFAULT_DISPLAY_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif';
+  const FONT_PRESETS = Object.freeze({
+    app: '',
+    system: SYSTEM_UI_FONT,
+    mono: MONOSPACE_INTERFACE_FONT
+  });`;
+  const result = replaceExactlyOnceInSource(source, before, after, 'default System interface font');
+  if (!result.changed) {
+    console.log('Token Lens default System interface font is already materialized');
+    return false;
+  }
+  source = result.source;
+  fs.writeFileSync(fontSettingsPath, source);
+  console.log('Token Lens default System interface font materialized');
+  return true;
+}
+
+function patchReadableFontSizes() {
+  const rootMarker = '  --token-lens-font-size-body: 12px;\n  --token-lens-font-size-small: 11px;';
+  let styles = fs.readFileSync(stylesPath, 'utf8');
+  let changed = false;
+  if (!styles.includes(rootMarker)) {
+    const anchor = ':root {\n';
+    const first = styles.indexOf(anchor);
+    if (first < 0 || styles.indexOf(anchor, first + anchor.length) >= 0) {
+      throw new Error('Token Lens typography root anchor changed or is ambiguous upstream');
+    }
+    styles = styles.slice(0, first + anchor.length) + rootMarker + '\n' + styles.slice(first + anchor.length);
+    changed = true;
+  }
+
+  function promote(pathName, source) {
+    const promoted = source
+      .replace(/font-size:\s*11px;/g, 'font-size: var(--token-lens-font-size-body);')
+      .replace(/font-size:\s*10px;/g, 'font-size: var(--token-lens-font-size-small);');
+    if (promoted !== source) changed = true;
+    if (/font-size:\s*(?:10|11)px;/.test(promoted)) {
+      throw new Error(`Token Lens typography promotion incomplete: ${pathName}`);
+    }
+    return promoted;
+  }
+
+  styles = promote('styles.css', styles);
+  let dashboardStyles = fs.readFileSync(dashboardStylesPath, 'utf8');
+  dashboardStyles = promote('dashboard.css', dashboardStyles);
+
+  if (changed) {
+    fs.writeFileSync(stylesPath, styles);
+    fs.writeFileSync(dashboardStylesPath, dashboardStyles);
+    console.log('Token Lens readable font sizes materialized');
+  } else {
+    console.log('Token Lens readable font sizes are already materialized');
+  }
+  return changed;
+}
+
 function patchVisibleProductBrand(targetPath, label) {
   const source = fs.readFileSync(targetPath, 'utf8');
   const branded = source.replaceAll('Token Monitor', 'Token Lens');
@@ -106,7 +227,10 @@ function patchVisibleProductBrand(targetPath, label) {
 }
 
 patchRendererProviderLists();
+patchCodexCreditPresentation();
 patchRendererHtml();
+patchDefaultInterfaceFont();
+patchReadableFontSizes();
 patchVisibleProductBrand(htmlPath, 'renderer HTML');
 patchVisibleProductBrand(i18nPath, 'renderer translations');
 patchVisibleProductBrand(trayPath, 'tray surface');

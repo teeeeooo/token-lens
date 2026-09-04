@@ -2451,14 +2451,42 @@ async function waitForCodexEmptyQuotaRetry(deps = {}) {
   });
 }
 
+function codexIndividualCreditWindow(rateLimits, canonicalLimitId) {
+  const individualLimit = rateLimits?.individualLimit ?? rateLimits?.individual_limit;
+  if (!individualLimit || typeof individualLimit !== 'object') return null;
+  const limit = Number(individualLimit.limit);
+  const used = Number(individualLimit.used);
+  if (!Number.isFinite(limit) || limit <= 0 || !Number.isFinite(used) || used < 0) return null;
+  const remainingPercent = Number(individualLimit.remainingPercent ?? individualLimit.remaining_percent);
+  const usedPercent = Number.isFinite(remainingPercent)
+    ? Math.max(0, Math.min(100, 100 - remainingPercent))
+    : undefined;
+  return {
+    kind: 'billing',
+    metric: 'credits',
+    label: 'Monthly',
+    limitId: canonicalLimitId,
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    ...(usedPercent === undefined ? {} : { usedPercent }),
+    resetsAt: individualLimit.resetsAt ?? individualLimit.resets_at
+  };
+}
+
 function mapCodexRateLimitsToProvider(payload, meta = {}) {
   const rateLimits = codexRateLimitSnapshot(payload);
   const canonicalLimitId = String(rateLimits.limitId ?? rateLimits.limit_id ?? 'codex').trim() || 'codex';
+  const individualCreditWindow = codexIndividualCreditWindow(rateLimits, canonicalLimitId);
   const windows = [];
   for (const key of ['primary', 'secondary']) {
     const window = rateLimits[key];
     if (!window) continue;
     const kind = codexWindowKind(key, window);
+    // Business workspaces can expose the effective monthly spend-control limit
+    // separately from the ordinary rate-limit lanes. When present it is the
+    // authoritative Monthly row, so do not render a second generic billing lane.
+    if (individualCreditWindow && kind === 'billing') continue;
     windows.push({
       kind,
       ...(kind === 'billing' ? { label: 'Monthly' } : {}),
@@ -2468,6 +2496,7 @@ function mapCodexRateLimitsToProvider(payload, meta = {}) {
       windowMinutes: window.windowDurationMins ?? window.window_duration_mins
     });
   }
+  if (individualCreditWindow) windows.push(individualCreditWindow);
   windows.push(...codexAdditionalRateLimitWindows(payload));
   return normalizeLimitProvider({
     provider: 'codex',

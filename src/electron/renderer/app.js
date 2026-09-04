@@ -4818,7 +4818,18 @@ function renderProviderWindows(provider, color) {
       windows.append(weeklyNode);
     }
     if (monthly) {
-      const monthlyNode = limitWindowNode(monthly.label || 'Monthly', monthly, color, 0.68);
+      const monthlyCount = monthly.metric === 'credits'
+        ? formatLimitCount(monthly, Boolean(state.settings?.showLimitUsed))
+        : '';
+      const monthlyDetail = monthlyCount ? `${monthlyCount} credits` : '';
+      const monthlyNode = limitWindowNode(
+        monthly.label || 'Monthly',
+        monthly,
+        color,
+        0.68,
+        null,
+        monthlyDetail
+      );
       monthlyNode.classList.add('limit-window-wide');
       windows.append(monthlyNode);
     }

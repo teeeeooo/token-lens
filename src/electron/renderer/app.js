@@ -4376,15 +4376,17 @@ function formatLimitWindowValue(window, fillPercent, hasPercent, showUsed) {
 function formatHomeLimitWindowValue(window, showUsed) {
   if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');
   if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');
-  if (
-    isCreditsWindow(window)
-    && String(window?.currency || '').trim().toUpperCase() === 'CREDITS'
-    && optionalFiniteNumber(window?.limit) !== null
-  ) {
+  const quotaUsed = optionalFiniteNumber(window?.used);
+  const quotaLimit = optionalFiniteNumber(window?.limit);
+  const quotaCurrency = String(window?.currency || '').trim().toUpperCase();
+  if (quotaUsed !== null && quotaLimit !== null && quotaLimit > 0 && quotaCurrency) {
     const percent = limitFillPercent(window?.remainingPercent, window?.usedPercent, showUsed);
     const percentage = formatPercent(percent) + ' ' + limitModeSuffix(showUsed);
-    const count = formatLimitCount(window, showUsed);
-    return count ? percentage + ' · ' + count + ' credits' : percentage;
+    const count = quotaCurrency === 'CREDITS' ? formatLimitCount(window, showUsed) : '';
+    const absolute = quotaCurrency === 'CREDITS'
+      ? (count ? count + ' credits' : '')
+      : formatMoney(showUsed ? Math.max(0, quotaUsed) : Math.max(0, quotaLimit - quotaUsed), quotaCurrency) + '/' + formatMoney(quotaLimit, quotaCurrency);
+    return absolute ? percentage + ' · ' + absolute : percentage;
   }
   if (isCreditsWindow(window)) {
     if (window.remaining == null) {

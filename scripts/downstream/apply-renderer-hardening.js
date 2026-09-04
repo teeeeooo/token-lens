@@ -103,29 +103,34 @@ function patchCodexCreditPresentation() {
 
 function patchUnifiedHomeQuotaPresentation() {
   let changed = false;
-  const overviewSource = fs.readFileSync(homeOverviewPath, 'utf8');
-  const overviewResult = replaceExactlyOnceInSource(
-    overviewSource,
-    "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              resetsAt: window.resetsAt,",
-    "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              used: finiteNumber(window.used),\n              limit: finiteNumber(window.limit),\n              resetsAt: window.resetsAt,",
-    'Home absolute quota metadata'
-  );
-  if (overviewResult.changed) {
-    fs.writeFileSync(homeOverviewPath, overviewResult.source);
-    changed = true;
+  let overviewSource = fs.readFileSync(homeOverviewPath, 'utf8');
+  const overviewBefore = "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              resetsAt: window.resetsAt,";
+  const overviewPrevious = "              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',\n              used: finiteNumber(window.used),\n              limit: finiteNumber(window.limit),\n              resetsAt: window.resetsAt,";
+  const overviewAfter = "              currency: credits\n                ? balanceDisplay.creditsCurrency(account, window)\n                : String(window.currency || '').trim().toUpperCase(),\n              used: finiteNumber(window.used),\n              limit: finiteNumber(window.limit),\n              resetsAt: window.resetsAt,";
+  if (!overviewSource.includes(overviewAfter)) {
+    const overviewAnchor = overviewSource.includes(overviewPrevious) ? overviewPrevious : overviewBefore;
+    const overviewResult = replaceExactlyOnceInSource(
+      overviewSource,
+      overviewAnchor,
+      overviewAfter,
+      'Home absolute quota metadata and currency'
+    );
+    if (overviewResult.changed) {
+      overviewSource = overviewResult.source;
+      fs.writeFileSync(homeOverviewPath, overviewSource);
+      changed = true;
+    }
   }
 
   const appSource = fs.readFileSync(appPath, 'utf8');
-  const before = [
+  const prefix = [
     'function formatHomeLimitWindowValue(window, showUsed) {',
     "  if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');",
-    "  if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');",
-    '  if (isCreditsWindow(window)) {'
+    "  if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');"
   ].join('\n');
-  const after = [
-    'function formatHomeLimitWindowValue(window, showUsed) {',
-    "  if (window?.planStatus === 'expired') return t('limits.mimo.planExpired');",
-    "  if (String(window?.detail || '').toLowerCase() === 'unlimited') return t('settings.thirdparty.unlimited');",
+  const before = [prefix, '  if (isCreditsWindow(window)) {'].join('\n');
+  const previous = [
+    prefix,
     '  if (',
     '    isCreditsWindow(window)',
     "    && String(window?.currency || '').trim().toUpperCase() === 'CREDITS'",
@@ -138,10 +143,29 @@ function patchUnifiedHomeQuotaPresentation() {
     '  }',
     '  if (isCreditsWindow(window)) {'
   ].join('\n');
-  const appResult = replaceExactlyOnceInSource(appSource, before, after, 'Home fixed-credit quota formatter');
-  if (appResult.changed) {
-    fs.writeFileSync(appPath, appResult.source);
-    changed = true;
+  const after = [
+    prefix,
+    '  const quotaUsed = optionalFiniteNumber(window?.used);',
+    '  const quotaLimit = optionalFiniteNumber(window?.limit);',
+    "  const quotaCurrency = String(window?.currency || '').trim().toUpperCase();",
+    '  if (quotaUsed !== null && quotaLimit !== null && quotaLimit > 0 && quotaCurrency) {',
+    '    const percent = limitFillPercent(window?.remainingPercent, window?.usedPercent, showUsed);',
+    "    const percentage = formatPercent(percent) + ' ' + limitModeSuffix(showUsed);",
+    "    const count = quotaCurrency === 'CREDITS' ? formatLimitCount(window, showUsed) : '';",
+    "    const absolute = quotaCurrency === 'CREDITS'",
+    "      ? (count ? count + ' credits' : '')",
+    "      : formatMoney(showUsed ? Math.max(0, quotaUsed) : Math.max(0, quotaLimit - quotaUsed), quotaCurrency) + '/' + formatMoney(quotaLimit, quotaCurrency);",
+    "    return absolute ? percentage + ' · ' + absolute : percentage;",
+    '  }',
+    '  if (isCreditsWindow(window)) {'
+  ].join('\n');
+  if (!appSource.includes(after)) {
+    const appAnchor = appSource.includes(previous) ? previous : before;
+    const appResult = replaceExactlyOnceInSource(appSource, appAnchor, after, 'Home capability-based absolute quota formatter');
+    if (appResult.changed) {
+      fs.writeFileSync(appPath, appResult.source);
+      changed = true;
+    }
   }
   console.log(changed ? 'Token Lens unified Home quota presentation materialized' : 'Token Lens unified Home quota presentation is already materialized');
   return changed;

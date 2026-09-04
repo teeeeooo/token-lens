@@ -28,14 +28,20 @@ upstream  https://github.com/Javis603/token-monitor.git
 4. Create a fresh integration branch from the current Token Lens `main`.
 5. Merge or cherry-pick the upstream commits needed for the focused distribution. Prefer preserving upstream commit identity when a provider fix can be taken cleanly.
 6. Never import upstream `.github/workflows/` as executable downstream CI without a separate review.
-7. Run `node scripts/downstream/apply-hardening.js`. The patcher deliberately fails if a security-sensitive upstream anchor changed unexpectedly.
-8. Run downstream invariant tests and lint.
+7. Run both downstream patchers. They deliberately fail if a security-sensitive upstream anchor changed unexpectedly:
+
+```text
+node scripts/downstream/apply-hardening.js
+node scripts/downstream/apply-provider-hardening.js
+```
+
+8. Run `node --test tests-downstream/security-invariants.test.js`, `npm run lint`, and the production dependency audit.
 9. Review the complete diff against the last Token Lens release before updating `main`.
 10. Update the baseline metadata in this file only after the integration is accepted.
 
-## Why the downstream patcher exists
+## Why the downstream patchers exist
 
-`src/electron/main.js` is a high-churn upstream file. Rewriting it into a private architecture would make provider fixes expensive to absorb. Token Lens therefore keeps most upstream structure intact and applies a small, assertion-based downstream patch. If upstream refactors one of the security-sensitive locations, the patch stops rather than silently leaving a feature enabled.
+High-churn upstream files such as `src/electron/main.js` and `src/shared/limitCollector.js` are kept structurally close to upstream. Rewriting them into a private architecture would make provider fixes expensive to absorb. Token Lens therefore applies small, assertion-based downstream patches. If upstream refactors a security-sensitive location, the patch stops rather than silently leaving a feature enabled.
 
 ## Provider/model evolution
 

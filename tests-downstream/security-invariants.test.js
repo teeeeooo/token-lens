@@ -19,6 +19,7 @@ const {
   persistSettingsAndCredentials
 } = require('../src/shared/credentialStore');
 const { writeCodexAuthFile } = require('../src/shared/codexSystemSwitch');
+const { refreshClaudeCredentials } = require('../src/shared/limitCollector');
 const {
   parseClaudeTranscript,
   parseCodexTranscript,
@@ -35,7 +36,7 @@ test('provider surface is exactly Claude, Codex, and Antigravity', () => {
   assert.equal(DEFAULT_CLIENTS, 'claude,codex,antigravity');
   assert.equal(KNOWN_CLIENTS, DEFAULT_CLIENTS);
   assert.deepEqual(LIMIT_PROVIDER_IDS, ALLOWED_LIMIT_PROVIDERS);
-  assert.equal(clientsCsvForSetting('cursor,codex,claude,evil,antigravity'), DEFAULT_CLIENTS.split(',').sort().join(',').replace('antigravity,claude,codex', 'codex,claude,antigravity'));
+  assert.equal(clientsCsvForSetting('cursor,codex,claude,evil,antigravity'), 'codex,claude,antigravity');
 });
 
 test('settings are fail-closed for sync, updates, credentials, and unsupported providers', () => {
@@ -113,6 +114,24 @@ test('Codex auth mutation is rejected before filesystem writes', async () => {
   }
 });
 
+test('Claude OAuth refresh is rejected before network or credential mutation', async () => {
+  let networkCalls = 0;
+  await assert.rejects(
+    refreshClaudeCredentials(
+      { source: 'file', filePath: '/should/not/be/touched', refreshToken: 'secret' },
+      {
+        platform: 'win32',
+        fetch: async () => {
+          networkCalls += 1;
+          throw new Error('network must not be reached');
+        }
+      }
+    ),
+    (error) => error?.status === 'unauthorized'
+  );
+  assert.equal(networkCalls, 0);
+});
+
 test('Claude session detail keeps token metadata but never prompt or response content', () => {
   const prompt = 'SUPER_SECRET_CLAUDE_PROMPT';
   const response = 'SUPER_SECRET_CLAUDE_RESPONSE';
@@ -176,6 +195,7 @@ test('preload does not expose privileged mutation/network IPC for disabled surfa
 
 test('Electron and runtime identity hardening remain materialized', () => {
   const main = readRepo('src/electron/main.js');
+  const limitCollector = readRepo('src/shared/limitCollector.js');
   assert.match(main, /const APP_NAME = 'Token Lens';/);
   assert.match(main, /app\.setAppUserModelId\('com\.teeeeooo\.tokenlens'\)/);
   assert.match(main, /contextIsolation:\s*true/);
@@ -183,6 +203,7 @@ test('Electron and runtime identity hardening remain materialized', () => {
   assert.match(main, /"connect-src 'self'"/);
   assert.match(main, /if \(!DOWNSTREAM_POLICY\.appUpdateChecks\) return;/);
   assert.match(main, /settings = enforceDownstreamSettings\(readSettings\(\)\)/);
+  assert.match(limitCollector, /if \(!DOWNSTREAM_POLICY\.credentialMutation\)/);
 });
 
 test('Windows packaging has a distinct unsigned Token Lens identity', () => {

@@ -35,7 +35,9 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Apply downstream hardening
-        run: node scripts/downstream/apply-hardening.js
+        run: |
+          node scripts/downstream/apply-hardening.js
+          node scripts/downstream/apply-provider-hardening.js
 
       - name: Security invariant suite
         run: node --test tests-downstream/security-invariants.test.js

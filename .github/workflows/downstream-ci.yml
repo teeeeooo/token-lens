@@ -35,7 +35,9 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Materialize downstream hardening
-        run: node scripts/downstream/apply-hardening.js
+        run: |
+          node scripts/downstream/apply-hardening.js
+          node scripts/downstream/apply-provider-hardening.js
 
       - name: Security invariant suite
         run: node --test tests-downstream/security-invariants.test.js
@@ -58,6 +60,7 @@ jobs:
             src/shared/codexSystemSwitch.js
             src/shared/sessionDetail.js
             src/shared/exchangeRates.js
+            src/shared/limitCollector.js
           )
           if git diff --quiet -- "${MATERIALIZED[@]}"; then
             echo 'downstream hardening is already materialized'

@@ -10,7 +10,7 @@ const {
   mapCodexRateLimitsToProvider
 } = require('../src/shared/limitCollector');
 const homeOverview = require('../src/electron/renderer/homeOverview');
-const { formatCompactMoney } = require('../src/shared/limitBalanceDisplay');
+const { formatCompactMoney, formatMoney } = require('../src/shared/limitBalanceDisplay');
 const {
   DEFAULT_INTERFACE_FONT,
   FONT_PRESETS,
@@ -202,20 +202,40 @@ test('Home keeps fixed credit quota metadata without provider-specific branching
   assert.equal(monthly.remainingPercent, 42);
 });
 
+test('Home preserves monetary spend quota metadata for Claude usage credits', () => {
+  const [row] = homeOverview.homeLimitAccounts([{
+    key: 'claude',
+    providerId: 'claude',
+    windows: [{ kind: 'billing', metric: 'spend', currency: 'USD', label: 'Usage credits', used: 5, limit: 20, usedPercent: 25 }]
+  }], 3, { sort: 'configured' });
+  assert.ok(row);
+  const [usageCredits] = row.windows;
+  assert.equal(usageCredits.metric, 'spend');
+  assert.equal(usageCredits.currency, 'USD');
+  assert.equal(usageCredits.used, 5);
+  assert.equal(usageCredits.limit, 20);
+  assert.equal(usageCredits.remainingPercent, 75);
+});
+
 test('CREDITS stays non-monetary while real currency formatting is unchanged', () => {
   assert.equal(formatCompactMoney(317.237679977497, 'CREDITS'), '317.24');
   assert.equal(formatCompactMoney(317.237679977497, 'USD'), '$317.24');
+  assert.equal(formatMoney(15, 'USD'), '$15.00');
+  assert.equal(formatMoney(20, 'USD'), '$20.00');
 });
 
-test('Home fixed-credit rendering is capability-based and downstream-materialized', () => {
+test('Home absolute quota rendering is capability-based and downstream-materialized', () => {
   const app = readRepo('src/electron/renderer/app.js');
   const overview = readRepo('src/electron/renderer/homeOverview.js');
   const patcher = readRepo('scripts/downstream/apply-renderer-hardening.js');
+  assert.match(overview, /String\(window\.currency \|\| ''\)\.trim\(\)\.toUpperCase\(\)/);
   assert.match(overview, /used: finiteNumber\(window\.used\),\n\s+limit: finiteNumber\(window\.limit\)/);
-  assert.match(app, /toUpperCase\(\) === 'CREDITS'/);
-  assert.match(app, /formatLimitCount\(window, showUsed\)/);
-  assert.match(app, /percentage \+ ' · ' \+ count \+ ' credits'/);
-  assert.match(patcher, /patchUnifiedHomeQuotaPresentation/);
+  assert.match(app, /const quotaUsed = optionalFiniteNumber\(window\?\.used\)/);
+  assert.match(app, /const quotaLimit = optionalFiniteNumber\(window\?\.limit\)/);
+  assert.match(app, /const quotaCurrency = String\(window\?\.currency \|\| ''\)/);
+  assert.match(app, /quotaCurrency === 'CREDITS' \? formatLimitCount\(window, showUsed\)/);
+  assert.match(app, /formatMoney\(showUsed \? Math\.max\(0, quotaUsed\) : Math\.max\(0, quotaLimit - quotaUsed\), quotaCurrency\)/);
+  assert.match(patcher, /Home capability-based absolute quota formatter/);
 });
 
 test('Token Lens defaults to the system UI font while preserving the mono preset', () => {

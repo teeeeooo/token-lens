@@ -102,7 +102,9 @@
               remaining: credits
                 ? balanceDisplay.creditsAmount(account, window)
                 : finiteNumber(window.remaining),
-              currency: credits ? balanceDisplay.creditsCurrency(account, window) : '',
+              currency: credits
+                ? balanceDisplay.creditsCurrency(account, window)
+                : String(window.currency || '').trim().toUpperCase(),
               used: finiteNumber(window.used),
               limit: finiteNumber(window.limit),
               resetsAt: window.resetsAt,

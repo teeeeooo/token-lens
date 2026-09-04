@@ -1,0 +1,76 @@
+name: Token Lens downstream CI
+
+on:
+  push:
+    branches:
+      - work/hardened-v1
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Materialize downstream hardening
+        run: |
+          node scripts/downstream/apply-hardening.js
+          node scripts/downstream/apply-provider-hardening.js
+          node scripts/downstream/apply-renderer-hardening.js
+
+      - name: Security invariant suite
+        run: node --test tests-downstream/security-invariants.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Diff hygiene
+        run: git diff --check
+
+      - name: Commit materialized hardening
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MATERIALIZED=(
+            src/electron/main.js
+            src/electron/antigravityOAuthLogin.js
+            src/electron/renderer/app.js
+            src/electron/renderer/index.html
+            src/shared/credentialStore.js
+            src/shared/codexSystemSwitch.js
+            src/shared/sessionDetail.js
+            src/shared/exchangeRates.js
+            src/shared/limitCollector.js
+          )
+          if git diff --quiet -- "${MATERIALIZED[@]}"; then
+            echo 'downstream hardening is already materialized'
+            exit 0
+          fi
+          git config user.name 'token-lens-ci'
+          git config user.email 'token-lens-ci@users.noreply.github.com'
+          git add -- "${MATERIALIZED[@]}"
+          git commit -m 'chore(downstream): materialize security gates [downstream-applied]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"

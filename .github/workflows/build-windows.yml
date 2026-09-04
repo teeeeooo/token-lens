@@ -1,0 +1,87 @@
+name: Build Token Lens Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/hardened-v1
+      - main
+    tags:
+      - 'token-lens-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Apply downstream hardening
+        run: |
+          node scripts/downstream/apply-hardening.js
+          node scripts/downstream/apply-provider-hardening.js
+          node scripts/downstream/apply-renderer-hardening.js
+
+      - name: Security invariant suite
+        run: node --test tests-downstream/security-invariants.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Ensure bundled Windows tokscale
+        run: node scripts/ensure-vendored-tokscale.js --platform=win32-x64
+
+      - name: Build unsigned Windows installer and portable app
+        run: npx electron-builder --config scripts/downstream/electron-builder.config.js --win nsis portable --x64 --publish never
+
+      - name: Record SHA-256 digests
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist -File -Filter '*.exe' | Sort-Object Name
+          if (-not $files) { throw 'No Windows executable artifacts were produced.' }
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Confirm artifacts are unsigned downstream builds
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File -Filter '*.exe' | ForEach-Object {
+            $sig = Get-AuthenticodeSignature $_.FullName
+            Write-Host "$($_.Name): $($sig.Status)"
+            if ($sig.Status -eq 'Valid') {
+              throw "Unexpected signing identity on downstream artifact: $($_.Name)"
+            }
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: token-lens-windows-x64
+          path: |
+            dist/Token-Lens-Setup-*.exe
+            dist/Token-Lens-*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14

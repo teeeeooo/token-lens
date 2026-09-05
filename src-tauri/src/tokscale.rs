@@ -1,0 +1,562 @@
+use crate::domain::{
+    CreditStatus, QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, ResetCredits,
+    SpendControl, SupportedProvider, TokscaleStatus, UsageEntry, UsageGrouping, UsagePeriod,
+    UsageReport, UsageTotals,
+};
+use serde::Deserialize;
+use serde_json::Value;
+use std::env;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::process::Command;
+use tokio::time::timeout;
+
+const TOKSCALE_TIMEOUT: Duration = Duration::from_secs(30);
+const TOKSCALE_CLIENTS: &str = "codex,claude,antigravity";
+const TOKSCALE_SOURCE: &str = "tokscale";
+
+#[derive(Debug, Clone)]
+pub struct TokscaleAdapter {
+    binary: PathBuf,
+    binary_source: String,
+}
+
+impl TokscaleAdapter {
+    pub fn discover() -> Result<Self, String> {
+        if let Ok(path) = env::var("TOKEN_LENS_TOKSCALE_BIN") {
+            let candidate = PathBuf::from(path);
+            if is_executable_candidate(&candidate) {
+                return Ok(Self::new(candidate, "env"));
+            }
+        }
+
+        if let Some(candidate) = project_binary_candidate() {
+            if is_executable_candidate(&candidate) {
+                return Ok(Self::new(candidate, "project-package"));
+            }
+        }
+
+        Ok(Self::new(PathBuf::from(binary_name()), "path"))
+    }
+
+    fn new(binary: PathBuf, source: &str) -> Self {
+        Self {
+            binary,
+            binary_source: source.to_owned(),
+        }
+    }
+
+    pub async fn status(&self) -> TokscaleStatus {
+        match self.run(&["--version"]).await {
+            Ok(output) => TokscaleStatus {
+                available: true,
+                version: parse_version(&output),
+                source: self.binary_source.clone(),
+            },
+            Err(_) => TokscaleStatus {
+                available: false,
+                version: None,
+                source: self.binary_source.clone(),
+            },
+        }
+    }
+
+    pub async fn usage_report(
+        &self,
+        period: UsagePeriod,
+        grouping: UsageGrouping,
+    ) -> Result<UsageReport, String> {
+        let mut args = vec![
+            "--json",
+            "--client",
+            TOKSCALE_CLIENTS,
+            "--group-by",
+            grouping.tokscale_value(),
+            "--no-spinner",
+        ];
+        args.extend_from_slice(period.tokscale_args());
+        let output = self.run(&args).await?;
+        parse_usage_report(&output, period, grouping)
+    }
+
+    pub async fn quota_report(&self) -> Result<QuotaReport, String> {
+        let output = self.run(&["usage", "--json"]).await?;
+        parse_quota_report(&output)
+    }
+
+    async fn run(&self, args: &[&str]) -> Result<String, String> {
+        let mut command = Command::new(&self.binary);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let child = command.spawn().map_err(|error| {
+            format!(
+                "failed to start tokScale from {}: {error}",
+                self.binary.display()
+            )
+        })?;
+        let output = timeout(TOKSCALE_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| "tokScale command timed out after 30 seconds".to_owned())?
+            .map_err(|error| format!("tokScale command failed: {error}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "tokScale exited with {}: {}",
+                output.status,
+                stderr.trim()
+            ));
+        }
+
+        String::from_utf8(output.stdout)
+            .map_err(|error| format!("tokScale stdout was not valid UTF-8: {error}"))
+    }
+}
+
+fn binary_name() -> &'static str {
+    if cfg!(windows) {
+        "tokscale.exe"
+    } else {
+        "tokscale"
+    }
+}
+
+fn is_executable_candidate(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn project_binary_candidate() -> Option<PathBuf> {
+    let relative = platform_package_relative_bin()?;
+    let mut directory = env::current_dir().ok()?;
+    loop {
+        let candidate = directory.join(relative);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        directory = directory.parent()?.to_path_buf();
+    }
+}
+fn platform_package_relative_bin() -> Option<&'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return Some("node_modules/@tokscale/cli-darwin-arm64/bin/tokscale");
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return Some("node_modules/@tokscale/cli-darwin-x64/bin/tokscale");
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return Some("node_modules/@tokscale/cli-win32-x64-msvc/bin/tokscale.exe");
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    return Some("node_modules/@tokscale/cli-win32-arm64-msvc/bin/tokscale.exe");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return Some("node_modules/@tokscale/cli-linux-x64-gnu/bin/tokscale");
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    return Some("node_modules/@tokscale/cli-linux-arm64-gnu/bin/tokscale");
+    #[allow(unreachable_code)]
+    None
+}
+
+fn parse_version(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| {
+            part.chars()
+                .next()
+                .is_some_and(|value| value.is_ascii_digit())
+        })
+        .map(str::to_owned)
+}
+
+fn generated_at_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawUsageReport {
+    #[serde(default)]
+    entries: Vec<RawUsageEntry>,
+    #[serde(default)]
+    total_input: u64,
+    #[serde(default)]
+    total_output: u64,
+    #[serde(default)]
+    total_cache_read: u64,
+    #[serde(default)]
+    total_cache_write: u64,
+    #[serde(default)]
+    total_messages: u64,
+    #[serde(default)]
+    total_cost: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawUsageEntry {
+    #[serde(default)]
+    client: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    session_id: Option<String>,
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    cache_read: u64,
+    #[serde(default)]
+    cache_write: u64,
+    #[serde(default)]
+    reasoning: u64,
+    #[serde(default)]
+    message_count: u64,
+    #[serde(default)]
+    cost: f64,
+}
+
+fn parse_usage_report(
+    output: &str,
+    period: UsagePeriod,
+    grouping: UsageGrouping,
+) -> Result<UsageReport, String> {
+    let raw: RawUsageReport = parse_json(output)?;
+    let reasoning = raw.entries.iter().map(|entry| entry.reasoning).sum();
+    let entries = raw
+        .entries
+        .into_iter()
+        .map(|entry| UsageEntry {
+            client: entry.client,
+            provider: entry.provider,
+            model: entry.model,
+            session_id: entry.session_id,
+            input: entry.input,
+            output: entry.output,
+            cache_read: entry.cache_read,
+            cache_write: entry.cache_write,
+            reasoning: entry.reasoning,
+            message_count: entry.message_count,
+            cost: entry.cost,
+        })
+        .collect();
+
+    Ok(UsageReport {
+        period,
+        grouping,
+        generated_at_ms: generated_at_ms(),
+        entries,
+        totals: UsageTotals {
+            input: raw.total_input,
+            output: raw.total_output,
+            cache_read: raw.total_cache_read,
+            cache_write: raw.total_cache_write,
+            reasoning,
+            message_count: raw.total_messages,
+            cost: raw.total_cost,
+        },
+        source: TOKSCALE_SOURCE,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct RawQuotaProvider {
+    #[serde(default)]
+    provider: String,
+    plan: Option<String>,
+    email: Option<String>,
+    #[serde(default)]
+    metrics: Vec<RawQuotaMetric>,
+    reset_credits: Option<RawResetCredits>,
+    credit_status: Option<RawCreditStatus>,
+    spend_control: Option<RawSpendControl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawQuotaMetric {
+    #[serde(default)]
+    label: String,
+    used_percent: Option<f64>,
+    remaining_percent: Option<f64>,
+    remaining_label: Option<String>,
+    resets_at: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResetCredits {
+    available_count: Option<u64>,
+    #[serde(default)]
+    credits: Vec<RawResetCredit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawResetCredit {
+    status: Option<String>,
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawCreditStatus {
+    balance: Option<Value>,
+    has_credits: Option<bool>,
+    unlimited: Option<bool>,
+    overage_limit_reached: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSpendControl {
+    individual_limit: Option<Value>,
+    reached: Option<bool>,
+}
+
+fn parse_quota_report(output: &str) -> Result<QuotaReport, String> {
+    let raw: Vec<RawQuotaProvider> = parse_json(output)?;
+    let providers = raw
+        .into_iter()
+        .filter_map(normalize_quota_provider)
+        .collect();
+
+    Ok(QuotaReport {
+        generated_at_ms: generated_at_ms(),
+        providers,
+        source: TOKSCALE_SOURCE,
+    })
+}
+
+fn normalize_quota_provider(raw: RawQuotaProvider) -> Option<QuotaProvider> {
+    let provider = supported_provider(&raw.provider)?;
+    let windows = raw
+        .metrics
+        .into_iter()
+        .map(|metric| QuotaWindow {
+            kind: quota_window_kind(&metric.label),
+            label: metric.label,
+            metric: "quota",
+            used_percent: metric.used_percent,
+            remaining_percent: metric.remaining_percent,
+            remaining_label: metric.remaining_label,
+            resets_at: metric.resets_at.and_then(json_scalar_string),
+            source: TOKSCALE_SOURCE,
+        })
+        .collect();
+
+    Some(QuotaProvider {
+        provider,
+        plan: raw.plan,
+        account_email: raw.email,
+        windows,
+        reset_credits: raw.reset_credits.map(normalize_reset_credits),
+        credit_status: raw.credit_status.map(normalize_credit_status),
+        spend_control: raw.spend_control.map(normalize_spend_control),
+    })
+}
+
+fn supported_provider(value: &str) -> Option<SupportedProvider> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "codex" => Some(SupportedProvider::Codex),
+        "claude" => Some(SupportedProvider::Claude),
+        "antigravity" => Some(SupportedProvider::Antigravity),
+        _ => None,
+    }
+}
+
+fn quota_window_kind(label: &str) -> QuotaWindowKind {
+    match label.trim().to_ascii_lowercase().as_str() {
+        "5h" | "5 hr" | "5hr" | "session" => QuotaWindowKind::Session,
+        "weekly" | "week" => QuotaWindowKind::Weekly,
+        "monthly" | "month" => QuotaWindowKind::Billing,
+        _ => QuotaWindowKind::Additional,
+    }
+}
+
+fn normalize_reset_credits(raw: RawResetCredits) -> ResetCredits {
+    let available_count = raw.available_count;
+    let mut expirations: Vec<String> = raw
+        .credits
+        .into_iter()
+        .filter(|credit| credit.status.as_deref().unwrap_or("available") == "available")
+        .filter_map(|credit| credit.expires_at)
+        .collect();
+    expirations.sort();
+    let next_expires_at = expirations.first().cloned();
+
+    ResetCredits {
+        available_count: available_count.unwrap_or(expirations.len() as u64),
+        next_expires_at,
+        expirations,
+    }
+}
+
+fn normalize_credit_status(raw: RawCreditStatus) -> CreditStatus {
+    CreditStatus {
+        balance: raw.balance.and_then(json_scalar_string),
+        has_credits: raw.has_credits,
+        unlimited: raw.unlimited,
+        overage_limit_reached: raw.overage_limit_reached,
+    }
+}
+
+fn normalize_spend_control(raw: RawSpendControl) -> SpendControl {
+    SpendControl {
+        individual_limit: raw.individual_limit.and_then(json_scalar_string),
+        reached: raw.reached,
+    }
+}
+
+fn json_scalar_string(value: Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(value) => Some(value),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn parse_json<T>(output: &str) -> Result<T, String>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Err("tokScale produced empty stdout".to_owned());
+    }
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+
+    for marker in ['{', '['] {
+        if let Some(index) = trimmed.find(marker) {
+            if let Ok(value) = serde_json::from_str(&trimmed[index..]) {
+                return Ok(value);
+            }
+        }
+    }
+
+    Err(format!(
+        "could not parse tokScale JSON output: {}",
+        trimmed.chars().take(240).collect::<String>()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const USAGE_FIXTURE: &str = r#"{
+      "groupBy":"client,session,model",
+      "entries":[{
+        "client":"codex","sessionId":"rollout-1","model":"gpt-5.6-sol",
+        "provider":"openai","input":100,"output":20,"cacheRead":300,
+        "cacheWrite":4,"reasoning":5,"messageCount":2,"cost":0.42
+      }],
+      "totalInput":100,"totalOutput":20,"totalCacheRead":300,
+      "totalCacheWrite":4,"totalMessages":2,"totalCost":0.42
+    }"#;
+
+    const QUOTA_FIXTURE: &str = r#"[
+      {"provider":"Codex","plan":"Plus","email":"user@example.test","metrics":[
+        {"label":"5h","used_percent":65.0,"remaining_percent":35.0,
+         "remaining_label":null,"resets_at":"2026-09-04T16:59:41+00:00"},
+        {"label":"Weekly","used_percent":100.0,"remaining_percent":0.0,
+         "remaining_label":null,"resets_at":"2026-09-07T02:31:33+00:00"},
+        {"label":"Gpt-reserve weekly","used_percent":10.0,"remaining_percent":90.0,
+         "remaining_label":null,"resets_at":"2026-09-07T02:31:33+00:00"}
+      ],
+      "reset_credits":{"available_count":1,"credits":[
+        {"status":"available","expires_at":"2026-10-04T01:03:08Z"}
+      ]},
+      "credit_status":{"balance":"0","has_credits":false,"unlimited":false,
+        "overage_limit_reached":false},
+      "spend_control":{"reached":false}
+      },
+      {"provider":"Copilot","plan":"Individual","email":"other@example.test",
+       "metrics":[{"label":"Premium","used_percent":1.0,"remaining_percent":99.0}]}
+    ]"#;
+
+    #[test]
+    fn parses_usage_into_stable_domain() {
+        let report = parse_usage_report(
+            USAGE_FIXTURE,
+            UsagePeriod::Today,
+            UsageGrouping::ClientSessionModel,
+        )
+        .expect("usage fixture should parse");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].session_id.as_deref(), Some("rollout-1"));
+        assert_eq!(report.entries[0].reasoning, 5);
+        assert_eq!(report.totals.reasoning, 5);
+        assert_eq!(report.totals.cache_read, 300);
+    }
+
+    #[test]
+    fn filters_unsupported_quota_providers_and_classifies_windows() {
+        let report = parse_quota_report(QUOTA_FIXTURE).expect("quota fixture should parse");
+        assert_eq!(report.providers.len(), 1);
+        let codex = &report.providers[0];
+        assert_eq!(codex.provider, SupportedProvider::Codex);
+        assert_eq!(codex.windows.len(), 3);
+        assert_eq!(codex.windows[0].kind, QuotaWindowKind::Session);
+        assert_eq!(codex.windows[1].kind, QuotaWindowKind::Weekly);
+        assert_eq!(codex.windows[2].kind, QuotaWindowKind::Additional);
+        assert_eq!(
+            codex
+                .reset_credits
+                .as_ref()
+                .map(|value| value.available_count),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn reset_credit_count_falls_back_to_available_credit_entries() {
+        let raw = r#"[{"provider":"Codex","metrics":[],"reset_credits":{"credits":[
+          {"status":"available","expires_at":"2026-10-04T01:03:08Z"},
+          {"status":"used","expires_at":"2026-10-05T01:03:08Z"}
+        ]}}]"#;
+        let report = parse_quota_report(raw).expect("quota fixture should parse");
+        let credits = report.providers[0].reset_credits.as_ref().unwrap();
+        assert_eq!(credits.available_count, 1);
+        assert_eq!(credits.expirations.len(), 1);
+    }
+
+    #[test]
+    fn structured_spend_control_limit_is_not_misrepresented_as_scalar() {
+        let raw = r#"[{"provider":"Codex","metrics":[],"spend_control":{
+          "individual_limit":{"limit":"750","used":"432"},"reached":false
+        }}]"#;
+        let report = parse_quota_report(raw).expect("quota fixture should parse");
+        let spend = report.providers[0].spend_control.as_ref().unwrap();
+        assert_eq!(spend.individual_limit, None);
+        assert_eq!(spend.reached, Some(false));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local tokScale binary and provider credentials"]
+    async fn live_tokscale_smoke() {
+        let adapter = TokscaleAdapter::discover().expect("tokScale should resolve");
+        let status = adapter.status().await;
+        assert!(status.available, "tokScale status should be available");
+
+        let usage = adapter
+            .usage_report(UsagePeriod::Today, UsageGrouping::ClientSessionModel)
+            .await
+            .expect("live usage should normalize");
+        assert_eq!(usage.source, TOKSCALE_SOURCE);
+
+        let quota = adapter
+            .quota_report()
+            .await
+            .expect("live quota should normalize");
+        assert!(quota.providers.iter().all(|provider| matches!(
+            provider.provider,
+            SupportedProvider::Codex | SupportedProvider::Claude | SupportedProvider::Antigravity
+        )));
+    }
+}

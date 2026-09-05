@@ -1,4 +1,7 @@
 import './styles.css';
+import { installTokenMonitorFacade } from './token-monitor-facade.js';
+
+installTokenMonitorFacade();
 
 const root = document.querySelector('#app');
 

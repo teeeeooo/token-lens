@@ -2,7 +2,7 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`. The branch is in release-candidate hardening/validation: CSP and retired-subsystem CSS cleanup are applied, the current stack requires a final native CI/package run, and the remaining product gate is packaged Windows runtime/visual validation.
+v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`. CSP and retired-subsystem CSS cleanup are applied, native macOS/Windows CI and Windows packaging are green for the current code-bearing stack, and the remaining product gate is packaged Windows runtime/visual validation.
 
 ## Accepted baseline
 
@@ -77,7 +77,7 @@ v2 feature implementation and Windows package-shape automation are complete on `
 
 ## Next action
 
-Run the final native macOS/Windows CI and Windows packaging workflows for the current hardening stack. Once they are green, no additional implementation gate remains before packaged Windows runtime/visual validation:
+No additional implementation or automated packaging gate remains before packaged Windows runtime/visual validation:
 
 1. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
 2. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;

@@ -10,14 +10,19 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "Token Lens",
-        "width": 960,
-        "height": 720,
-        "minWidth": 640,
-        "minHeight": 480
+        "width": 340,
+        "height": 650,
+        "minWidth": 240,
+        "minHeight": 140,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "shadow": false
       }
     ],
     "security": {

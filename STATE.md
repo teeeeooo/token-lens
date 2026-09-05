@@ -2,7 +2,7 @@
 
 ## Current phase
 
-First tokScale/renderer-compatibility vertical slice implemented and validated on `feat/v2-tokscale-vertical-slice`.
+Core tokScale data path and first preserved renderer surface implemented on `feat/v2-tokscale-vertical-slice`.
 
 ## Accepted baseline
 
@@ -17,48 +17,49 @@ First tokScale/renderer-compatibility vertical slice implemented and validated o
 
 ## Current implementation
 
-- clean Tauri 2 + Vite skeleton is buildable;
 - tokScale 4.15.1 remains the pinned v2 baseline;
 - stable Rust domain types own normalized usage, quota, tokScale status, credit, and reset-credit payloads;
 - the Rust tokScale adapter collects today/week/month/all-time usage with model or session grouping;
-- quota normalization admits only Codex, Claude, and Antigravity;
-- canonical and additional quota lanes remain distinct while preserving the lane's temporal kind where it can be inferred;
+- quota normalization admits only Codex, Claude, and Antigravity and keeps canonical/additional lanes distinct;
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
 - structured Business `individualLimit` is deliberately not guessed from tokScale output;
-- Tauri commands expose normalized usage/quota reports and tokScale status; raw tokScale JSON is not a renderer contract;
-- `window.tokenMonitor.getStats` now composes a v1-compatible local stats payload from normalized tokScale reports;
-- `getStats` preserves the v1 serial scan discipline and exposes `today`, `month`, and `allTime` periods;
-- the compatibility period keeps client/model/session totals, token components, message counts, provider attribution, and tokScale cost;
-- Codex reasoning remains additive to the public total/output convention used by v1, while Claude/AGY reasoning is not double-counted;
-- normalized quota is mapped into the retained `limits.providers[].windows[]` presentation shape, including reset credits;
-- the frozen compatibility facade currently exposes `getStats` and `getTokscaleStatus` only;
-- local macOS live validation successfully normalized current usage, all-time usage, and quota;
-- frontend production build, JS/Rust unit tests, live tokScale smoke, Clippy, rustfmt, native debug build, and npm audit pass;
-- the production v1 renderer, history/derived ranges, session-detail parser, Codex Business adapter, and AGY quota adapter are not ported yet.
+- Tauri commands expose normalized reports; raw tokScale JSON is not a renderer contract;
+- `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
+- the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
+- Codex reasoning follows the v1 additive public-total convention without double-counting Claude/AGY reasoning;
+- the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
+- Home currently restores Limits and Models modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
+- DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri;
+- the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
+- macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
+- local macOS native runtime smoke creates the frameless window cleanly after the transparency configuration is enabled;
+- frontend production build, JS/Rust unit tests, live tokScale smoke, Clippy, rustfmt, native Tauri debug build, and npm audit pass;
+- history/derived ranges, periodic refresh/cache, floating-bubble behavior, tray, settings, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
 
 ## Next action
 
-Port the first real v1 renderer surface against the compatibility facade without widening scope:
+Complete the preserved main-window behavior without reintroducing v1 backend breadth:
 
-1. bring over the dashboard/model/session renderer shell and only its true dependency closure;
-2. remove or stub UI paths for explicitly out-of-scope v1 features instead of porting their backends;
-3. restore refresh/cache and derived week/last-7/last-30 behavior required by the preserved usage UI;
-4. validate model and session views against live normalized tokScale data.
+1. restore automatic refresh/cache semantics and derived Week / Last 7 / Last 30 usage ranges;
+2. validate live model/session rendering and period switching;
+3. implement floating-bubble and tray behavior from the original UX on the Tauri shell;
+4. add only the minimal settings needed by those retained surfaces.
 
-After the base renderer path works, add Codex Business `individualLimit`, AGY quota, and rich Codex/Claude session detail as narrow adapters.
+After the base desktop shell is stable, add Codex Business `individualLimit`, AGY quota, and rich Codex/Claude session detail as narrow adapters.
 
 ## Known open items
 
-No architecture decision currently blocks the next implementation slice.
+No architecture decision currently blocks implementation.
 
-Packaging work remains intentionally separate: the adapter resolves the npm-installed native tokScale binary during development, but the Tauri production resource/sidecar packaging path has not yet been wired. Preserve the current Token Lens tokScale lifecycle policy when that work is implemented.
+Packaging remains separate: development resolves the npm-installed native tokScale binary, but the production Tauri resource/sidecar path is not wired yet. Preserve the current Token Lens tokScale lifecycle policy when packaging is implemented.
 
 Implementation-time validation still required:
 
 - Claude quota against a fresh valid Claude credential;
 - Codex Business `individualLimit` on a Business account after its thin adapter is implemented;
 - AGY quota after the narrow adapter is extracted;
-- packaged tokScale resolution on release artifacts.
+- packaged tokScale resolution on release artifacts;
+- final macOS/Windows visual parity after tray/floating behavior is restored.
 
 ## Authoritative references
 

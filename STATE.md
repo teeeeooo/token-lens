@@ -8,12 +8,12 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 
 - v2 is an orphan lineage with a clean codebase; v1 `main` is reference-only.
 - desktop runtime: Tauri 2.
-- supported tools: Codex, Claude, Antigravity only.
+- initial supported provider set: Codex, Claude, Antigravity; future providers require an explicit adapter/security/data-contract review rather than a core redesign.
 - tokScale is the primary actual-usage and supported-quota engine.
 - Token Lens owns only confirmed tokScale gaps: Codex Business `individualLimit` and AGY quota.
 - established Token Lens UI/UX is preserved rather than redesigned.
-- model and session usage remain core product features; rich Codex/Claude session detail remains in scope.
-- raw tokScale/provider schemas stay behind a stable normalization boundary.
+- model and session usage remain core product features; Codex/Claude session usage/metadata detail remains in scope, while raw prompt/response content remains outside the renderer contract.
+- raw tokScale/provider schemas stay behind a stable normalization boundary; provider-owned session titles are approved metadata, but transcript-derived title fallbacks are prohibited.
 
 ## Current implementation
 

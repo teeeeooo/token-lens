@@ -30,7 +30,7 @@ Port renderer assets selectively; remove code paths for features excluded from v
 
 ### Session detail
 
-Retain the semantics used by the existing Codex/Claude session drill-down.
+Retain the usage/metadata semantics used by the existing Codex/Claude session drill-down. The downstream privacy rule is part of the behavior: raw prompt/response content and content-derived previews do not cross into renderer payloads. Provider-owned session titles are allowed metadata, but transcript-derived title fallbacks are not.
 
 Primary v1 reference areas:
 
@@ -95,6 +95,7 @@ Before accepting a v1-derived change, verify all of the following:
 2. tokScale does not already provide the same responsibility;
 3. the change does not pull an excluded provider/framework across the boundary;
 4. renderer behavior remains compatible unless the task explicitly changes UX;
-5. provider-specific logic is isolated behind the normalized v2 domain contract.
+5. provider-specific logic is isolated behind the normalized v2 domain contract;
+6. session-related changes preserve the v2 privacy invariant and do not surface prompt/response content or content-derived title fallbacks.
 
 If these conditions are not met, leave the v1 code in the reference branch.

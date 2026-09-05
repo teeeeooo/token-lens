@@ -2,13 +2,13 @@
 
 Token Lens v2 is a lightweight desktop dashboard for monitoring AI coding-tool usage and account quota.
 
-Supported tools:
+Initial supported tools:
 
 - Codex
 - Claude
 - Antigravity (AGY)
 
-The v2 application uses Tauri 2 for the desktop shell and tokScale as the primary usage/quota data engine. It intentionally does not reproduce the broad provider framework of the original Token Monitor codebase.
+The v2 application uses Tauri 2 for the desktop shell and tokScale as the primary usage/quota data engine. It intentionally does not reproduce the broad provider framework of the original Token Monitor codebase. The current provider allowlist can be extended later through an explicit provider adapter and security/data-contract review.
 
 ## Product goals
 
@@ -16,6 +16,12 @@ The v2 application uses Tauri 2 for the desktop shell and tokScale as the primar
 - show current quota, short-window quota, weekly quota, reset time, and provider-specific quota details that are reliably available;
 - show daily/weekly/monthly actual usage, model breakdown, session breakdown, token categories, and cost when tokScale can report it;
 - remain substantially smaller and simpler than the Electron-based v1 application.
+
+## Privacy boundary
+
+Token Lens may parse local Codex/Claude session files to derive usage metadata, but renderer-facing session data must not contain prompt/response text. Provider-owned session titles (for example Codex thread titles or Claude `aiTitle`) are permitted for identifying a session; Token Lens must not create title fallbacks from raw prompts, responses, reasoning summaries, or transcript snippets.
+
+See the durable [v2 architecture contract](docs/architecture/v2-architecture.md) for the authoritative security and privacy rules.
 
 ## Architecture
 

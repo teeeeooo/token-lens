@@ -46,13 +46,9 @@ Remove-Item $PortableStage -Recurse -Force
 node scripts/verify-unsigned-pe.mjs $InstallerOut $MainExe
 if ($LASTEXITCODE -ne 0) { throw "Unsigned PE verification failed with exit code $LASTEXITCODE" }
 
-$Artifacts = @(Get-Item $InstallerOut, $PortableZip | Sort-Object Name)
 $ChecksumPath = Join-Path $Dist 'SHA256SUMS.txt'
-$Lines = foreach ($Artifact in $Artifacts) {
-  $Hash = (Get-FileHash $Artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-  "$Hash  $($Artifact.Name)"
-}
-$Lines | Set-Content $ChecksumPath -Encoding ascii
+node scripts/write-sha256sums.mjs $ChecksumPath $InstallerOut $PortableZip
+if ($LASTEXITCODE -ne 0) { throw "SHA-256 generation failed with exit code $LASTEXITCODE" }
 
 Write-Host "Windows artifacts:"
 Get-ChildItem $Dist -File | Sort-Object Name | ForEach-Object {

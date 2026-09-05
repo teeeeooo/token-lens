@@ -22,7 +22,7 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - the Rust tokScale adapter collects today/week/month/all-time usage with model or session grouping;
 - quota normalization admits only Codex, Claude, and Antigravity and keeps canonical/additional lanes distinct;
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
-- structured Business `individualLimit` is deliberately not guessed from tokScale output;
+- structured Business `individualLimit` is deliberately not guessed from tokScale output; a narrow Codex App Server enrichment supplies it only when tokScale does not already expose an absolute credits window;
 - Tauri commands expose normalized reports; raw tokScale JSON is not a renderer contract;
 - `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
@@ -55,16 +55,19 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - the detail parser deserializes only structural/usage/tool metadata, never prompt/response text or previews; Claude `isMeta` and `tool_result` records do not create user-exchange boundaries, while duplicate Claude message blocks are de-duplicated by message id/line uuid;
 - Sessions rows for Codex/Claude now drill into the retained detail surface with neutral `Exchange #N` / `Reply #N` labels, newest/most-tokens sorting, expandable turn rows, and current-period filtering using an absolute local-calendar range start;
 - Codex raw reasoning is normalized into the same disjoint additive bucket used by the v2 tokScale compatibility contract, while Claude retains its provider output semantics;
-- Codex Business enrichment and the AGY quota adapter are not implemented yet.
+- Codex Business `individualLimit` enrichment is now implemented as a best-effort supplement to healthy tokScale quota data: Token Lens captures the selected local Codex workspace before the tokScale read, requires that workspace to remain unchanged across the RPC probe, compares account email when both sides expose one, and discards the enrichment on any mismatch or App Server failure;
+- the App Server probe runs `codex -s read-only -a untrusted app-server`, calls only `account/read` with `refreshToken: false` plus `account/rateLimits/read`, and materializes a single canonical Monthly `CREDITS` window while leaving tokScale session/weekly/additional lanes authoritative;
+- the retained Limits renderer now preserves capability-based absolute quota metadata and displays Business monthly remaining/total credits without Codex-specific formatting logic;
+- local live smoke confirms the installed Codex App Server transport/schema path; an actual Business account is still required to validate live `individualLimit` values end to end;
+- the AGY quota adapter is not implemented yet.
 
 ## Next action
 
 Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. perform native Windows floating-bubble/tray/session-detail UX validation before declaring cross-platform visual/interaction parity complete;
-2. add Codex Business `individualLimit` as a narrow App Server enrichment;
-3. add the AGY quota adapter using the local language-server path plus the approved OAuth fallback;
-4. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core monitoring UX.
+1. add the AGY quota adapter using the local language-server path plus the approved OAuth fallback;
+2. perform native Windows floating-bubble/tray/session-detail UX validation before declaring cross-platform visual/interaction parity complete;
+3. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core monitoring UX.
 
 ## Known open items
 
@@ -75,7 +78,7 @@ Packaging remains separate: development resolves the npm-installed native tokSca
 Implementation-time validation still required:
 
 - Claude quota against a fresh valid Claude credential;
-- Codex Business `individualLimit` on a Business account after its thin adapter is implemented;
+- Codex Business `individualLimit` end-to-end validation on an actual Business account;
 - AGY quota after the narrow adapter is extracted;
 - packaged tokScale resolution on release artifacts;
 - native Windows floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and expansion restore;

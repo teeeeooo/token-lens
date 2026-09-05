@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatCompact,
+  formatQuotaCount,
   modelRows,
   quotaRows,
   quotaWindowLabel,
@@ -51,6 +52,11 @@ test('quota rows keep the three-provider product surface and additional lanes', 
       { kind: 'session', remainingPercent: 35, label: '5h' },
       { kind: 'weekly', remainingPercent: 0, label: 'Weekly' },
       { kind: 'weekly', additional: true, remainingPercent: 88, label: 'GPT Reserve weekly' },
+      {
+        kind: 'billing', metric: 'credits', label: 'Monthly', currency: 'CREDITS',
+        used: 432.762320022503, limit: 750, remaining: 317.237679977497,
+        usedPercent: 58, remainingPercent: 42, source: 'codex-app-server',
+      },
     ],
     resetCredits: { availableCount: 1 },
   }] });
@@ -58,6 +64,11 @@ test('quota rows keep the three-provider product surface and additional lanes', 
   assert.deepEqual(rows.map((row) => row.providerId), ['codex', 'claude', 'antigravity']);
   assert.equal(rows[0].plan, 'Plus');
   assert.equal(rows[0].windows[2].additional, true);
+  assert.equal(rows[0].windows[3].metric, 'credits');
+  assert.equal(rows[0].windows[3].currency, 'CREDITS');
+  assert.equal(rows[0].windows[3].used, 432.762320022503);
+  assert.equal(rows[0].windows[3].source, 'codex-app-server');
+  assert.equal(formatQuotaCount(rows[0].windows[3]), '317.24/750');
   assert.equal(rows[0].resetCredits.availableCount, 1);
   assert.equal(rows[1].status, 'unavailable');
   assert.equal(rows[2].status, 'unavailable');

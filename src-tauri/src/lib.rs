@@ -1,3 +1,4 @@
+mod codex_business;
 mod commands;
 mod domain;
 mod floating_bubble;

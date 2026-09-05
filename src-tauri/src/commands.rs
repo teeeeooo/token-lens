@@ -1,3 +1,4 @@
+use crate::codex_business;
 use crate::domain::{
     QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport, TokscaleStatus,
     UsageGrouping, UsagePeriod, UsageReport,
@@ -50,8 +51,21 @@ pub async fn get_session_detail(
 }
 
 #[tauri::command]
-pub async fn get_quota_report(adapter: State<'_, TokscaleAdapter>) -> Result<QuotaReport, String> {
-    adapter.quota_report().await
+pub async fn get_quota_report(
+    app: AppHandle,
+    adapter: State<'_, TokscaleAdapter>,
+) -> Result<QuotaReport, String> {
+    let home = app.path().home_dir().ok();
+    let expected_workspace_id = home
+        .as_deref()
+        .and_then(codex_business::selected_workspace_id);
+    let report = adapter.quota_report().await?;
+    Ok(match home {
+        Some(home) => {
+            codex_business::enrich_quota_report(&home, expected_workspace_id, report).await
+        }
+        None => report,
+    })
 }
 
 #[tauri::command]

@@ -198,6 +198,7 @@ function compatibilityWindow(window) {
     resetsAt: window.resetsAt || null,
     currency: window.currency || null,
     showMeter: window.showMeter !== false,
+    source: window.source || '',
   };
 }
 

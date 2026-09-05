@@ -16,6 +16,7 @@ import {
   formatCost,
   formatNumber,
   formatPercent,
+  formatQuotaCount,
   formatResetTime,
   modelRows,
   quotaRows,
@@ -653,7 +654,10 @@ function renderBreakdown() {
 function limitWindowNode(window, row) {
   const item = document.createElement('div');
   item.className = 'limit-window';
-  if (window.additional) item.classList.add('limit-window-wide');
+  const creditsDetail = window.metric === 'credits' && window.currency === 'CREDITS'
+    ? formatQuotaCount(window)
+    : '';
+  if (window.additional || creditsDetail) item.classList.add('limit-window-wide');
   const text = document.createElement('div');
   text.className = 'limit-window-text';
   const label = document.createElement('span');
@@ -673,10 +677,23 @@ function limitWindowNode(window, row) {
     meter.append(fill);
     item.append(meter);
   }
-  const reset = document.createElement('div');
-  reset.className = 'limit-reset';
-  reset.textContent = formatResetTime(window.resetsAt);
-  if (reset.textContent) item.append(reset);
+  const resetText = formatResetTime(window.resetsAt);
+  if (resetText || creditsDetail) {
+    const reset = document.createElement('div');
+    reset.className = 'limit-reset';
+    if (creditsDetail) {
+      reset.classList.add('limit-reset-split');
+      const resetLabel = document.createElement('span');
+      resetLabel.textContent = resetText;
+      const detail = document.createElement('span');
+      detail.className = 'limit-detail';
+      detail.textContent = `${creditsDetail} credits`;
+      reset.append(resetLabel, detail);
+    } else {
+      reset.textContent = resetText;
+    }
+    item.append(reset);
+  }
   return item;
 }
 

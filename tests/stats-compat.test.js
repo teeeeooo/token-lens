@@ -50,6 +50,12 @@ test('quota compatibility retains canonical and additional lanes', () => {
       windows: [
         { kind: 'weekly', label: 'Weekly', metric: 'quota', additional: false, usedPercent: 40, remainingPercent: 60, showMeter: true },
         { kind: 'weekly', label: 'Gpt-reserve weekly', metric: 'quota', additional: true, usedPercent: 10, remainingPercent: 90, showMeter: true },
+        {
+          kind: 'billing', label: 'Monthly', metric: 'credits', additional: false,
+          used: 432.762320022503, limit: 750, remaining: 317.237679977497,
+          usedPercent: 58, remainingPercent: 42, currency: 'CREDITS', showMeter: true,
+          source: 'codex-app-server',
+        },
       ],
       resetCredits: { availableCount: 1, expirations: [] },
     }],
@@ -59,6 +65,11 @@ test('quota compatibility retains canonical and additional lanes', () => {
   assert.equal(limits.providers[0].planLabel, 'Plus');
   assert.equal(limits.providers[0].windows[0].additional, undefined);
   assert.equal(limits.providers[0].windows[1].additional, true);
+  assert.equal(limits.providers[0].windows[2].metric, 'credits');
+  assert.equal(limits.providers[0].windows[2].used, 432.762320022503);
+  assert.equal(limits.providers[0].windows[2].limit, 750);
+  assert.equal(limits.providers[0].windows[2].currency, 'CREDITS');
+  assert.equal(limits.providers[0].windows[2].source, 'codex-app-server');
   assert.equal(limits.providers[0].resetCredits.availableCount, 1);
 });
 

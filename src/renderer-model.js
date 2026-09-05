@@ -19,6 +19,12 @@ function finite(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function optionalFinite(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function normalizedId(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -162,14 +168,30 @@ export function quotaRows(limits) {
       iconClass: iconClassForClient(id),
       windows: (provider?.windows || []).map((window) => ({
         kind: window.kind || 'additional',
+        metric: String(window.metric || 'quota'),
         label: String(window.label || ''),
         additional: window.additional === true,
+        used: optionalFinite(window.used),
+        limit: optionalFinite(window.limit),
+        remaining: optionalFinite(window.remaining),
+        usedPercent: optionalFinite(window.usedPercent),
         remainingPercent: windowPercent(window),
         resetsAt: window.resetsAt || null,
+        currency: String(window.currency || '').trim().toUpperCase(),
+        showMeter: window.showMeter !== false,
+        source: String(window.source || ''),
       })),
       resetCredits: provider?.resetCredits || null,
     };
   }).sort((a, b) => providerRank(a.providerId) - providerRank(b.providerId));
+}
+
+export function formatQuotaCount(window, showUsed = false) {
+  const used = optionalFinite(window?.used);
+  const limit = optionalFinite(window?.limit);
+  if (used === null || limit === null || limit <= 0) return '';
+  const trim = (value) => Number(Math.max(0, value).toFixed(2)).toString();
+  return `${trim(showUsed ? used : limit - used)}/${trim(limit)}`;
 }
 
 export function quotaWindowLabel(window) {

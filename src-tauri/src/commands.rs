@@ -1,8 +1,8 @@
 use crate::antigravity_quota;
 use crate::codex_business;
 use crate::domain::{
-    QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport, TokscaleStatus,
-    UsageGrouping, UsagePeriod, UsageReport,
+    HistoryReport, QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport,
+    TokscaleStatus, UsageGrouping, UsagePeriod, UsageReport,
 };
 use crate::floating_bubble::{
     self, BubbleDragOffset, FloatingBubbleController, FloatingBubblePayload,
@@ -31,6 +31,14 @@ pub async fn get_usage_since_report(
     grouping: UsageGrouping,
 ) -> Result<UsageReport, String> {
     adapter.usage_since_report(&since, grouping).await
+}
+
+#[tauri::command]
+pub async fn get_dashboard_history(
+    adapter: State<'_, TokscaleAdapter>,
+    since: String,
+) -> Result<HistoryReport, String> {
+    adapter.history_report(&since).await
 }
 
 #[tauri::command]

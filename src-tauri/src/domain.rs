@@ -81,6 +81,42 @@ pub struct UsageTotals {
     pub cost: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryReport {
+    pub generated_at_ms: u64,
+    pub start_date: String,
+    pub end_date: String,
+    pub daily: Vec<HistoryDay>,
+    pub summary: HistorySummary,
+    pub source: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDay {
+    pub date: String,
+    pub tokens: u64,
+    pub cost: f64,
+    pub messages: u64,
+    pub active_time_ms: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub reasoning: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    pub total_tokens: u64,
+    pub total_cost: f64,
+    pub active_days: u64,
+    pub peak_day_tokens: u64,
+    pub active_time_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMetadataRef {

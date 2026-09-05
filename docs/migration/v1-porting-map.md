@@ -28,6 +28,14 @@ Preserve the established product behavior and visual design, including:
 
 Port renderer assets selectively; remove code paths for features excluded from v2 rather than recreating their backend APIs.
 
+Appearance is a deliberate subset rather than full v1 settings parity. Retain built-in theme presets, zoom, compact total-token display, OS-driven reduced-motion behavior, always-on live/tool indicators, and a Windows-only `Off` / `Acrylic` backdrop with Acrylic default-on. Do not port custom interface/vendor colors, font customization, localized compact-token unit selection, Theme Code sharing, Settings/Refresh placement swapping, opacity/blur sliders, or the experimental Accent Blur implementation.
+
+### Dashboard history
+
+Retain the user-facing activity heatmap and recent usage trend, but do not port the v1 persisted history/collector subsystem. v2 obtains long-range daily history directly from `tokscale graph`, normalizes only the daily usage/cost/activity fields needed by the renderer, and patches the current local-day bucket from live `getStats` data between history refreshes.
+
+The compatibility facade retains `getDashboardHistory`; raw tokScale contribution-graph JSON must not cross that boundary.
+
 ### Session detail
 
 Retain the usage/metadata semantics used by the existing Codex/Claude session drill-down. The downstream privacy rule is part of the behavior: raw prompt/response content and content-derived previews do not cross into renderer payloads. Provider-owned session titles are allowed metadata, but transcript-derived title fallbacks are not.

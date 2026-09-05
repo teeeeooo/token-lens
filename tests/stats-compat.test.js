@@ -93,7 +93,7 @@ test('getStats compatibility loader keeps tokScale scans serial and exposes v1 p
     'quota',
   ]);
   assert.deepEqual(Object.keys(stats.periods), ['today', 'month', 'allTime']);
-  assert.equal(stats.historyAvailable, false);
+  assert.equal(stats.historyAvailable, true);
   assert.deepEqual(stats.devices, []);
   assert.equal(stats.limits.providers.length, 0);
 });

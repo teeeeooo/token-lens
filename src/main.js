@@ -26,6 +26,7 @@ import {
   toolRows,
 } from './renderer-model.js';
 import { exchangeRows, periodStartTimeMs } from './session-detail-model.js';
+import { historyViewModel } from './history-model.js';
 
 installTokenMonitorFacade();
 
@@ -38,6 +39,7 @@ document.body.classList.toggle('is-windows', isWindows);
 const PERIODS = ['today', 'month', 'week', 'last7', 'last30', 'allTime'];
 const MONTH_PERIODS = ['month', 'week', 'last7', 'last30'];
 const AUTO_REFRESH_MS = 30 * 1000;
+const HISTORY_REFRESH_MS = 10 * 60 * 1000;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
 const VIEW_META = Object.freeze({
   home: { label: 'Home', icon: 'view-icon-home' },
@@ -49,6 +51,12 @@ const VIEW_META = Object.freeze({
 
 const state = {
   stats: null,
+  history: null,
+  historyLoading: false,
+  historyError: '',
+  historyLoadedAt: 0,
+  historyScrollLeft: null,
+  historyFollowEnd: true,
   settings: {
     showTrayIcon: true,
     floatingBubbleEnabled: false,
@@ -408,8 +416,128 @@ function renderHomeLimits() {
   return module;
 }
 
+function shortHistoryDate(key) {
+  const value = new Date(`${String(key).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(value.getTime())) return String(key || '');
+  return new Intl.DateTimeFormat(navigator.language, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(value);
+}
+
+function historyHeatmapSvg(heatmap) {
+  const width = Math.max(300, Number(heatmap?.width || 0));
+  const height = Math.max(1, Number(heatmap?.height || 0));
+  const months = (heatmap?.monthLabels || []).map((month) => {
+    const x = month.col * ((heatmap?.cell || 9) + (heatmap?.gap || 3));
+    const label = new Intl.DateTimeFormat(navigator.language, { month: 'short', timeZone: 'UTC' })
+      .format(new Date(`${month.date}T00:00:00Z`));
+    return `<text class="heat-month" x="${x}" y="9">${label}</text>`;
+  }).join('');
+  const cells = (heatmap?.cells || []).map((cell) => {
+    const level = Math.max(0, Math.min(4, Number(cell.intensity) || 0));
+    const title = `${shortHistoryDate(cell.date)} · ${formatCompact(cell.tokens)} tokens`;
+    return `<rect class="heat lvl-${level}" x="${cell.x}" y="${cell.y}" width="${cell.size}" height="${cell.size}" rx="2"><title>${title}</title></rect>`;
+  }).join('');
+  return `<svg class="dash-heatmap" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-label="Token usage activity by day">${months}${cells}</svg>`;
+}
+
+function historyTrendSvg(trend) {
+  if (!trend?.line) return '';
+  return `<svg class="area-line" viewBox="0 0 ${trend.width} ${trend.height}" preserveAspectRatio="none" aria-label="Recent token usage trend"><defs><linearGradient id="area-line-grad" x1="0" y1="0" x2="0" y2="1"><stop class="area-line-grad-top" offset="0%"></stop><stop class="area-line-grad-bottom" offset="100%"></stop></linearGradient></defs><path class="area-line-fill" d="${trend.area}"></path><path class="area-line-stroke" d="${trend.line}"></path></svg>`;
+}
+
+function renderHomeActivity() {
+  const module = document.createElement('section');
+  module.className = 'home-module home-module-trends v2-history-module';
+  const head = document.createElement('div');
+  head.className = 'home-module-head';
+  const label = document.createElement('span');
+  label.className = 'home-module-label';
+  label.textContent = 'ACTIVITY';
+  const meta = document.createElement('span');
+  meta.className = 'home-module-meta';
+  head.append(label, meta);
+  const body = document.createElement('div');
+  body.className = 'home-module-body';
+  module.append(head, body);
+
+  if (state.historyLoading && !state.history) {
+    meta.textContent = 'Loading';
+    const empty = document.createElement('div');
+    empty.className = 'home-module-empty';
+    empty.textContent = 'Loading usage history…';
+    body.append(empty);
+    return module;
+  }
+  if (state.historyError && !state.history) {
+    meta.textContent = 'Unavailable';
+    const empty = document.createElement('div');
+    empty.className = 'home-module-empty';
+    empty.textContent = 'Usage history unavailable';
+    body.append(empty);
+    return module;
+  }
+  if (!state.history) {
+    meta.textContent = '';
+    return module;
+  }
+
+  const view = historyViewModel(state.history, state.stats?.periods?.today || {});
+  meta.textContent = `${formatNumber(view.activeDays)} active days`;
+  if (!view.daily.some((day) => Number(day.tokens) > 0)) {
+    const empty = document.createElement('div');
+    empty.className = 'home-module-empty';
+    empty.textContent = 'No usage history';
+    body.append(empty);
+    return module;
+  }
+  const activityScroll = document.createElement('div');
+  activityScroll.className = 'home-activity-scroll';
+  activityScroll.tabIndex = 0;
+  const canvas = document.createElement('div');
+  canvas.className = 'home-activity-canvas';
+  canvas.innerHTML = historyHeatmapSvg(view.heatmap);
+  activityScroll.append(canvas);
+
+  const trendHead = document.createElement('div');
+  trendHead.className = 'home-trend-head';
+  const trendTitle = document.createElement('span');
+  trendTitle.textContent = 'TREND';
+  const peak = document.createElement('span');
+  peak.className = 'home-module-meta';
+  peak.textContent = `Peak ${formatCompact(view.peakDayTokens)}`;
+  trendHead.append(trendTitle, peak);
+  const plot = document.createElement('div');
+  plot.className = 'home-trend-plot';
+  const chart = document.createElement('div');
+  chart.className = 'home-area-chart';
+  chart.innerHTML = historyTrendSvg(view.trend);
+  plot.append(chart);
+  const dates = document.createElement('div');
+  dates.className = 'home-trend-dates';
+  for (const date of view.trend.dates) {
+    const item = document.createElement('span');
+    item.className = 'home-trend-date';
+    item.textContent = shortHistoryDate(date);
+    dates.append(item);
+  }
+  body.append(activityScroll, trendHead, plot, dates);
+  activityScroll.addEventListener('scroll', () => {
+    const max = Math.max(0, activityScroll.scrollWidth - activityScroll.clientWidth);
+    if (max <= 0) return;
+    state.historyScrollLeft = activityScroll.scrollLeft;
+    state.historyFollowEnd = activityScroll.scrollLeft >= max - 2;
+  }, { passive: true });
+  queueMicrotask(() => {
+    const max = Math.max(0, activityScroll.scrollWidth - activityScroll.clientWidth);
+    activityScroll.scrollLeft = state.historyFollowEnd || state.historyScrollLeft == null
+      ? max
+      : Math.max(0, Math.min(max, state.historyScrollLeft));
+  });
+  return module;
+}
+
 function renderHome() {
-  els.homePanel.replaceChildren(renderHomeLimits(), renderHomeModels());
+  els.homePanel.replaceChildren(renderHomeLimits(), renderHomeModels(), renderHomeActivity());
+  void loadDashboardHistory();
 }
 function breakdownRow(row, max, kind) {
   const item = document.createElement('div');
@@ -811,6 +939,26 @@ function renderViewSwitcher() {
   els.viewSwitcher.className = switcher.className;
 }
 
+async function loadDashboardHistory({ force = false } = {}) {
+  if (state.historyLoading) return;
+  const recentAttempt = state.historyLoadedAt > 0 && Date.now() - state.historyLoadedAt < HISTORY_REFRESH_MS;
+  if (!force && recentAttempt) return;
+  state.historyLoading = true;
+  state.historyError = '';
+  if (state.view === 'home' && state.stats) renderHome();
+  try {
+    state.history = await window.tokenMonitor.getDashboardHistory();
+    state.historyLoadedAt = Date.now();
+  } catch (error) {
+    console.error(error);
+    state.historyError = error?.message || 'Failed to load usage history';
+    state.historyLoadedAt = Date.now();
+  } finally {
+    state.historyLoading = false;
+    if (state.view === 'home' && state.stats) renderHome();
+  }
+}
+
 function renderSurface() {
   const settingsOpen = state.settingsOpen;
   const detailOpen = !settingsOpen && state.view === 'session' && Boolean(state.openSession);
@@ -850,6 +998,7 @@ async function refresh({ force = false } = {}) {
   setStatus('Refreshing…');
   try {
     state.stats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    if (force) state.historyLoadedAt = 0;
     const today = state.stats?.periods?.today || {};
     await window.tokenMonitor.updateTraySummary({
       todayTokens: Number(today.totalTokens) || 0,

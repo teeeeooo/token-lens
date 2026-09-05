@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { historySinceKey } from './history-model.js';
 
 export function getUsageReport(period = 'today', grouping = 'client_model') {
   return invoke('get_usage_report', { period, grouping });
@@ -6,6 +7,11 @@ export function getUsageReport(period = 'today', grouping = 'client_model') {
 
 export function getUsageSinceReport(since, grouping = 'client_model') {
   return invoke('get_usage_since_report', { since, grouping });
+}
+
+export function getDashboardHistory(options = {}) {
+  const since = String(options?.since || historySinceKey()).slice(0, 10);
+  return invoke('get_dashboard_history', { since });
 }
 
 export function getSessionDetail({ client, sessionId, startTimeMs = null, sessionCost = 0 } = {}) {

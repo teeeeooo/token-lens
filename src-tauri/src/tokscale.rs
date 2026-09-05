@@ -1,7 +1,7 @@
 use crate::domain::{
-    CreditStatus, QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, ResetCredits,
-    SpendControl, SupportedProvider, TokscaleStatus, UsageEntry, UsageGrouping, UsagePeriod,
-    UsageReport, UsageTotals,
+    CreditStatus, HistoryDay, HistoryReport, HistorySummary, QuotaProvider, QuotaReport,
+    QuotaWindow, QuotaWindowKind, ResetCredits, SpendControl, SupportedProvider, TokscaleStatus,
+    UsageEntry, UsageGrouping, UsagePeriod, UsageReport, UsageTotals,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -106,6 +106,20 @@ impl TokscaleAdapter {
             Some(since.to_owned()),
             grouping,
         )
+    }
+
+    pub async fn history_report(&self, since: &str) -> Result<HistoryReport, String> {
+        validate_date_key(since)?;
+        let args = [
+            "graph",
+            "--client",
+            TOKSCALE_CLIENTS,
+            "--since",
+            since,
+            "--no-spinner",
+        ];
+        let output = self.run(&args).await?;
+        parse_history_report(&output, since)
     }
 
     pub async fn quota_report(&self) -> Result<QuotaReport, String> {
@@ -319,6 +333,149 @@ fn parse_usage_report(
             reasoning,
             message_count: raw.total_messages,
             cost: raw.total_cost,
+        },
+        source: TOKSCALE_SOURCE,
+    })
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphReport {
+    #[serde(default)]
+    meta: RawGraphMeta,
+    #[serde(default)]
+    summary: RawGraphSummary,
+    #[serde(default)]
+    contributions: Vec<RawGraphContribution>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphMeta {
+    #[serde(default)]
+    date_range: RawGraphDateRange,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawGraphDateRange {
+    #[serde(default)]
+    start: String,
+    #[serde(default)]
+    end: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphSummary {
+    #[serde(default)]
+    total_tokens: u64,
+    #[serde(default)]
+    total_cost: f64,
+    #[serde(default)]
+    active_days: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphContribution {
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    totals: RawGraphTotals,
+    #[serde(default)]
+    token_breakdown: RawGraphTokenBreakdown,
+    #[serde(default)]
+    active_time_ms: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawGraphTotals {
+    #[serde(default)]
+    tokens: u64,
+    #[serde(default)]
+    cost: f64,
+    #[serde(default)]
+    messages: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawGraphTokenBreakdown {
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    cache_read: u64,
+    #[serde(default)]
+    cache_write: u64,
+    #[serde(default)]
+    reasoning: u64,
+}
+
+fn parse_history_report(output: &str, requested_since: &str) -> Result<HistoryReport, String> {
+    let raw: RawGraphReport = parse_json(output)?;
+    let mut daily: Vec<HistoryDay> = raw
+        .contributions
+        .into_iter()
+        .filter(|day| validate_date_key(&day.date).is_ok())
+        .map(|day| HistoryDay {
+            date: day.date,
+            tokens: day.totals.tokens,
+            cost: day.totals.cost,
+            messages: day.totals.messages,
+            active_time_ms: day.active_time_ms,
+            input: day.token_breakdown.input,
+            output: day.token_breakdown.output,
+            cache_read: day.token_breakdown.cache_read,
+            cache_write: day.token_breakdown.cache_write,
+            reasoning: day.token_breakdown.reasoning,
+        })
+        .collect();
+    daily.sort_by(|a, b| a.date.cmp(&b.date));
+
+    let peak_day_tokens = daily.iter().map(|day| day.tokens).max().unwrap_or(0);
+    let active_time_ms = daily.iter().map(|day| day.active_time_ms).sum();
+    let active_days = if raw.summary.active_days > 0 {
+        raw.summary.active_days
+    } else {
+        daily.iter().filter(|day| day.tokens > 0).count() as u64
+    };
+    let total_tokens = if raw.summary.total_tokens > 0 {
+        raw.summary.total_tokens
+    } else {
+        daily.iter().map(|day| day.tokens).sum()
+    };
+    let total_cost = if raw.summary.total_cost > 0.0 {
+        raw.summary.total_cost
+    } else {
+        daily.iter().map(|day| day.cost).sum()
+    };
+    let start_date = if raw.meta.date_range.start.is_empty() {
+        requested_since.to_owned()
+    } else {
+        raw.meta.date_range.start
+    };
+    let end_date = if raw.meta.date_range.end.is_empty() {
+        daily
+            .last()
+            .map(|day| day.date.clone())
+            .unwrap_or_else(|| start_date.clone())
+    } else {
+        raw.meta.date_range.end
+    };
+
+    Ok(HistoryReport {
+        generated_at_ms: generated_at_ms(),
+        start_date,
+        end_date,
+        daily,
+        summary: HistorySummary {
+            total_tokens,
+            total_cost,
+            active_days,
+            peak_day_tokens,
+            active_time_ms,
         },
         source: TOKSCALE_SOURCE,
     })
@@ -547,6 +704,19 @@ mod tests {
       "totalCacheWrite":4,"totalMessages":2,"totalCost":0.42
     }"#;
 
+    const HISTORY_FIXTURE: &str = r#"{
+      "meta":{"dateRange":{"start":"2026-09-01","end":"2026-09-03"}},
+      "summary":{"totalTokens":600,"totalCost":1.5,"activeDays":2},
+      "contributions":[
+        {"date":"2026-09-01","totals":{"tokens":100,"cost":0.25,"messages":2},
+         "tokenBreakdown":{"input":10,"output":20,"cacheRead":60,"cacheWrite":5,"reasoning":5},
+         "activeTimeMs":1000},
+        {"date":"2026-09-03","totals":{"tokens":500,"cost":1.25,"messages":4},
+         "tokenBreakdown":{"input":50,"output":40,"cacheRead":380,"cacheWrite":10,"reasoning":20},
+         "activeTimeMs":3000}
+      ]
+    }"#;
+
     const QUOTA_FIXTURE: &str = r#"[
       {"provider":"Codex","plan":"Plus","email":"user@example.test","metrics":[
         {"label":"5h","used_percent":65.0,"remaining_percent":35.0,
@@ -581,6 +751,22 @@ mod tests {
         assert_eq!(report.entries[0].reasoning, 5);
         assert_eq!(report.totals.reasoning, 5);
         assert_eq!(report.totals.cache_read, 300);
+    }
+
+    #[test]
+    fn parses_graph_into_normalized_history() {
+        let report = parse_history_report(HISTORY_FIXTURE, "2026-09-01")
+            .expect("history fixture should parse");
+        assert_eq!(report.start_date, "2026-09-01");
+        assert_eq!(report.end_date, "2026-09-03");
+        assert_eq!(report.daily.len(), 2);
+        assert_eq!(report.daily[0].tokens, 100);
+        assert_eq!(report.daily[1].reasoning, 20);
+        assert_eq!(report.summary.total_tokens, 600);
+        assert_eq!(report.summary.active_days, 2);
+        assert_eq!(report.summary.peak_day_tokens, 500);
+        assert_eq!(report.summary.active_time_ms, 4000);
+        assert_eq!(report.source, TOKSCALE_SOURCE);
     }
 
     #[test]
@@ -664,6 +850,16 @@ mod tests {
         assert_eq!(custom.period, UsagePeriod::Custom);
         assert_eq!(custom.since.as_deref(), Some("2026-01-01"));
         assert_eq!(custom.source, TOKSCALE_SOURCE);
+
+        let history = adapter
+            .history_report("2026-01-01")
+            .await
+            .expect("live history should normalize");
+        assert_eq!(history.source, TOKSCALE_SOURCE);
+        assert!(history
+            .daily
+            .iter()
+            .all(|day| validate_date_key(&day.date).is_ok()));
 
         let quota = adapter
             .quota_report()

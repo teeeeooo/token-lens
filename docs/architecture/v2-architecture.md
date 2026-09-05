@@ -81,6 +81,21 @@ Preserve the established Token Lens renderer behavior and visual language wherev
 
 Port UI assets and behavior intentionally from v1. Runtime-specific Electron code must be replaced at the compatibility boundary rather than allowed to reshape the product.
 
+### Appearance subset
+
+Appearance parity is intentionally narrower than v1. Preserve only the controls that materially affect readability, monitor compatibility, or the established visual identity:
+
+- keep the built-in theme presets only; do not expose per-color interface overrides or vendor-color overrides;
+- keep zoom as a persisted user control for mixed-DPI and monitor-scale compatibility;
+- follow the operating system `prefers-reduced-motion` preference directly; do not expose a separate Reduce Motion setting;
+- keep the live indicator and provider/tool icons as always-on product UI rather than user-configurable toggles;
+- keep compact total-token display as a user option, using the fixed international `K/M/B` unit convention; do not expose alternate localized unit systems;
+- on Windows, provide only `Off` / `Acrylic` backdrop selection, defaulting to Acrylic; do not port v1 opacity/blur sliders or the experimental Accent Blur path;
+- Acrylic must be disabled while the floating bubble is collapsed and restored on expansion when enabled; unsupported Windows environments fall back to the normal transparent surface without failing the app;
+- remove custom font selection, Theme Code import/export, Settings/Refresh placement swapping, and other fine-grained appearance composition controls.
+
+The Windows Acrylic implementation must use a supported Tauri/Windows integration path. Do not reintroduce v1's undocumented `SetWindowCompositionAttribute` Accent Blur implementation merely for visual parity.
+
 ## Primary data engine
 
 tokScale is the primary data engine for v2.
@@ -91,6 +106,7 @@ Use tokScale for:
 - Claude actual usage;
 - Gemini CLI actual usage;
 - Antigravity actual usage;
+- daily history/contribution data used by retained dashboard activity and trend charts;
 - model aggregation;
 - session aggregation where tokScale provides it;
 - input/output/cache/reasoning token breakdown;
@@ -173,11 +189,12 @@ Authentication state remains owned by the original coding tools. Provider adapte
 
 Raw tokScale JSON and raw provider/RPC responses must not become renderer contracts.
 
-The backend owns a small stable domain model with three response families:
+The backend owns a small stable domain model with four response families:
 
 1. `UsageReport` — period totals plus model/session rows and token/cost fields.
 2. `QuotaReport` — provider/account identity plus normalized quota windows and provider-specific credit fields.
-3. `SessionDetail` — Codex/Claude per-turn usage and session metadata retained from the proven v1 behavior, subject to the privacy boundary above.
+3. `HistoryReport` — normalized daily usage/cost/activity rows plus long-range summary fields sourced from `tokscale graph`; raw graph JSON is not a renderer contract.
+4. `SessionDetail` — Codex/Claude per-turn usage and session metadata retained from the proven v1 behavior, subject to the privacy boundary above.
 
 A normalized usage row may contain:
 

@@ -58,3 +58,21 @@ html, body, #app {
 .titlebar {
   min-height: 42px;
 }
+
+.v2-history-module {
+  cursor: default;
+}
+
+.v2-history-module:hover {
+  opacity: 1;
+}
+
+.v2-history-module .home-activity-scroll {
+  outline: none;
+}
+
+.v2-history-module .home-activity-scroll:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb), 0.28);
+  outline-offset: 2px;
+  border-radius: 6px;
+}

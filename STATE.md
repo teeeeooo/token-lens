@@ -18,7 +18,7 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 ## Current implementation
 
 - tokScale 4.15.1 remains the pinned v2 baseline;
-- stable Rust domain types own normalized usage, quota, tokScale status, credit, and reset-credit payloads;
+- stable Rust domain types own normalized usage, history, quota, tokScale status, credit, and reset-credit payloads;
 - the Rust tokScale adapter collects today/week/month/all-time usage with model or session grouping;
 - quota normalization admits only Codex, Claude, Gemini CLI, and Antigravity and keeps canonical/additional lanes distinct;
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
@@ -28,7 +28,9 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
 - Codex reasoning follows the v1 additive public-total convention without double-counting Claude/Gemini/AGY reasoning;
 - the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
-- Home currently restores Limits and Models modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
+- the retained appearance scope is now explicit: built-in theme presets, zoom, compact total tokens, OS-driven reduced motion, always-on live/tool indicators, and Windows `Off` / `Acrylic` only; custom colors/fonts/theme codes/layout swapping and v1 experimental Accent Blur are intentionally excluded;
+- Home restores Limits, Models, and long-range Activity/Trend modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
+- dashboard history is sourced directly from `tokscale graph` through a normalized `HistoryReport` and retained `getDashboardHistory` facade rather than the v1 persisted history subsystem; the rolling-year heatmap and 45-point trend patch today's bucket from live stats and preserve horizontal scroll position across refreshes;
 - DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri;
 - the MONTH slot now preserves v1 `MONTH` / `WEEK` / `7D` / `30D` selection semantics, including locale-aware first-day-of-week behavior;
 - derived Week / Last 7 / Last 30 ranges use a narrow `--since YYYY-MM-DD` tokScale command rather than reintroducing the v1 history subsystem;
@@ -70,11 +72,13 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 
 ## Next action
 
-Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
+Close the remaining user-facing parity work, then move into packaging:
 
-1. perform native Windows floating-bubble/tray/session-detail UX validation before declaring cross-platform visual/interaction parity complete;
-2. wire and validate an Antigravity-owned remote credential source only if one is independently confirmed; do not add a Token Lens-managed OAuth login/store framework;
-3. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core monitoring UX.
+1. implement the accepted appearance subset: built-in presets, persisted zoom, compact-total toggle, OS-driven reduced motion, and Windows default-on Acrylic with floating-bubble suspend/restore;
+2. run a final retained-facade/UI parity audit and implement only basic utilities that are actually reachable from retained v2 UX;
+3. wire production tokScale sidecar/resource resolution and Windows release packaging, then use packaged artifacts for native Windows visual/interaction validation.
+
+Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
 
 ## Known open items
 

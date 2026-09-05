@@ -294,7 +294,7 @@ export function createStatsLoader({
       periods,
       limits: quotaReportToCompatLimits(limitsReport),
       devices: [],
-      historyAvailable: false,
+      historyAvailable: true,
     };
   };
 }

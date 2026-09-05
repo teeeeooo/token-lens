@@ -55,6 +55,7 @@ pub fn run() {
             app_contract_version,
             commands::get_usage_report,
             commands::get_usage_since_report,
+            commands::get_dashboard_history,
             commands::get_session_detail,
             commands::get_quota_report,
             commands::get_tokscale_status,

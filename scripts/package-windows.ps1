@@ -43,13 +43,8 @@ $PortableZip = Join-Path $Dist "Token-Lens-$Version-portable.zip"
 Compress-Archive -Path (Join-Path $PortableStage '*') -DestinationPath $PortableZip -CompressionLevel Optimal
 Remove-Item $PortableStage -Recurse -Force
 
-foreach ($Executable in @($InstallerOut, $MainExe, $SidecarExe)) {
-  $Signature = Get-AuthenticodeSignature $Executable
-  Write-Host "Signature $([IO.Path]::GetFileName($Executable)): $($Signature.Status)"
-  if ($Signature.Status -eq 'Valid') {
-    throw "Unexpected signing identity on unsigned downstream build: $Executable"
-  }
-}
+node scripts/verify-unsigned-pe.mjs $InstallerOut $MainExe
+if ($LASTEXITCODE -ne 0) { throw "Unsigned PE verification failed with exit code $LASTEXITCODE" }
 
 $Artifacts = @(Get-Item $InstallerOut, $PortableZip | Sort-Object Name)
 $ChecksumPath = Join-Path $Dist 'SHA256SUMS.txt'

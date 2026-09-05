@@ -6,6 +6,7 @@ pub enum UsagePeriod {
     Today,
     Week,
     Month,
+    AllTime,
 }
 
 impl UsagePeriod {
@@ -14,6 +15,7 @@ impl UsagePeriod {
             Self::Today => &["--today"],
             Self::Week => &["--week"],
             Self::Month => &["--month"],
+            Self::AllTime => &[],
         }
     }
 }
@@ -88,9 +90,10 @@ pub enum SupportedProvider {
 #[serde(rename_all = "lowercase")]
 pub enum QuotaWindowKind {
     Session,
+    Daily,
     Weekly,
     Billing,
-    Additional,
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -124,6 +127,13 @@ pub struct QuotaWindow {
     pub kind: QuotaWindowKind,
     pub label: String,
     pub metric: &'static str,
+    pub additional: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,6 +142,9 @@ pub struct QuotaWindow {
     pub remaining_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    pub show_meter: bool,
     pub source: &'static str,
 }
 

@@ -334,15 +334,24 @@ fn normalize_quota_provider(raw: RawQuotaProvider) -> Option<QuotaProvider> {
     let windows = raw
         .metrics
         .into_iter()
-        .map(|metric| QuotaWindow {
-            kind: quota_window_kind(&metric.label),
-            label: metric.label,
-            metric: "quota",
-            used_percent: metric.used_percent,
-            remaining_percent: metric.remaining_percent,
-            remaining_label: metric.remaining_label,
-            resets_at: metric.resets_at.and_then(json_scalar_string),
-            source: TOKSCALE_SOURCE,
+        .map(|metric| {
+            let (kind, additional) = quota_window_shape(&metric.label);
+            QuotaWindow {
+                kind,
+                label: metric.label,
+                metric: "quota",
+                additional,
+                used: None,
+                limit: None,
+                remaining: None,
+                used_percent: metric.used_percent,
+                remaining_percent: metric.remaining_percent,
+                remaining_label: metric.remaining_label,
+                resets_at: metric.resets_at.and_then(json_scalar_string),
+                currency: None,
+                show_meter: true,
+                source: TOKSCALE_SOURCE,
+            }
         })
         .collect();
 
@@ -366,13 +375,31 @@ fn supported_provider(value: &str) -> Option<SupportedProvider> {
     }
 }
 
-fn quota_window_kind(label: &str) -> QuotaWindowKind {
-    match label.trim().to_ascii_lowercase().as_str() {
-        "5h" | "5 hr" | "5hr" | "session" => QuotaWindowKind::Session,
-        "weekly" | "week" => QuotaWindowKind::Weekly,
-        "monthly" | "month" => QuotaWindowKind::Billing,
-        _ => QuotaWindowKind::Additional,
+fn quota_window_shape(label: &str) -> (QuotaWindowKind, bool) {
+    let normalized = label.trim().to_ascii_lowercase();
+    let canonical = match normalized.as_str() {
+        "5h" | "5 hr" | "5hr" | "session" => Some(QuotaWindowKind::Session),
+        "daily" | "day" => Some(QuotaWindowKind::Daily),
+        "weekly" | "week" => Some(QuotaWindowKind::Weekly),
+        "monthly" | "month" => Some(QuotaWindowKind::Billing),
+        _ => None,
+    };
+    if let Some(kind) = canonical {
+        return (kind, false);
     }
+
+    let inferred = if normalized.contains("weekly") || normalized.contains("week") {
+        QuotaWindowKind::Weekly
+    } else if normalized.contains("5h") || normalized.contains("session") {
+        QuotaWindowKind::Session
+    } else if normalized.contains("daily") || normalized.contains("day") {
+        QuotaWindowKind::Daily
+    } else if normalized.contains("monthly") || normalized.contains("month") {
+        QuotaWindowKind::Billing
+    } else {
+        QuotaWindowKind::Other
+    };
+    (inferred, true)
 }
 
 fn normalize_reset_credits(raw: RawResetCredits) -> ResetCredits {
@@ -504,7 +531,9 @@ mod tests {
         assert_eq!(codex.windows.len(), 3);
         assert_eq!(codex.windows[0].kind, QuotaWindowKind::Session);
         assert_eq!(codex.windows[1].kind, QuotaWindowKind::Weekly);
-        assert_eq!(codex.windows[2].kind, QuotaWindowKind::Additional);
+        assert_eq!(codex.windows[2].kind, QuotaWindowKind::Weekly);
+        assert!(codex.windows[2].additional);
+        assert!(!codex.windows[1].additional);
         assert_eq!(
             codex
                 .reset_credits
@@ -549,6 +578,12 @@ mod tests {
             .await
             .expect("live usage should normalize");
         assert_eq!(usage.source, TOKSCALE_SOURCE);
+
+        let all_time = adapter
+            .usage_report(UsagePeriod::AllTime, UsageGrouping::ClientSessionModel)
+            .await
+            .expect("live all-time usage should normalize");
+        assert_eq!(all_time.source, TOKSCALE_SOURCE);
 
         let quota = adapter
             .quota_report()

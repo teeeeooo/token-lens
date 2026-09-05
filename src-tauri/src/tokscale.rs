@@ -3,6 +3,7 @@ use crate::domain::{
     QuotaWindow, QuotaWindowKind, ResetCredits, SpendControl, SupportedProvider, TokscaleStatus,
     UsageEntry, UsageGrouping, UsagePeriod, UsageReport, UsageTotals,
 };
+use crate::portable_sidecar::PortableSidecar;
 use serde::Deserialize;
 use serde_json::Value;
 use std::env;
@@ -20,6 +21,7 @@ const TOKSCALE_SOURCE: &str = "tokscale";
 pub struct TokscaleAdapter {
     binary: PathBuf,
     binary_source: String,
+    _portable_sidecar: Option<PortableSidecar>,
 }
 
 impl TokscaleAdapter {
@@ -29,6 +31,10 @@ impl TokscaleAdapter {
             if is_executable_candidate(&candidate) {
                 return Ok(Self::new(candidate, "env"));
             }
+        }
+
+        if let Some(portable) = PortableSidecar::prepare(binary_name())? {
+            return Ok(Self::new_portable(portable));
         }
 
         if let Some(candidate) = bundled_binary_candidate() {
@@ -50,6 +56,15 @@ impl TokscaleAdapter {
         Self {
             binary,
             binary_source: source.to_owned(),
+            _portable_sidecar: None,
+        }
+    }
+
+    fn new_portable(portable: PortableSidecar) -> Self {
+        Self {
+            binary: portable.path().to_path_buf(),
+            binary_source: "embedded-portable".to_owned(),
+            _portable_sidecar: Some(portable),
         }
     }
 

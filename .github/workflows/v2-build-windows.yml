@@ -39,7 +39,7 @@ jobs:
       - name: Check packaging helpers
         run: npm run test:frontend
 
-      - name: Build unsigned installer and portable bundle
+      - name: Build unsigned installer and single-EXE portable
         run: npm run package:windows
 
       - name: Upload Windows artifacts
@@ -47,8 +47,7 @@ jobs:
         with:
           name: token-lens-v2-windows-x64
           path: |
-            dist-v2/Token-Lens-Setup-*.exe
-            dist-v2/Token-Lens-*-portable.zip
+            dist-v2/*.exe
             dist-v2/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14

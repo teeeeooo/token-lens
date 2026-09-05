@@ -55,7 +55,7 @@ npm run dev
 
 Windows x64 release packaging uses Tauri NSIS plus the pinned tokScale 4.15.1 native sidecar. The build validates both the npm package identity and the sidecar's reported version; Token Lens does not download or update tokScale at runtime.
 
-The Windows packaging workflow emits an unsigned installer, a no-install portable ZIP containing `Token-Lens.exe` plus `tokscale.exe`, and `SHA256SUMS.txt`. The portable artifact preserves no-install use while keeping tokScale as an explicit pinned sidecar rather than recreating the v1 single-file Electron packaging shape.
+The Windows packaging workflow emits an unsigned installer, a single-file no-install `Token-Lens-<version>.exe`, and `SHA256SUMS.txt`. The portable EXE keeps the Tauri app executable as the outer PE and appends a compressed pinned `tokscale.exe` payload. At runtime Token Lens extracts only that sidecar under the system temp directory, keeps an active-run lock, removes the run directory on normal exit, and clears unlocked stale run directories on the next portable launch.
 
 On Windows, run `npm run package:windows` to generate these artifacts under `dist-v2/`.
 

@@ -7,7 +7,6 @@ Set-Location $Root
 $Package = Get-Content (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json
 $Version = [string]$Package.version
 $Dist = Join-Path $Root 'dist-v2'
-$PortableStage = Join-Path $Dist "Token-Lens-$Version-portable"
 
 Remove-Item $Dist -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist -ItemType Directory -Force | Out-Null
@@ -35,19 +34,15 @@ if ($Installers.Count -ne 1) {
 $InstallerOut = Join-Path $Dist "Token-Lens-Setup-$Version.exe"
 Copy-Item $Installers[0].FullName $InstallerOut
 
-New-Item $PortableStage -ItemType Directory -Force | Out-Null
-Copy-Item $MainExe (Join-Path $PortableStage 'Token-Lens.exe')
-Copy-Item $SidecarExe (Join-Path $PortableStage 'tokscale.exe')
+$PortableExe = Join-Path $Dist "Token-Lens-$Version.exe"
+node scripts/build-portable-exe.mjs $MainExe $SidecarExe $PortableExe
+if ($LASTEXITCODE -ne 0) { throw "Single-EXE portable build failed with exit code $LASTEXITCODE" }
 
-$PortableZip = Join-Path $Dist "Token-Lens-$Version-portable.zip"
-Compress-Archive -Path (Join-Path $PortableStage '*') -DestinationPath $PortableZip -CompressionLevel Optimal
-Remove-Item $PortableStage -Recurse -Force
-
-node scripts/verify-unsigned-pe.mjs $InstallerOut $MainExe
+node scripts/verify-unsigned-pe.mjs $InstallerOut $MainExe $PortableExe
 if ($LASTEXITCODE -ne 0) { throw "Unsigned PE verification failed with exit code $LASTEXITCODE" }
 
 $ChecksumPath = Join-Path $Dist 'SHA256SUMS.txt'
-node scripts/write-sha256sums.mjs $ChecksumPath $InstallerOut $PortableZip
+node scripts/write-sha256sums.mjs $ChecksumPath $InstallerOut $PortableExe
 if ($LASTEXITCODE -ne 0) { throw "SHA-256 generation failed with exit code $LASTEXITCODE" }
 
 Write-Host "Windows artifacts:"

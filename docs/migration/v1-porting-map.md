@@ -93,7 +93,7 @@ Do not carry these v1 units into v2 as architectural owners:
 - diagnostics/service-status subsystems;
 - export infrastructure;
 - macOS WidgetKit integration;
-- old Electron packaging scripts and Electron-specific CI; preserve no-install Windows availability and checksums through Tauri-native packaging instead of porting the old builder implementation, and keep release executables on the Windows GUI subsystem so no console window appears;
+- old Electron packaging scripts and Electron-specific CI; preserve the v1 single-file no-install Windows UX and checksums through Tauri-native packaging instead of porting the old builder implementation. The v2 portable artifact embeds the pinned tokScale sidecar as compressed overlay data in the Tauri app PE and extracts only that sidecar to a guarded temp run directory, while the NSIS build keeps the normal adjacent `externalBin`; keep all release executables on the Windows GUI subsystem so no console window appears;
 - upstream Token Monitor documentation that does not describe Token Lens v2.
 
 When useful behavior exists inside one of these units, extract the smallest required semantic into the new architecture instead of importing the owner wholesale.

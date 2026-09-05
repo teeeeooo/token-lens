@@ -70,16 +70,17 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - AGY grouped local quota preserves Gemini and Claude/GPT 5-hour/weekly lanes; legacy local or remote model-only payloads remain conservative family windows and do not invent cadence;
 - the AGY remote OAuth path is deliberately only an explicit already-valid credential-snapshot seam (`ANTIGRAVITY_OAUTH_CREDENTIALS_FILE`); Token Lens does not log in, refresh, persist, onboard, or read another monitor's credential store;
 - no Antigravity installation/process or provider-owned credential source is present on the current Mac, so live AGY quota values remain an external validation gate;
-- a native macOS debug `.app` bundle contains `Contents/MacOS/tokscale` beside `token-lens`, and the packaged sidecar reports exactly `tokscale 4.15.1`; the native Windows x64 packaging workflow is also green and produces a 9.65 MiB unsigned NSIS installer plus a 13.02 MiB portable ZIP containing `Token-Lens.exe` and `tokscale.exe`; the runner executes the sidecar version check and the downloaded artifacts match their recorded SHA-256 checksums;
-- downloaded Windows artifacts exposed one release-only defect before finalization: `Token-Lens.exe` was linked as a console PE; release builds now opt into the Windows GUI subsystem and the packaging helper rejects signed or non-GUI PE output, with the rebuilt installer and portable executable both verified as unsigned GUI subsystem images.
+- a native macOS debug `.app` bundle contains `Contents/MacOS/tokscale` beside `token-lens`, and the packaged sidecar reports exactly `tokscale 4.15.1`; Windows NSIS keeps the same adjacent Tauri `externalBin` layout, while the no-install artifact now restores the v1 single-file UX by appending a gzip-compressed pinned `tokscale.exe` payload to the normal Tauri GUI executable;
+- portable tokScale extraction is isolated under the system temp directory, guarded by an active-run lock, removed on normal adapter/process teardown, and followed by best-effort cleanup of unlocked stale run directories on a later portable launch; explicit `TOKEN_LENS_TOKSCALE_BIN` remains the only higher-priority developer/test override;
+- the packaging helper now emits `Token-Lens-Setup-<version>.exe`, `Token-Lens-<version>.exe`, and `SHA256SUMS.txt`, verifies the original sidecar is exactly tokScale 4.15.1, and rejects signed or non-GUI PE output for the installer, normal app executable, and single-file portable; native Windows artifact generation and the Windows-only active-lock cleanup test remain the immediate validation gate for this new package shape.
 
 ## Next action
 
-Packaging artifacts are validated; the remaining gate is native Windows runtime/visual validation:
+Single-EXE portable packaging is implemented locally; the next gate is native Windows package validation, followed by runtime/visual validation:
 
-1. install/run the packaged Windows artifact and confirm Token Lens resolves the adjacent bundled tokScale 4.15.1 at runtime;
-2. validate Acrylic, floating-bubble behavior, common DPI scales, multi-monitor movement, and taskbar/restore behavior;
-3. perform the final macOS/Windows visual/interaction parity pass and close only defects that affect the retained v2 product contract.
+1. run the Windows x64 packaging workflow and confirm it emits the unsigned NSIS installer plus `Token-Lens-<version>.exe`, passes the Windows-only active-lock cleanup test, and records matching SHA-256 checksums;
+2. install/run the NSIS artifact and run the single-file portable artifact, confirming the installed build resolves adjacent tokScale 4.15.1 while the portable build resolves the extracted `embedded-portable` tokScale 4.15.1 source;
+3. validate Acrylic, floating-bubble behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
 
@@ -87,7 +88,7 @@ Antigravity remote OAuth remains conditional: wire it only if an Antigravity-own
 
 No architecture decision currently blocks implementation.
 
-Production tokScale packaging is now wired through Tauri `externalBin`: the build stages the platform-native 4.15.1 npm binary under the required target-triple name, validates package identity plus `--version`, and runtime discovery prefers the sidecar next to the packaged app executable. The hardened no-runtime-download/update policy is unchanged.
+Production tokScale packaging is wired through Tauri `externalBin` for installed bundles and the single-file portable overlay for no-install Windows use. The build stages the platform-native 4.15.1 npm binary under the required target-triple name, validates package identity plus `--version`, and portable runtime discovery prefers its embedded compressed payload before adjacent/project/PATH fallbacks. The hardened no-runtime-download/update policy is unchanged.
 
 The final retained-facade audit found no reason to recreate v1 Electron-only push/utility APIs for unreachable UI. The current renderer calls only the implemented settings/stats/history/session/floating/tray surface; minimize/close/window state use Tauri directly, and hardened v1 app-update/download/account-mutation/diagnostic/export surfaces remain absent by policy.
 

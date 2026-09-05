@@ -13,7 +13,7 @@ Remove-Item $Dist -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist -ItemType Directory -Force | Out-Null
 
 Write-Host "Building unsigned Token Lens $Version Windows x64 package..."
-npm exec tauri build -- --bundles nsis --ci --no-sign
+npm exec tauri build -- --config src-tauri/tauri.bundle.conf.json --bundles nsis --ci --no-sign
 if ($LASTEXITCODE -ne 0) { throw "Tauri NSIS build failed with exit code $LASTEXITCODE" }
 
 $ReleaseDir = Join-Path $Root 'src-tauri\target\release'

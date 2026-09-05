@@ -31,7 +31,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
-    "externalBin": ["binaries/tokscale"]
+    "targets": "all"
   }
 }

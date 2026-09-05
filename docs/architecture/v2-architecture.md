@@ -264,7 +264,7 @@ Preserve the current Token Lens tokScale distribution/update policy rather than 
 
 The v2 implementation pins tokScale per Token Lens release and stages the matching platform-native npm package as a Tauri external binary. Production discovery prefers that bundled sidecar; development may fall back to the pinned project package, and `TOKEN_LENS_TOKSCALE_BIN` remains an explicit developer/test override.
 
-The hardened Token Lens policy remains **no runtime tokScale download/update**. npm package identity and the staged binary's `--version` are validated at build time, and packaged runtime status exposes the bundled source/version. A no-install Windows artifact may contain the app executable and `tokscale.exe` together; preserving portable use does not require preserving v1's single-file Electron artifact shape.
+The hardened Token Lens policy remains **no runtime tokScale download/update**. npm package identity and the staged binary's `--version` are validated at build time, and packaged runtime status exposes the bundled source/version. A no-install Windows artifact may contain the app executable and `tokscale.exe` together; preserving portable use does not require preserving v1's single-file Electron artifact shape. Windows release executables must use the GUI PE subsystem so launching the desktop app never opens a console window; the packaging gate verifies unsigned GUI subsystem output for both the NSIS installer and app executable.
 
 The exact implementation may change to fit Tauri, but the user-facing lifecycle policy does not change merely because the shell changed.
 

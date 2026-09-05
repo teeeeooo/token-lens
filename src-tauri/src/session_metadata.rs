@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_SESSION_REFS: usize = 5_000;
 const MAX_TITLE_CHARS: usize = 240;
 const MAX_PROJECT_LABEL_CHARS: usize = 120;
+const MAX_SESSION_ID_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Default)]
 struct ProviderMetadata {
@@ -81,7 +82,7 @@ fn normalized_refs(refs: Vec<SessionMetadataRef>) -> Vec<SessionMetadataRef> {
     for item in refs {
         let client = item.client.trim().to_ascii_lowercase();
         let session_id = item.session_id.trim().to_owned();
-        if session_id.is_empty() || !matches!(client.as_str(), "codex" | "claude") {
+        if !valid_session_id(&session_id) || !matches!(client.as_str(), "codex" | "claude") {
             continue;
         }
         let key = format!("{client}\0{session_id}");
@@ -111,6 +112,15 @@ fn project_label_from_path(value: Option<String>) -> Option<String> {
         .find(|part| !part.is_empty())
         .unwrap_or(trimmed);
     clean_text(Some(label.to_owned()), MAX_PROJECT_LABEL_CHARS)
+}
+
+pub(crate) fn valid_session_id(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.chars().count() <= MAX_SESSION_ID_CHARS
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn codex_thread_id(session_id: &str) -> Option<String> {
@@ -350,6 +360,54 @@ fn find_session_files(
             }
         }
     }
+}
+
+pub(crate) fn resolve_session_file(home: &Path, client: &str, session_id: &str) -> Option<PathBuf> {
+    let session_id = session_id.trim();
+    if !valid_session_id(session_id) {
+        return None;
+    }
+    let mut wanted = HashSet::new();
+    wanted.insert(session_id.to_owned());
+    let mut found = HashMap::new();
+    match client {
+        "claude" => {
+            let config = claude_config_dir(home);
+            find_session_files(&config.join("projects"), &wanted, &mut found);
+            if found.is_empty() {
+                find_session_files(&config.join("transcripts"), &wanted, &mut found);
+            }
+        }
+        "codex" => {
+            if let Some(path) = direct_codex_session_file(home, session_id) {
+                return Some(path);
+            }
+            find_session_files(&home.join(".codex/sessions"), &wanted, &mut found);
+        }
+        _ => return None,
+    }
+    found.remove(session_id)
+}
+
+fn direct_codex_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let prefix = session_id.strip_prefix("rollout-")?;
+    if prefix.len() < 11 || &prefix[4..5] != "-" || &prefix[7..8] != "-" || &prefix[10..11] != "T" {
+        return None;
+    }
+    let (year, month, day) = (&prefix[0..4], &prefix[5..7], &prefix[8..10]);
+    if !year.bytes().all(|b| b.is_ascii_digit())
+        || !month.bytes().all(|b| b.is_ascii_digit())
+        || !day.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let path = home
+        .join(".codex/sessions")
+        .join(year)
+        .join(month)
+        .join(day)
+        .join(format!("{session_id}.jsonl"));
+    path.is_file().then_some(path)
 }
 
 fn read_claude_metadata(path: &Path) -> ProviderMetadata {

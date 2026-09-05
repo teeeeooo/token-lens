@@ -107,6 +107,58 @@ pub struct SessionMetadataReport {
     pub source: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTokenBreakdown {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub reasoning: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTurnDetail {
+    pub timestamp: String,
+    pub tokens: SessionTokenBreakdown,
+    pub tools: Vec<String>,
+    pub cost_estimate: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionExchangeDetail {
+    pub started_at: String,
+    pub ended_at: String,
+    pub turn_count: u64,
+    pub tools: Vec<String>,
+    pub tokens: SessionTokenBreakdown,
+    pub cost_estimate: f64,
+    pub turns: Vec<SessionTurnDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetailTotals {
+    pub total_tokens: u64,
+    pub cost_usd: f64,
+    pub exchange_count: u64,
+    pub turn_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetailReport {
+    pub found: bool,
+    pub client: String,
+    pub session_id: String,
+    pub exchanges: Vec<SessionExchangeDetail>,
+    pub totals: SessionDetailTotals,
+    pub source: &'static str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SupportedProvider {

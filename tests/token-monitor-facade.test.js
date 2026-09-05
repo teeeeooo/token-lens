@@ -9,6 +9,7 @@ test('installs only the retained compatibility methods implemented so far', () =
   assert.equal(target.tokenMonitor, facade);
   assert.deepEqual(Object.keys(facade), [
     'getStats',
+    'getSessionDetail',
     'getTokscaleStatus',
     'getSettings',
     'updateSettings',
@@ -20,6 +21,7 @@ test('installs only the retained compatibility methods implemented so far', () =
     'moveFloatingBubble',
   ]);
   assert.equal(typeof facade.getStats, 'function');
+  assert.equal(typeof facade.getSessionDetail, 'function');
   assert.equal(typeof facade.getTokscaleStatus, 'function');
   assert.equal(typeof facade.getSettings, 'function');
   assert.equal(typeof facade.updateTraySummary, 'function');

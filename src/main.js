@@ -23,6 +23,7 @@ import {
   sessionRows,
   toolRows,
 } from './renderer-model.js';
+import { exchangeRows, periodStartTimeMs } from './session-detail-model.js';
 
 installTokenMonitorFacade();
 
@@ -64,6 +65,8 @@ const state = {
   lastRefreshAt: 0,
   viewMenuOpen: false,
   alwaysOnTop: true,
+  openSession: null,
+  detailSort: 'time',
 };
 
 root.innerHTML = `
@@ -128,6 +131,8 @@ root.innerHTML = `
     </section>
     <section id="homePanel" class="home-panel"></section>
     <section id="breakdown" class="breakdown hidden"></section>
+    <div id="sessionDetailHead" class="detail-head hidden"></div>
+    <div id="sessionDetail" class="session-detail hidden"></div>
     <section id="limitsPanel" class="limits-panel hidden"></section>
     <footer class="footer">
       <div id="viewSwitcher" class="view-switcher"></div>
@@ -152,6 +157,8 @@ const els = {
   monthPeriodMenu: document.querySelector('#monthPeriodMenu'),
   homePanel: document.querySelector('#homePanel'),
   breakdown: document.querySelector('#breakdown'),
+  sessionDetailHead: document.querySelector('#sessionDetailHead'),
+  sessionDetail: document.querySelector('#sessionDetail'),
   limitsPanel: document.querySelector('#limitsPanel'),
   settingsPanel: document.querySelector('#settingsPanel'),
   settingsButton: document.querySelector('#settingsButton'),
@@ -406,6 +413,7 @@ function breakdownRow(row, max, kind) {
   const item = document.createElement('div');
   item.className = `row${kind === 'session' ? ' session-row' : ''}`;
   item.dataset.key = row.key;
+  if (kind === 'session') item.dataset.client = row.client || '';
   const head = document.createElement('div');
   head.className = 'row-head';
   const name = document.createElement('div');
@@ -442,6 +450,17 @@ function breakdownRow(row, max, kind) {
   fill.style.setProperty('--bar-scale', String(max > 0 ? Math.max(0, Math.min(1, row.value / max)) : 0));
   bar.append(fill);
   item.append(head, bar);
+  if (kind === 'session' && ['codex', 'claude'].includes(row.client) && row.sessionId) {
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    item.setAttribute('aria-label', `Open usage detail for ${row.name}`);
+    item.addEventListener('click', () => void openSessionDetail(row));
+    item.addEventListener('keydown', (event) => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      void openSessionDetail(row);
+    });
+  }
   return item;
 }
 
@@ -452,6 +471,172 @@ function rowsForView() {
   if (state.view === 'session') return sessionRows(period);
   return [];
 }
+async function openSessionDetail(row) {
+  if (!row?.sessionId || !['codex', 'claude'].includes(row.client)) return;
+  const request = {
+    client: row.client,
+    sessionId: row.sessionId,
+    sessionCost: Number(row.cost) || 0,
+    title: row.name || row.sessionId,
+    startTimeMs: periodStartTimeMs(state.period, { locale: navigator.language }),
+    loading: true,
+    error: false,
+    detail: null,
+  };
+  state.openSession = request;
+  renderSurface();
+  try {
+    const detail = await window.tokenMonitor.getSessionDetail({
+      client: request.client,
+      sessionId: request.sessionId,
+      startTimeMs: request.startTimeMs,
+      sessionCost: request.sessionCost,
+    });
+    if (state.openSession !== request) return;
+    request.loading = false;
+    request.detail = detail;
+    renderSurface();
+  } catch (error) {
+    console.error(error);
+    if (state.openSession !== request) return;
+    request.loading = false;
+    request.error = true;
+    renderSurface();
+  }
+}
+
+function closeSessionDetail() {
+  state.openSession = null;
+  renderSurface();
+}
+
+function toggleSessionDetailSort() {
+  state.detailSort = state.detailSort === 'tokens' ? 'time' : 'tokens';
+  renderSessionDetail();
+}
+
+function detailNote(text) {
+  const note = document.createElement('div');
+  note.className = 'detail-note';
+  note.textContent = text;
+  return note;
+}
+
+function sessionTurnNode(turn) {
+  const element = document.createElement('div');
+  element.className = 'detail-turn';
+  const label = document.createElement('div');
+  label.className = 'detail-turn-label';
+  const title = document.createElement('span');
+  title.className = 'detail-turn-title';
+  title.textContent = `AI ${turn.label}`;
+  const tokens = turn.tokens || {};
+  const cache = (Number(tokens.cacheRead) || 0) + (Number(tokens.cacheWrite) || 0);
+  const split = document.createElement('span');
+  split.className = 'detail-turn-split';
+  split.textContent = `in ${formatNumber(tokens.input || 0)} · out ${formatNumber(tokens.output || 0)} · cache ${formatNumber(cache)}`
+    + (tokens.reasoning ? ` · reason ${formatNumber(tokens.reasoning)}` : '');
+  const tools = document.createElement('span');
+  tools.className = 'detail-turn-tools';
+  tools.textContent = turn.tools ? `⊢ ${turn.tools}` : '';
+  label.append(title, split, tools);
+
+  const metrics = document.createElement('div');
+  metrics.className = 'detail-turn-metrics';
+  const value = document.createElement('span');
+  value.className = 'detail-turn-value';
+  value.textContent = formatNumber(turn.value);
+  const cost = document.createElement('span');
+  cost.className = 'detail-turn-cost';
+  cost.textContent = formatCost(turn.cost);
+  metrics.append(value, cost);
+  element.append(label, metrics);
+  return element;
+}
+
+function sessionExchangeNode(row, max, color) {
+  const wrap = document.createElement('div');
+  wrap.className = 'detail-exchange';
+  const head = document.createElement('div');
+  head.className = 'detail-ex-head';
+  const chevron = document.createElement('span');
+  chevron.className = 'detail-chev';
+  chevron.textContent = '▸';
+  const label = document.createElement('div');
+  label.className = 'detail-ex-label';
+  const title = document.createElement('span');
+  title.className = 'detail-ex-title';
+  title.textContent = row.title;
+  const subtitle = document.createElement('span');
+  subtitle.className = 'detail-ex-sub';
+  subtitle.textContent = row.subtitle;
+  label.append(title, subtitle);
+  const metrics = document.createElement('div');
+  metrics.className = 'detail-ex-metrics';
+  const value = document.createElement('span');
+  value.className = 'detail-ex-value';
+  value.textContent = formatNumber(row.value);
+  const cost = document.createElement('span');
+  cost.className = 'detail-ex-cost';
+  cost.textContent = formatCost(row.cost);
+  metrics.append(value, cost);
+  head.append(chevron, label, metrics);
+
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  const fill = document.createElement('div');
+  fill.className = 'bar-fill';
+  fill.style.background = color;
+  fill.style.setProperty('--bar-scale', String(max > 0 ? Math.max(0, Math.min(1, row.value / max)) : 0));
+  bar.append(fill);
+
+  const turns = document.createElement('div');
+  turns.className = 'detail-turns hidden';
+  for (const turn of row.turns) turns.append(sessionTurnNode(turn));
+  head.addEventListener('click', () => {
+    const collapsed = turns.classList.toggle('hidden');
+    chevron.textContent = collapsed ? '▸' : '▾';
+  });
+  wrap.append(head, bar, turns);
+  return wrap;
+}
+
+function renderSessionDetail() {
+  const request = state.openSession;
+  if (!request) return;
+  els.sessionDetailHead.replaceChildren();
+  els.sessionDetail.replaceChildren();
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'detail-back';
+  back.textContent = '‹ Sessions';
+  back.addEventListener('click', closeSessionDetail);
+  els.sessionDetailHead.append(back);
+
+  if (request.loading) {
+    els.sessionDetail.append(detailNote('Loading…'));
+    return;
+  }
+  if (request.error || request.detail?.found === false) {
+    els.sessionDetail.append(detailNote('Session detail not found on this machine.'));
+    return;
+  }
+  const rows = exchangeRows(request.detail, { now: new Date(), sortBy: state.detailSort });
+  if (!rows.length) {
+    els.sessionDetail.append(detailNote('No activity in this period.'));
+    return;
+  }
+  const sort = document.createElement('button');
+  sort.type = 'button';
+  sort.className = 'detail-sort';
+  sort.textContent = state.detailSort === 'tokens' ? '↕ Most tokens' : '↕ Newest';
+  sort.addEventListener('click', toggleSessionDetailSort);
+  els.sessionDetailHead.append(sort);
+  const max = Math.max(1, ...rows.map((row) => row.value));
+  const color = clientColor(request.client);
+  els.sessionDetail.replaceChildren(...rows.map((row) => sessionExchangeNode(row, max, color)));
+}
+
 function renderBreakdown() {
   const rows = rowsForView();
   const max = Math.max(1, ...rows.map((row) => row.value));
@@ -535,6 +720,7 @@ function setView(view) {
   if (!VIEW_ORDER.includes(view)) return;
   const changed = state.view !== view;
   state.view = view;
+  if (view !== 'session') state.openSession = null;
   state.viewMenuOpen = false;
   render();
   if (changed && view === 'session') void refresh();
@@ -553,6 +739,7 @@ function setPeriod(period) {
   if (!PERIODS.includes(period)) return false;
   const changed = state.period !== period;
   state.period = period;
+  if (changed) state.openSession = null;
   if (MONTH_PERIODS.includes(period)) state.monthMode = period;
   setPeriodMenuOpen(false);
   render();
@@ -608,6 +795,7 @@ function renderViewSwitcher() {
 
 function renderSurface() {
   const settingsOpen = state.settingsOpen;
+  const detailOpen = !settingsOpen && state.view === 'session' && Boolean(state.openSession);
   els.shell.classList.toggle('settings-open', settingsOpen);
   els.shell.classList.toggle('home-mode', !settingsOpen && state.view === 'home');
   els.shell.classList.toggle('session-mode', !settingsOpen && state.view === 'session');
@@ -615,10 +803,13 @@ function renderSurface() {
   els.settingsPanel.setAttribute('aria-hidden', String(!settingsOpen));
   els.homePanel.classList.toggle('hidden', settingsOpen || state.view !== 'home');
   els.limitsPanel.classList.toggle('hidden', settingsOpen || state.view !== 'limits');
-  els.breakdown.classList.toggle('hidden', settingsOpen || !['tool', 'model', 'session'].includes(state.view));
+  els.breakdown.classList.toggle('hidden', settingsOpen || detailOpen || !['tool', 'model', 'session'].includes(state.view));
+  els.sessionDetailHead.classList.toggle('hidden', !detailOpen);
+  els.sessionDetail.classList.toggle('hidden', !detailOpen);
   if (settingsOpen) return;
   if (state.view === 'home') renderHome();
   else if (state.view === 'limits') renderLimits();
+  else if (detailOpen) renderSessionDetail();
   else renderBreakdown();
 }
 
@@ -916,6 +1107,7 @@ async function handleTrayAction(payload = {}) {
   }
   if (payload.action === 'openView' && VIEW_ORDER.includes(payload.view)) {
     state.settingsOpen = false;
+    state.openSession = null;
     setView(payload.view);
     return;
   }

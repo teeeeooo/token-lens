@@ -1,10 +1,11 @@
 use crate::domain::{
-    QuotaReport, SessionMetadataRef, SessionMetadataReport, TokscaleStatus, UsageGrouping,
-    UsagePeriod, UsageReport,
+    QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport, TokscaleStatus,
+    UsageGrouping, UsagePeriod, UsageReport,
 };
 use crate::floating_bubble::{
     self, BubbleDragOffset, FloatingBubbleController, FloatingBubblePayload,
 };
+use crate::session_detail;
 use crate::session_metadata;
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
 use crate::tokscale::TokscaleAdapter;
@@ -27,6 +28,25 @@ pub async fn get_usage_since_report(
     grouping: UsageGrouping,
 ) -> Result<UsageReport, String> {
     adapter.usage_since_report(&since, grouping).await
+}
+
+#[tauri::command]
+pub async fn get_session_detail(
+    app: AppHandle,
+    client: String,
+    session_id: String,
+    start_time_ms: Option<i64>,
+    session_cost: f64,
+) -> Result<SessionDetailReport, String> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| format!("failed to resolve home directory: {error}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        session_detail::read(&home, &client, &session_id, start_time_ms, session_cost)
+    })
+    .await
+    .map_err(|error| format!("session detail task failed: {error}"))
 }
 
 #[tauri::command]

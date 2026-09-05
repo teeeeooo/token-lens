@@ -8,6 +8,10 @@ export function getUsageSinceReport(since, grouping = 'client_model') {
   return invoke('get_usage_since_report', { since, grouping });
 }
 
+export function getSessionDetail({ client, sessionId, startTimeMs = null, sessionCost = 0 } = {}) {
+  return invoke('get_session_detail', { client, sessionId, startTimeMs, sessionCost });
+}
+
 export function getQuotaReport() {
   return invoke('get_quota_report');
 }

@@ -1,6 +1,7 @@
 mod commands;
 mod domain;
 mod floating_bubble;
+mod session_detail;
 mod session_metadata;
 mod settings;
 mod tokscale;
@@ -49,6 +50,7 @@ pub fn run() {
             app_contract_version,
             commands::get_usage_report,
             commands::get_usage_since_report,
+            commands::get_session_detail,
             commands::get_quota_report,
             commands::get_tokscale_status,
             commands::get_session_metadata,

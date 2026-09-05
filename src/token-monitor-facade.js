@@ -2,6 +2,7 @@ import {
   collapseFloatingBubbleIfIdle,
   expandFloatingBubble,
   getFloatingBubbleState,
+  getSessionDetail,
   getSettings,
   getTokscaleStatus,
   moveFloatingBubble,
@@ -14,6 +15,7 @@ import { getStats } from './stats-compat.js';
 export function installTokenMonitorFacade(target = window) {
   const facade = Object.freeze({
     getStats,
+    getSessionDetail,
     getTokscaleStatus,
     getSettings,
     updateSettings,

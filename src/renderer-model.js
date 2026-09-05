@@ -129,6 +129,7 @@ export function sessionRows(period) {
         color: clientColor(session?.client),
         iconClass: iconClassForClient(session?.client),
         client: normalizedId(session?.client),
+        sessionId,
       };
     })
     .filter((row) => row.value > 0)

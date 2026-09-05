@@ -7,9 +7,22 @@ test('installs only the retained compatibility methods implemented so far', () =
   const facade = installTokenMonitorFacade(target);
 
   assert.equal(target.tokenMonitor, facade);
-  assert.deepEqual(Object.keys(facade), ['getStats', 'getTokscaleStatus']);
+  assert.deepEqual(Object.keys(facade), [
+    'getStats',
+    'getTokscaleStatus',
+    'getSettings',
+    'updateSettings',
+    'getFloatingBubbleState',
+    'collapseFloatingBubbleIfIdle',
+    'expandFloatingBubble',
+    'peekFloatingBubble',
+    'moveFloatingBubble',
+  ]);
   assert.equal(typeof facade.getStats, 'function');
   assert.equal(typeof facade.getTokscaleStatus, 'function');
+  assert.equal(typeof facade.getSettings, 'function');
+  assert.equal(typeof facade.expandFloatingBubble, 'function');
+  assert.equal(typeof facade.moveFloatingBubble, 'function');
   assert.equal(Object.isFrozen(facade), true);
 });
 

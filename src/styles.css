@@ -34,3 +34,13 @@ html, body, #app {
   color: var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
 }
+
+.v2-settings-card {
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+
+.v2-settings-note {
+  margin: 4px 0 0;
+  padding: 0 2px 2px;
+}

@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Core tokScale data path, first preserved renderer surface, and fixed-range refresh semantics implemented on `feat/v2-tokscale-vertical-slice`.
+Core tokScale data path, preserved renderer surface, fixed-range refresh semantics, and the first Tauri floating-bubble/settings slice are implemented on `feat/v2-tokscale-vertical-slice`.
 
 ## Accepted baseline
 
@@ -36,18 +36,23 @@ Core tokScale data path, first preserved renderer surface, and fixed-range refre
 - overlapping renderer refreshes are serialized and coalesced so period changes cannot race an in-flight tokScale scan;
 - the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
 - macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
-- local macOS native runtime smoke creates the frameless window cleanly after the transparency configuration is enabled;
-- frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, and npm audit pass;
-- floating-bubble behavior, tray, settings, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
+- a minimal persisted settings store now owns floating-bubble enablement and click/hover trigger mode; bubble content is intentionally limited to the original icon-only mode for this slice;
+- floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs;
+- floating-bubble geometry is DPI-aware and recalculates the physical 34px-logical handle size when moving between monitors;
+- Windows-specific bubble policy is explicit: collapse against full monitor bounds with zero edge margin, while macOS/other desktop targets use the work area with the original vertical margin;
+- `x86_64-pc-windows-msvc` cargo check passes from macOS with the Windows target/toolchain resources, but this is compile validation rather than native Windows UX validation;
+- local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
+- frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, Windows target check, and npm audit pass;
+- tray, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
 
 ## Next action
 
 Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. implement floating-bubble expand/collapse and movement using the original UX on the Tauri shell;
-2. restore the retained tray behavior and only the tray actions that remain in v2 scope;
-3. add the minimal persisted settings required by those retained surfaces;
-4. then restore rich Codex/Claude session detail against the normalized usage/session contract.
+1. restore the retained tray behavior and only the tray actions that remain in v2 scope;
+2. extend the minimal persisted settings only where the retained tray/window surfaces require it;
+3. restore rich Codex/Claude session detail against the normalized usage/session contract;
+4. perform native Windows floating-bubble validation before declaring cross-platform visual/interaction parity complete.
 
 After the base desktop shell is stable, add Codex Business `individualLimit` and AGY quota as narrow adapters.
 
@@ -63,7 +68,8 @@ Implementation-time validation still required:
 - Codex Business `individualLimit` on a Business account after its thin adapter is implemented;
 - AGY quota after the narrow adapter is extracted;
 - packaged tokScale resolution on release artifacts;
-- final macOS/Windows visual parity after tray/floating behavior is restored.
+- native Windows floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and expansion restore;
+- final macOS/Windows visual parity after tray behavior is restored.
 
 ## Authoritative references
 

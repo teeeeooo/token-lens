@@ -63,14 +63,17 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - Gemini session metadata uses only the local session header `sessionId`, its provider-owned `tmp/<project-key>` location, and `projects.json` path-to-key mapping, exposing only the project basename and never deriving a title from conversation content;
 - Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter only when the existing Gemini OAuth access token is still valid; Token Lens neither refreshes nor persists Google credentials and never calls onboarding/project-creation APIs;
 - Gemini model quota windows remain allowlist-free and Limits shows all returned model buckets, while Home selects the two lowest remaining percentages;
-- the AGY quota adapter is not implemented yet.
+- AGY quota now uses an isolated local-language-server adapter: it detects running Antigravity app, `agy`/CLI, and IDE processes in that order, probes only `127.0.0.1`, prefers grouped `RetrieveUserQuotaSummary`, and falls back to `GetUserStatus` / `GetCommandModelConfigs` without reintroducing the v1 quota framework;
+- AGY grouped local quota preserves Gemini and Claude/GPT 5-hour/weekly lanes; legacy local or remote model-only payloads remain conservative family windows and do not invent cadence;
+- the AGY remote OAuth path is deliberately only an explicit already-valid credential-snapshot seam (`ANTIGRAVITY_OAUTH_CREDENTIALS_FILE`); Token Lens does not log in, refresh, persist, onboard, or read another monitor's credential store;
+- no Antigravity installation/process or provider-owned credential source is present on the current Mac, so live AGY quota values remain an external validation gate.
 
 ## Next action
 
 Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. add the AGY quota adapter using the local language-server path plus the approved OAuth fallback;
-2. perform native Windows floating-bubble/tray/session-detail UX validation before declaring cross-platform visual/interaction parity complete;
+1. perform native Windows floating-bubble/tray/session-detail UX validation before declaring cross-platform visual/interaction parity complete;
+2. wire and validate an Antigravity-owned remote credential source only if one is independently confirmed; do not add a Token Lens-managed OAuth login/store framework;
 3. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core monitoring UX.
 
 ## Known open items
@@ -84,7 +87,7 @@ Implementation-time validation still required:
 - Claude quota against a fresh valid Claude credential;
 - Codex Business `individualLimit` end-to-end validation on an actual Business account;
 - Gemini CLI quota end-to-end validation while the provider-owned OAuth access token is already valid;
-- AGY quota after the narrow adapter is extracted;
+- AGY quota against a live Antigravity app/CLI/IDE source, plus automatic remote fallback only if an Antigravity-owned credential source is confirmed;
 - packaged tokScale resolution on release artifacts;
 - native Windows floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and expansion restore;
 - final macOS/Windows visual parity after tray behavior is restored.

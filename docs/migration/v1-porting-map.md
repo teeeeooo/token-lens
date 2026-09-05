@@ -64,10 +64,12 @@ Gemini CLI is now a first-class v2 provider even though the hardened v1 downstre
 
 Retain the minimum quota semantics from:
 
-- local language-server probing;
-- remote Google Cloud Code OAuth fallback.
+- local language-server process/port discovery and Connect quota RPCs;
+- grouped Gemini and Claude/GPT 5-hour/weekly windows where exposed;
+- conservative legacy model-family quota fallback;
+- a remote Google Code Assist OAuth fallback seam only when an already-valid credential snapshot is explicitly supplied.
 
-Use v1 `src/shared/antigravityProbe.js` and `src/shared/antigravityOAuth.js` as references, not as modules that must be copied intact.
+Use v1 `src/shared/antigravityProbe.js` and `src/shared/antigravityOAuth.js` as references, not as modules that must be copied intact. Do not port v1 managed-account login, OAuth refresh/write-back, onboarding, or multi-account storage. The v1 remote path owned its own Token Lens credentials; v2 must not reinterpret that as permission to consume another application's credential store.
 
 ## Do not port as modules or frameworks
 

@@ -41,6 +41,22 @@ struct Tier {
     name: Option<String>,
 }
 
+pub(crate) fn load_antigravity_code_assist(
+    access_token: &str,
+    requested_project: Option<&str>,
+) -> Result<LoadSnapshot, String> {
+    let mut body = json!({ "metadata": { "ideType": "ANTIGRAVITY" } });
+    if let Some(project) = clean(requested_project) {
+        body["cloudaicompanionProject"] = Value::String(project);
+    }
+    let response: LoadResponse = post_json("loadCodeAssist", access_token, &body)?;
+    Ok(LoadSnapshot {
+        project_id: clean(requested_project)
+            .or_else(|| project_from_value(response.cloudaicompanion_project.as_ref())),
+        plan: plan_from_tiers(response.paid_tier.as_ref(), response.current_tier.as_ref()),
+    })
+}
+
 pub(crate) fn load_code_assist(
     access_token: &str,
     requested_project: Option<&str>,
@@ -63,6 +79,19 @@ pub(crate) fn load_code_assist(
             .or_else(|| project_from_value(response.cloudaicompanion_project.as_ref())),
         plan: plan_from_tiers(response.paid_tier.as_ref(), response.current_tier.as_ref()),
     })
+}
+
+pub(crate) fn retrieve_user_quota_summary(
+    access_token: &str,
+    project_id: &str,
+) -> Result<Value, String> {
+    let project =
+        clean(Some(project_id)).ok_or_else(|| "Code Assist project is unavailable".to_owned())?;
+    post_json(
+        "retrieveUserQuotaSummary",
+        access_token,
+        &json!({ "project": project }),
+    )
 }
 
 pub(crate) fn retrieve_user_quota(
@@ -180,6 +209,19 @@ mod tests {
             Some("gemini-future-model")
         );
         assert_eq!(quota.buckets[0].remaining_fraction, Some(0.42));
+    }
+
+    #[test]
+    fn antigravity_load_shape_uses_existing_project_without_onboarding_contract() {
+        let load: LoadResponse = serde_json::from_value(json!({
+            "cloudaicompanionProject": { "id": "agy-project" },
+            "currentTier": { "id": "standard-tier", "name": "Paid" }
+        }))
+        .expect("Antigravity load fixture");
+        assert_eq!(
+            project_from_value(load.cloudaicompanion_project.as_ref()).as_deref(),
+            Some("agy-project")
+        );
     }
 
     #[test]

@@ -115,3 +115,28 @@ test('Gemini CLI uses its own client/model identity and Home shows the two most 
     'gemini-2.5-flash',
   ]);
 });
+
+
+test('Antigravity keeps grouped quota labels and Home chooses the constrained lane per cadence', () => {
+  const [antigravity] = quotaRows({ providers: [{
+    provider: 'antigravity', planLabel: 'Pro', status: 'ok',
+    windows: [
+      { kind: 'session', label: 'Gemini 5-hour', remainingPercent: 72, source: 'antigravity-local' },
+      { kind: 'weekly', label: 'Gemini Weekly', remainingPercent: 44, source: 'antigravity-local' },
+      { kind: 'session', label: 'Claude + GPT 5-hour', remainingPercent: 31, source: 'antigravity-local' },
+      { kind: 'weekly', label: 'Claude + GPT Weekly', remainingPercent: 83, source: 'antigravity-local' },
+    ],
+  }] }).filter((row) => row.providerId === 'antigravity');
+  assert.equal(quotaWindowLabel(antigravity.windows[0]), 'Gemini 5-hour');
+  assert.equal(quotaWindowLabel(antigravity.windows[2]), 'Claude + GPT 5-hour');
+  assert.deepEqual(homeQuotaWindows(antigravity).map((window) => window.label), [
+    'Claude + GPT 5-hour',
+    'Gemini Weekly',
+  ]);
+
+  const legacy = { ...antigravity, windows: [
+    { kind: 'other', label: 'Gemini', remainingPercent: 70 },
+    { kind: 'other', label: 'Claude + GPT', remainingPercent: 20 },
+  ] };
+  assert.deepEqual(homeQuotaWindows(legacy).map((window) => window.label), ['Claude + GPT', 'Gemini']);
+});

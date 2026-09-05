@@ -199,21 +199,35 @@ export function formatQuotaCount(window, showUsed = false) {
 
 export function homeQuotaWindows(row) {
   const windows = Array.isArray(row?.windows) ? row.windows.filter((window) => window?.remainingPercent != null) : [];
-  if (row?.providerId === 'gemini') {
-    return windows
-      .slice()
-      .sort((a, b) => a.remainingPercent - b.remainingPercent || a.label.localeCompare(b.label))
-      .slice(0, 2);
+  const constrained = (items, count = 2) => items
+    .slice()
+    .sort((a, b) => a.remainingPercent - b.remainingPercent || a.label.localeCompare(b.label))
+    .slice(0, count);
+  if (row?.providerId === 'gemini') return constrained(windows);
+  if (row?.providerId === 'antigravity') {
+    const canonical = windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind));
+    if (canonical.length) {
+      return ['session', 'weekly'].flatMap((kind) => constrained(canonical.filter((window) => window.kind === kind), 1));
+    }
+    return constrained(windows);
   }
   return windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind)).slice(0, 2);
 }
 
 export function quotaWindowLabel(window) {
-  if (window?.additional) return String(window.label || '').trim() || 'Additional';
-  if (window?.kind === 'session') return '5-hour';
-  if (window?.kind === 'weekly') return 'Weekly';
-  if (window?.kind === 'billing') return String(window.label || '').trim() || 'Monthly';
-  return String(window?.label || '').trim() || 'Quota';
+  const label = String(window?.label || '').trim();
+  const normalized = label.toLowerCase();
+  if (window?.additional) return label || 'Additional';
+  if (window?.kind === 'session') {
+    if (label && !['5h', '5 hr', '5hr', '5-hour', 'session'].includes(normalized)) return label;
+    return '5-hour';
+  }
+  if (window?.kind === 'weekly') {
+    if (label && !['weekly', 'week'].includes(normalized)) return label;
+    return 'Weekly';
+  }
+  if (window?.kind === 'billing') return label || 'Monthly';
+  return label || 'Quota';
 }
 
 export function formatResetTime(value, now = new Date()) {

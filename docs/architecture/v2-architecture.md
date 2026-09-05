@@ -136,9 +136,12 @@ The Business monthly credit window preserves:
 
 - tokScale is authoritative for actual usage.
 - quota remains a narrow Token Lens adapter because tokScale subscription quota does not currently cover AGY.
-- prefer the existing local language-server quota path when available.
-- retain the remote Google Cloud Code OAuth path as fallback when required for quota visibility without the app running.
-- port only the quota semantics and minimum credential behavior required by this path, not the v1 general account-management framework.
+- local quota authority is the Antigravity language-server Connect surface, preferring detected app, `agy`/CLI, then IDE processes and `RetrieveUserQuotaSummary` before legacy model-config fallbacks.
+- grouped local quota preserves Gemini and Claude/GPT families with 5-hour and weekly cadence when the language server exposes those buckets.
+- local HTTPS certificate bypass is permitted only for the hard-coded `127.0.0.1` language-server transport; external Google HTTPS keeps normal certificate verification.
+- remote Google Code Assist OAuth remains a fallback seam only for an already-valid externally supplied credential snapshot. Token Lens must not create an Antigravity login flow, refresh OAuth, persist credentials, or silently consume credentials owned by another monitor.
+- until an Antigravity-owned credential source is independently confirmed, absence of a local language server and an explicit valid OAuth snapshot means AGY quota is unavailable rather than guessed from another Google login.
+- port only the quota semantics and minimum read-only credential behavior required by this path, not the v1 general account-management framework.
 
 ## Security and privacy boundary
 

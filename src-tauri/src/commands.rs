@@ -1,3 +1,4 @@
+use crate::antigravity_quota;
 use crate::codex_business;
 use crate::domain::{
     QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport, TokscaleStatus,
@@ -65,7 +66,8 @@ pub async fn get_quota_report(
         Some(home) => {
             let report =
                 codex_business::enrich_quota_report(&home, expected_workspace_id, report).await;
-            gemini_quota::enrich_quota_report(&home, report).await
+            let report = gemini_quota::enrich_quota_report(&home, report).await;
+            antigravity_quota::enrich_quota_report(&home, report).await
         }
         None => report,
     })

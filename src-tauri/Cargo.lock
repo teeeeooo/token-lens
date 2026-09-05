@@ -3556,6 +3556,7 @@ dependencies = [
  "chrono",
  "minreq",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",

@@ -13,7 +13,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 const TOKSCALE_TIMEOUT: Duration = Duration::from_secs(30);
-const TOKSCALE_CLIENTS: &str = "codex,claude,antigravity";
+const TOKSCALE_CLIENTS: &str = "codex,claude,gemini,antigravity";
 const TOKSCALE_SOURCE: &str = "tokscale";
 
 #[derive(Debug, Clone)]
@@ -429,6 +429,7 @@ fn supported_provider(value: &str) -> Option<SupportedProvider> {
     match value.trim().to_ascii_lowercase().as_str() {
         "codex" => Some(SupportedProvider::Codex),
         "claude" => Some(SupportedProvider::Claude),
+        "gemini" => Some(SupportedProvider::Gemini),
         "antigravity" => Some(SupportedProvider::Antigravity),
         _ => None,
     }
@@ -670,7 +671,10 @@ mod tests {
             .expect("live quota should normalize");
         assert!(quota.providers.iter().all(|provider| matches!(
             provider.provider,
-            SupportedProvider::Codex | SupportedProvider::Claude | SupportedProvider::Antigravity
+            SupportedProvider::Codex
+                | SupportedProvider::Claude
+                | SupportedProvider::Gemini
+                | SupportedProvider::Antigravity
         )));
     }
 }

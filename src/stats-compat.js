@@ -133,7 +133,7 @@ function sessionMetadataRefs(periods) {
     for (const session of Object.values(period?.sessions || {})) {
       const client = String(session?.client || '').trim().toLowerCase();
       const sessionId = String(session?.sessionId || '').trim();
-      if (!client || !sessionId || !['codex', 'claude'].includes(client)) continue;
+      if (!client || !sessionId || !['codex', 'claude', 'gemini'].includes(client)) continue;
       refs.set(sessionKey(client, sessionId), { client, sessionId });
     }
   }

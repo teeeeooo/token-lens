@@ -8,14 +8,15 @@ This document owns durable v2 architecture decisions. Current progress belongs i
 
 ## Optimization criterion
 
-The v2 design is not judged by how much of Token Lens v1 can be migrated. It is judged by how small and maintainable the current Codex/Claude/Antigravity quota-and-usage monitor can be while preserving the established Token Lens user experience and a narrow path for future provider adapters.
+The v2 design is not judged by how much of Token Lens v1 can be migrated. It is judged by how small and maintainable the current Codex/Claude/Gemini CLI/Antigravity quota-and-usage monitor can be while preserving the established Token Lens user experience and a narrow path for future provider adapters.
 
 ## Product scope
 
-The initial supported provider set is:
+The current supported provider set is:
 
 - Codex
 - Claude
+- Gemini CLI
 - Antigravity / AGY
 
 This is an explicit runtime allowlist, not a permanent architectural ceiling. A later provider may be added through a deliberate provider adapter plus usage/quota authority, credential-boundary, privacy-contract, and regression-test review. Adding a provider must not require redesigning the normalized domain or renderer.
@@ -88,6 +89,7 @@ Use tokScale for:
 
 - Codex actual usage;
 - Claude actual usage;
+- Gemini CLI actual usage;
 - Antigravity actual usage;
 - model aggregation;
 - session aggregation where tokScale provides it;
@@ -121,6 +123,14 @@ The Business monthly credit window preserves:
 - 5-hour, weekly, and scoped/Opus quota exposed by tokScale should be normalized and shown.
 - v1 prepaid-credit and monthly monetary enrichment are not part of the initial v2 scope.
 - do not create a separate Claude account-management framework.
+
+### Gemini CLI
+
+- tokScale is authoritative for Gemini CLI actual usage, including model/session aggregation and token/cost data.
+- Gemini CLI quota is a narrow read-only Google Code Assist enrichment because tokScale 4.15.1 does not expose Gemini quota through `tokscale usage --json`.
+- reuse the Gemini CLI-owned `~/.gemini/oauth_creds.json` access token only while it is already valid; Token Lens must not refresh OAuth, write credentials, call `onboardUser`, or create/attach a Google Cloud project.
+- follow Gemini CLI's `loadCodeAssist` → `retrieveUserQuota` flow and keep model identifiers allowlist-free behind the normalized quota contract.
+- Gemini session identification may use the provider-owned `tmp/<project-key>` location plus `projects.json` path-to-key mapping to expose only a project basename; prompt/response-derived title fallbacks remain prohibited.
 
 ### Antigravity / AGY
 

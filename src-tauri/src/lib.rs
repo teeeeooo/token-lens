@@ -2,6 +2,8 @@ mod codex_business;
 mod commands;
 mod domain;
 mod floating_bubble;
+mod gemini_quota;
+mod google_code_assist;
 mod session_detail;
 mod session_metadata;
 mod settings;

@@ -8,9 +8,9 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 
 - v2 is an orphan lineage with a clean codebase; v1 `main` is reference-only.
 - desktop runtime: Tauri 2.
-- initial supported provider set: Codex, Claude, Antigravity; future providers require an explicit adapter/security/data-contract review rather than a core redesign.
+- current supported provider set: Codex, Claude, Gemini CLI, Antigravity; future providers require an explicit adapter/security/data-contract review rather than a core redesign.
 - tokScale is the primary actual-usage and supported-quota engine.
-- Token Lens owns only confirmed tokScale gaps: Codex Business `individualLimit` and AGY quota.
+- Token Lens owns only confirmed tokScale gaps: Codex Business `individualLimit`, Gemini CLI quota, and AGY quota.
 - established Token Lens UI/UX is preserved rather than redesigned.
 - model and session usage remain core product features; Codex/Claude session usage/metadata detail remains in scope, while raw prompt/response content remains outside the renderer contract.
 - raw tokScale/provider schemas stay behind a stable normalization boundary; provider-owned session titles are approved metadata, but transcript-derived title fallbacks are prohibited.
@@ -20,13 +20,13 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - tokScale 4.15.1 remains the pinned v2 baseline;
 - stable Rust domain types own normalized usage, quota, tokScale status, credit, and reset-credit payloads;
 - the Rust tokScale adapter collects today/week/month/all-time usage with model or session grouping;
-- quota normalization admits only Codex, Claude, and Antigravity and keeps canonical/additional lanes distinct;
+- quota normalization admits only Codex, Claude, Gemini CLI, and Antigravity and keeps canonical/additional lanes distinct;
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
 - structured Business `individualLimit` is deliberately not guessed from tokScale output; a narrow Codex App Server enrichment supplies it only when tokScale does not already expose an absolute credits window;
 - Tauri commands expose normalized reports; raw tokScale JSON is not a renderer contract;
 - `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
-- Codex reasoning follows the v1 additive public-total convention without double-counting Claude/AGY reasoning;
+- Codex reasoning follows the v1 additive public-total convention without double-counting Claude/Gemini/AGY reasoning;
 - the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
 - Home currently restores Limits and Models modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
 - DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri;
@@ -59,6 +59,10 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - the App Server probe runs `codex -s read-only -a untrusted app-server`, calls only `account/read` with `refreshToken: false` plus `account/rateLimits/read`, and materializes a single canonical Monthly `CREDITS` window while leaving tokScale session/weekly/additional lanes authoritative;
 - the retained Limits renderer now preserves capability-based absolute quota metadata and displays Business monthly remaining/total credits without Codex-specific formatting logic;
 - local live smoke confirms the installed Codex App Server transport/schema path; an actual Business account is still required to validate live `individualLimit` values end to end;
+- Gemini CLI actual usage is now admitted directly from tokScale as a first-class `gemini` client/provider; the renderer keeps Gemini CLI distinct from Antigravity while Google/Gemini model rows use the Gemini visual identity;
+- Gemini session metadata uses only the local session header `sessionId`, its provider-owned `tmp/<project-key>` location, and `projects.json` path-to-key mapping, exposing only the project basename and never deriving a title from conversation content;
+- Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter only when the existing Gemini OAuth access token is still valid; Token Lens neither refreshes nor persists Google credentials and never calls onboarding/project-creation APIs;
+- Gemini model quota windows remain allowlist-free and Limits shows all returned model buckets, while Home selects the two lowest remaining percentages;
 - the AGY quota adapter is not implemented yet.
 
 ## Next action
@@ -79,6 +83,7 @@ Implementation-time validation still required:
 
 - Claude quota against a fresh valid Claude credential;
 - Codex Business `individualLimit` end-to-end validation on an actual Business account;
+- Gemini CLI quota end-to-end validation while the provider-owned OAuth access token is already valid;
 - AGY quota after the narrow adapter is extracted;
 - packaged tokScale resolution on release artifacts;
 - native Windows floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and expansion restore;

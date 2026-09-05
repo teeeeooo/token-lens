@@ -51,6 +51,15 @@ Retain only the proven Business `individualLimit` enrichment semantics:
 
 Relevant v1 history includes `a920202`, `9e6074d`, and their follow-up tests/merges.
 
+### Gemini CLI
+
+Gemini CLI is now a first-class v2 provider even though the hardened v1 downstream allowlist excluded it. Retain upstream/tokScale semantics selectively:
+
+- actual usage comes from tokScale's `gemini` client;
+- quota follows Gemini CLI's Google Code Assist read path (`loadCodeAssist` then `retrieveUserQuota`) without copying OAuth refresh/onboarding/account-management behavior;
+- credentials remain owned by Gemini CLI and are read-only from Token Lens;
+- session identification may use provider-owned project metadata, but no Gemini transcript content is promoted into renderer metadata.
+
 ### Antigravity quota
 
 Retain the minimum quota semantics from:

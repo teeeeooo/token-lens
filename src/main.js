@@ -16,6 +16,7 @@ import {
   formatCost,
   formatNumber,
   formatPercent,
+  homeQuotaWindows,
   formatQuotaCount,
   formatResetTime,
   modelRows,
@@ -367,7 +368,7 @@ function renderHomeLimits() {
     head.append(mark, name);
     const windows = document.createElement('div');
     windows.className = 'home-limit-windows';
-    const compactWindows = row.windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind)).slice(0, 2);
+    const compactWindows = homeQuotaWindows(row);
     if (!compactWindows.length) {
       const empty = document.createElement('div');
       empty.className = 'home-module-empty';

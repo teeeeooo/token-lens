@@ -148,7 +148,7 @@ test('forced refresh bypasses all stats caches', async () => {
 });
 
 
-test('getStats batch-decorates Codex and Claude sessions with provider-owned metadata', async () => {
+test('getStats batch-decorates supported sessions with provider-owned metadata', async () => {
   const entry = {
     client: 'codex', provider: 'openai', model: 'gpt-5.6-sol', sessionId: 'rollout-1',
     input: 10, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 1, messageCount: 1, cost: 0.1,

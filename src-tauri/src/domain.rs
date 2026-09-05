@@ -164,6 +164,7 @@ pub struct SessionDetailReport {
 pub enum SupportedProvider {
     Codex,
     Claude,
+    Gemini,
     Antigravity,
 }
 

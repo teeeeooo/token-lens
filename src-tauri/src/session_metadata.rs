@@ -27,6 +27,18 @@ struct ClaudeMetadataLine {
     ai_title: Option<String>,
     cwd: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+struct GeminiSessionHeader {
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiProjects {
+    #[serde(default)]
+    projects: HashMap<String, String>,
+}
 pub fn collect(
     home: &Path,
     refs: Vec<SessionMetadataRef>,
@@ -49,15 +61,22 @@ pub fn collect(
         .filter(|item| item.client == "claude")
         .cloned()
         .collect::<Vec<_>>();
+    let gemini_refs = refs
+        .iter()
+        .filter(|item| item.client == "gemini")
+        .cloned()
+        .collect::<Vec<_>>();
 
     let codex = collect_codex(home, &codex_refs);
     let claude = collect_claude(home, &claude_refs);
+    let gemini = collect_gemini(home, &gemini_refs);
     let mut sessions = Vec::with_capacity(refs.len());
 
     for item in refs {
         let metadata = match item.client.as_str() {
             "codex" => codex.get(&item.session_id),
             "claude" => claude.get(&item.session_id),
+            "gemini" => gemini.get(&item.session_id),
             _ => None,
         };
         if let Some(metadata) = metadata {
@@ -82,7 +101,9 @@ fn normalized_refs(refs: Vec<SessionMetadataRef>) -> Vec<SessionMetadataRef> {
     for item in refs {
         let client = item.client.trim().to_ascii_lowercase();
         let session_id = item.session_id.trim().to_owned();
-        if !valid_session_id(&session_id) || !matches!(client.as_str(), "codex" | "claude") {
+        if !valid_session_id(&session_id)
+            || !matches!(client.as_str(), "codex" | "claude" | "gemini")
+        {
             continue;
         }
         let key = format!("{client}\0{session_id}");
@@ -321,6 +342,104 @@ fn collect_claude(home: &Path, refs: &[SessionMetadataRef]) -> HashMap<String, P
         .collect()
 }
 
+fn gemini_config_dir(home: &Path) -> PathBuf {
+    env::var_os("GEMINI_CLI_HOME")
+        .map(PathBuf::from)
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| home.join(".gemini"))
+}
+
+fn collect_gemini(home: &Path, refs: &[SessionMetadataRef]) -> HashMap<String, ProviderMetadata> {
+    if refs.is_empty() {
+        return HashMap::new();
+    }
+    let wanted = refs
+        .iter()
+        .map(|item| item.session_id.clone())
+        .collect::<HashSet<_>>();
+    let config = gemini_config_dir(home);
+    let project_labels = fs::read(config.join("projects.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<GeminiProjects>(&bytes).ok())
+        .map(|projects| {
+            projects
+                .projects
+                .into_iter()
+                .filter_map(|(path, project_key)| {
+                    project_label_from_path(Some(path)).map(|label| (project_key, label))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    find_gemini_session_metadata(&config.join("tmp"), &wanted, &project_labels)
+}
+
+fn find_gemini_session_metadata(
+    root: &Path,
+    wanted: &HashSet<String>,
+    project_labels: &HashMap<String, String>,
+) -> HashMap<String, ProviderMetadata> {
+    let mut output = HashMap::new();
+    if !root.is_dir() {
+        return output;
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if !file_type.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("jsonl")
+            {
+                continue;
+            }
+            let Ok(file) = File::open(entry.path()) else {
+                continue;
+            };
+            for line in BufReader::new(file).lines().map_while(Result::ok).take(8) {
+                let Ok(header) = serde_json::from_str::<GeminiSessionHeader>(&line) else {
+                    continue;
+                };
+                let Some(session_id) = clean_text(header.session_id, MAX_SESSION_ID_CHARS) else {
+                    continue;
+                };
+                if !wanted.contains(&session_id) {
+                    break;
+                }
+                let project_label = entry
+                    .path()
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(|relative| relative.components().next())
+                    .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                    .and_then(|project_key| project_labels.get(&project_key).cloned());
+                if project_label.is_some() {
+                    output.insert(
+                        session_id,
+                        ProviderMetadata {
+                            title: None,
+                            project_label,
+                        },
+                    );
+                }
+                break;
+            }
+            if output.len() >= wanted.len() {
+                return output;
+            }
+        }
+    }
+    output
+}
+
 fn find_session_files(
     root: &Path,
     wanted: &HashSet<String>,
@@ -553,7 +672,46 @@ mod tests {
     }
 
     #[test]
-    fn metadata_reference_normalization_keeps_only_supported_detail_clients() {
+    fn gemini_metadata_uses_project_mapping_without_reading_conversation_content() {
+        let home = test_home("gemini");
+        let gemini = home.join(".gemini");
+        let chats = gemini.join("tmp/project-key/chats");
+        fs::create_dir_all(&chats).expect("create Gemini chats");
+        fs::write(
+            gemini.join("projects.json"),
+            r#"{"projects":{"/Users/test/predictor_v3":"project-key"}}"#,
+        )
+        .expect("write projects map");
+        fs::write(
+            chats.join("session-fixture.jsonl"),
+            [
+                r#"{"sessionId":"gemini-session-1","projectHash":"hash-a","startTime":"2026-09-05T00:00:00Z"}"#,
+                r#"{"type":"user","displayContent":"SECRET PROMPT","content":"SECRET BODY"}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write Gemini session");
+
+        let report = collect(
+            &home,
+            vec![SessionMetadataRef {
+                client: "gemini".into(),
+                session_id: "gemini-session-1".into(),
+            }],
+        )
+        .expect("collect Gemini metadata");
+        assert_eq!(report.sessions.len(), 1);
+        assert_eq!(report.sessions[0].session_title, None);
+        assert_eq!(
+            report.sessions[0].project_label.as_deref(),
+            Some("predictor_v3")
+        );
+        assert_renderer_metadata_shape(&report);
+        fs::remove_dir_all(home).expect("remove Gemini fixture");
+    }
+
+    #[test]
+    fn metadata_reference_normalization_keeps_supported_metadata_clients() {
         let refs = normalized_refs(vec![
             SessionMetadataRef {
                 client: " CODEX ".into(),
@@ -568,18 +726,23 @@ mod tests {
                 session_id: "s2".into(),
             },
             SessionMetadataRef {
-                client: "antigravity".into(),
+                client: "gemini".into(),
                 session_id: "s3".into(),
+            },
+            SessionMetadataRef {
+                client: "antigravity".into(),
+                session_id: "s4".into(),
             },
             SessionMetadataRef {
                 client: "future".into(),
                 session_id: "s4".into(),
             },
         ]);
-        assert_eq!(refs.len(), 2);
+        assert_eq!(refs.len(), 3);
         assert_eq!(refs[0].client, "codex");
         assert_eq!(refs[0].session_id, "s1");
         assert_eq!(refs[1].client, "claude");
+        assert_eq!(refs[2].client, "gemini");
     }
 
     #[tokio::test]
@@ -613,6 +776,44 @@ mod tests {
             !report.sessions.is_empty(),
             "expected at least one local session metadata match"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local Gemini CLI tokScale data and provider session metadata"]
+    async fn live_gemini_session_metadata_smoke() {
+        use crate::domain::{UsageGrouping, UsagePeriod};
+        use crate::tokscale::TokscaleAdapter;
+
+        let adapter = TokscaleAdapter::discover().expect("discover tokScale");
+        let usage = adapter
+            .usage_report(UsagePeriod::AllTime, UsageGrouping::ClientSessionModel)
+            .await
+            .expect("read live usage");
+        let refs = usage
+            .entries
+            .iter()
+            .filter(|entry| entry.client.eq_ignore_ascii_case("gemini"))
+            .filter_map(|entry| {
+                entry
+                    .session_id
+                    .as_ref()
+                    .map(|session_id| SessionMetadataRef {
+                        client: "gemini".into(),
+                        session_id: session_id.clone(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(!refs.is_empty(), "expected live Gemini tokScale sessions");
+        let home = env::var_os("HOME").map(PathBuf::from).expect("HOME");
+        let report = collect(&home, refs).expect("collect live Gemini metadata");
+        assert_renderer_metadata_shape(&report);
+        assert!(
+            !report.sessions.is_empty(),
+            "expected at least one Gemini session-to-project metadata match"
+        );
+        assert!(report.sessions.iter().all(|item| {
+            item.client == "gemini" && item.session_title.is_none() && item.project_label.is_some()
+        }));
     }
 
     #[test]

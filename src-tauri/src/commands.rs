@@ -6,6 +6,7 @@ use crate::domain::{
 use crate::floating_bubble::{
     self, BubbleDragOffset, FloatingBubbleController, FloatingBubblePayload,
 };
+use crate::gemini_quota;
 use crate::session_detail;
 use crate::session_metadata;
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
@@ -62,7 +63,9 @@ pub async fn get_quota_report(
     let report = adapter.quota_report().await?;
     Ok(match home {
         Some(home) => {
-            codex_business::enrich_quota_report(&home, expected_workspace_id, report).await
+            let report =
+                codex_business::enrich_quota_report(&home, expected_workspace_id, report).await;
+            gemini_quota::enrich_quota_report(&home, report).await
         }
         None => report,
     })

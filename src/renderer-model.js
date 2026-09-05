@@ -1,18 +1,20 @@
 const CLIENT_LABELS = Object.freeze({
   claude: 'Claude Code',
   codex: 'Codex',
+  gemini: 'Gemini CLI',
   antigravity: 'Antigravity',
 });
 
 const CLIENT_COLORS = Object.freeze({
   claude: '#cc7c5e',
   codex: '#49a3b0',
+  gemini: '#4285f4',
   antigravity: '#4285f4',
   default: '#6ab4f0',
 });
 
 const FALLBACK_MODEL_COLORS = ['#6ab4f0', '#5fbf8a', '#a57df0', '#d97bc4', '#f0d66a', '#f06a7b'];
-const PROVIDER_ORDER = ['codex', 'claude', 'antigravity'];
+const PROVIDER_ORDER = ['codex', 'claude', 'gemini', 'antigravity'];
 
 function finite(value) {
   const number = Number(value);
@@ -61,7 +63,7 @@ export function modelVendorFor(model) {
   const name = normalizedId(model);
   if (/claude|anthropic|sonnet|opus|haiku/.test(name)) return 'claude';
   if (/gpt|openai|codex|^o[134](?:-|$)|chatgpt/.test(name)) return 'codex';
-  if (/gemini|gemma|google/.test(name)) return 'antigravity';
+  if (/gemini|gemma|google/.test(name)) return 'gemini';
   return null;
 }
 
@@ -76,7 +78,7 @@ export function modelColor(model) {
 
 export function iconClassForClient(client) {
   const id = normalizedId(client);
-  return ['claude', 'codex', 'antigravity'].includes(id) ? `row-icon-${id}` : 'row-icon-token-monitor';
+  return ['claude', 'codex', 'gemini', 'antigravity'].includes(id) ? `row-icon-${id}` : 'row-icon-token-monitor';
 }
 export function modelRows(period) {
   const total = Math.max(0, finite(period?.totalTokens));
@@ -192,6 +194,18 @@ export function formatQuotaCount(window, showUsed = false) {
   if (used === null || limit === null || limit <= 0) return '';
   const trim = (value) => Number(Math.max(0, value).toFixed(2)).toString();
   return `${trim(showUsed ? used : limit - used)}/${trim(limit)}`;
+}
+
+
+export function homeQuotaWindows(row) {
+  const windows = Array.isArray(row?.windows) ? row.windows.filter((window) => window?.remainingPercent != null) : [];
+  if (row?.providerId === 'gemini') {
+    return windows
+      .slice()
+      .sort((a, b) => a.remainingPercent - b.remainingPercent || a.label.localeCompare(b.label))
+      .slice(0, 2);
+  }
+  return windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind)).slice(0, 2);
 }
 
 export function quotaWindowLabel(window) {

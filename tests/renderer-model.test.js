@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatCompact,
+  homeQuotaWindows,
   formatQuotaCount,
   modelRows,
+  modelVendorFor,
   quotaRows,
   quotaWindowLabel,
   sessionRows,
@@ -45,7 +47,7 @@ test('compact formatter keeps dashboard-scale labels', () => {
   assert.equal(formatCompact(12_300), '12.3K');
   assert.equal(formatCompact(12_300_000), '12.3M');
 });
-test('quota rows keep the three-provider product surface and additional lanes', () => {
+test('quota rows keep the supported-provider product surface and additional lanes', () => {
   const rows = quotaRows({ providers: [{
     provider: 'codex', planLabel: 'Plus', status: 'ok',
     windows: [
@@ -61,7 +63,7 @@ test('quota rows keep the three-provider product surface and additional lanes', 
     resetCredits: { availableCount: 1 },
   }] });
 
-  assert.deepEqual(rows.map((row) => row.providerId), ['codex', 'claude', 'antigravity']);
+  assert.deepEqual(rows.map((row) => row.providerId), ['codex', 'claude', 'gemini', 'antigravity']);
   assert.equal(rows[0].plan, 'Plus');
   assert.equal(rows[0].windows[2].additional, true);
   assert.equal(rows[0].windows[3].metric, 'credits');
@@ -72,6 +74,7 @@ test('quota rows keep the three-provider product surface and additional lanes', 
   assert.equal(rows[0].resetCredits.availableCount, 1);
   assert.equal(rows[1].status, 'unavailable');
   assert.equal(rows[2].status, 'unavailable');
+  assert.equal(rows[3].status, 'unavailable');
   assert.equal(quotaWindowLabel(rows[0].windows[0]), '5-hour');
   assert.equal(quotaWindowLabel(rows[0].windows[2]), 'GPT Reserve weekly');
 });
@@ -89,4 +92,26 @@ test('session rows fall back to project label and then session id without transc
   } });
   assert.equal(idOnly[0].name, 's3');
   assert.equal(idOnly[0].detail, 'Codex · gpt-5');
+});
+
+
+test('Gemini CLI uses its own client/model identity and Home shows the two most constrained model quotas', () => {
+  assert.equal(modelVendorFor('gemini-3-pro'), 'gemini');
+  const [gemini] = quotaRows({ providers: [{
+    provider: 'gemini', planLabel: 'Google AI Pro', status: 'ok',
+    windows: [
+      { kind: 'other', additional: true, label: 'gemini-3-pro', remainingPercent: 65 },
+      { kind: 'other', additional: true, label: 'gemini-3-flash', remainingPercent: 18 },
+      { kind: 'other', additional: true, label: 'gemini-2.5-flash', remainingPercent: 42 },
+    ],
+  }] }).filter((row) => row.providerId === 'gemini');
+  assert.equal(gemini.name, 'Gemini CLI');
+  assert.equal(gemini.iconClass, 'row-icon-gemini');
+  const [geminiTool] = toolRows({ totalTokens: 100, clients: { gemini: 100 } });
+  assert.equal(geminiTool.name, 'Gemini CLI');
+  assert.equal(geminiTool.iconClass, 'row-icon-gemini');
+  assert.deepEqual(homeQuotaWindows(gemini).map((window) => window.label), [
+    'gemini-3-flash',
+    'gemini-2.5-flash',
+  ]);
 });

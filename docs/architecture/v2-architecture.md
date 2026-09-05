@@ -185,6 +185,8 @@ Full working-directory paths should remain behind the backend boundary unless a 
 
 Authentication state remains owned by the original coding tools. Provider adapters should read only the minimum existing local state required by their monitor responsibilities and must not create a general Token Lens credential store or account-management framework.
 
+The renderer must run under an explicit Content Security Policy rather than an unrestricted WebView policy. Script execution stays limited to packaged application code (`script-src 'self'`) with no inline-script or eval relaxation. Tauri IPC is the only non-self renderer connection surface. The retained renderer currently requires dynamic inline styles, so `style-src 'self' 'unsafe-inline'` is an accepted narrow compatibility exception; tightening that exception may happen later without changing the product contract.
+
 ## Normalization boundary
 
 Raw tokScale JSON and raw provider/RPC responses must not become renderer contracts.
@@ -221,30 +223,16 @@ The `window.tokenMonitor` compatibility layer may shape these normalized results
 
 ## Renderer compatibility facade
 
-Preserve only the API surface required by the retained v2 UX.
+Preserve only the API surface that the retained v2 renderer actually calls. The current `window.tokenMonitor` facade is intentionally small:
 
-Keep these capability groups:
+- usage/dashboard: `getStats`, `getDashboardHistory`, `getSessionDetail`, `getTokscaleStatus`;
+- settings: `getSettings`, `updateSettings`;
+- floating monitor: `getFloatingBubbleState`, `collapseFloatingBubbleIfIdle`, `expandFloatingBubble`, `peekFloatingBubble`, `moveFloatingBubble`;
+- tray summary: `updateTraySummary`.
 
-- settings: `getSettings`, `updateSettings`, settings push;
-- usage/dashboard: `getStats`, `getDashboardHistory`, stats/history push, `getSessionDetail`;
-- floating/window: expand, move, peek, idle-collapse, collapsed-size, minimize, close, state push;
-- tray/view/appearance: tray icons, appearance preview, view state, theme/open-view/window-visibility events;
-- dashboard window controls;
-- current Token Lens app-update state/policy at the product-behavior level;
-- current Token Lens tokScale lifecycle/status behavior;
-- basic utilities such as app info, external links, clipboard, and user-data location;
-- read-only Codex/Antigravity account identity needed by retained UI.
+Native window controls such as minimize, close, drag, always-on-top, and window state use Tauri APIs directly. Tray navigation arrives through a narrow Tauri event rather than a recreated Electron IPC surface.
 
-Remove these capability groups from v2:
-
-- Hub/multi-device APIs;
-- unrelated provider facades;
-- general credential/account mutation;
-- client-source repair/diagnostic APIs;
-- export and retained-session archive management;
-- service status and Codex reset forecast;
-- manual subscription-cost tracking;
-- standalone model-pricing lookup.
+Do not recreate v1 facade APIs for unreachable or explicitly removed UI. Hub/multi-device, unrelated provider facades, credential/account mutation, account switching, diagnostics/repair, export/session archive management, service status, updater/download surfaces, manual subscription-cost tracking, and standalone model-pricing lookup remain out of scope unless a later architecture decision makes one reachable again.
 
 Removing standalone model-pricing lookup does not remove model/session usage. tokScale supplies model/session aggregation and row cost directly.
 

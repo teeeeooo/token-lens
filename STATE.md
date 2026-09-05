@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Core tokScale data path, preserved renderer surface, fixed-range refresh semantics, floating-bubble behavior, and the retained native tray shell are implemented on `feat/v2-tokscale-vertical-slice`.
+v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`. The branch is in release-candidate hardening/validation: CSP and retired-subsystem CSS cleanup are applied, the current stack requires a final native CI/package run, and the remaining product gate is packaged Windows runtime/visual validation.
 
 ## Accepted baseline
 
@@ -27,7 +27,8 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
 - Codex reasoning follows the v1 additive public-total convention without double-counting Claude/Gemini/AGY reasoning;
-- the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
+- the renderer preserves the Token Lens stylesheet/class vocabulary, icon language, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI; retired Hub/export/diagnostic/service-status/updater/account-switch/session-archive CSS has been removed while provider icon/style assets remain available for later explicit provider adapters;
+- the Tauri WebView now restores the v1 defense-in-depth CSP boundary: scripts are self-only, Tauri IPC is the only non-self renderer connection surface, object/base/form/frame surfaces are blocked, and only inline style mutation remains narrowly allowed for the retained dynamic visual renderer;
 - the retained appearance subset is implemented: the three built-in Default/Obsidian/Porcelain presets, persisted 70–160% zoom, optional compact total tokens using fixed `K/M/B` units, OS-driven `prefers-reduced-motion`, and always-on live/tool indicators; custom colors/fonts/theme codes/layout swapping remain intentionally excluded;
 - Windows backdrop settings are narrowed to `Off` / `Acrylic` with Acrylic default-on; the native Tauri window-effects API owns Acrylic, floating-bubble collapse clears it, expansion restores it when enabled, and effect-application failure is deliberately non-fatal rather than falling back to the v1 experimental Accent Blur path;
 - Home restores Limits, Models, and long-range Activity/Trend modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
@@ -72,14 +73,14 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - no Antigravity installation/process or provider-owned credential source is present on the current Mac, so live AGY quota values remain an external validation gate;
 - a native macOS debug `.app` bundle contains `Contents/MacOS/tokscale` beside `token-lens`, and the packaged sidecar reports exactly `tokscale 4.15.1`; Windows NSIS keeps the same adjacent Tauri `externalBin` layout, while the no-install artifact now restores the v1 single-file UX by appending a gzip-compressed pinned `tokscale.exe` payload to the normal Tauri GUI executable;
 - portable tokScale extraction is isolated under the system temp directory, guarded by an active-run lock, removed on normal adapter/process teardown, and followed by best-effort cleanup of unlocked stale run directories on a later portable launch; explicit `TOKEN_LENS_TOKSCALE_BIN` remains the only higher-priority developer/test override;
-- the packaging helper now emits `Token-Lens-Setup-<version>.exe`, `Token-Lens-<version>.exe`, and `SHA256SUMS.txt`, verifies the original sidecar is exactly tokScale 4.15.1, and rejects signed or non-GUI PE output for the installer, normal app executable, and single-file portable; native Windows artifact generation and the Windows-only active-lock cleanup test remain the immediate validation gate for this new package shape.
+- the packaging helper emits `Token-Lens-Setup-<version>.exe`, `Token-Lens-<version>.exe`, and `SHA256SUMS.txt`, verifies the original sidecar is exactly tokScale 4.15.1, and rejects signed or non-GUI PE output for the installer, normal app executable, and single-file portable; the native Windows packaging workflow and Windows-only active-lock cleanup test have already passed for the single-EXE package shape, so the remaining release gate is runtime/visual validation on a real Windows machine.
 
 ## Next action
 
-Single-EXE portable packaging is implemented locally; the next gate is native Windows package validation, followed by runtime/visual validation:
+Run the final native macOS/Windows CI and Windows packaging workflows for the current hardening stack. Once they are green, no additional implementation gate remains before packaged Windows runtime/visual validation:
 
-1. run the Windows x64 packaging workflow and confirm it emits the unsigned NSIS installer plus `Token-Lens-<version>.exe`, passes the Windows-only active-lock cleanup test, and records matching SHA-256 checksums;
-2. install/run the NSIS artifact and run the single-file portable artifact, confirming the installed build resolves adjacent tokScale 4.15.1 while the portable build resolves the extracted `embedded-portable` tokScale 4.15.1 source;
+1. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
+2. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
 3. validate Acrylic, floating-bubble behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
@@ -92,7 +93,7 @@ Production tokScale packaging is wired through Tauri `externalBin` for installed
 
 The final retained-facade audit found no reason to recreate v1 Electron-only push/utility APIs for unreachable UI. The current renderer calls only the implemented settings/stats/history/session/floating/tray surface; minimize/close/window state use Tauri directly, and hardened v1 app-update/download/account-mutation/diagnostic/export surfaces remain absent by policy.
 
-Implementation-time validation still required:
+External/runtime validation still required:
 
 - Claude quota against a fresh valid Claude credential;
 - Codex Business `individualLimit` end-to-end validation on an actual Business account;

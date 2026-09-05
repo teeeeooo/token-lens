@@ -43,6 +43,7 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - `x86_64-pc-windows-msvc` cargo check passes from macOS with the Windows target/toolchain resources, but this is compile validation rather than native Windows UX validation;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
 - frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, Windows target check, and npm audit pass;
+- v2 GitHub Actions now runs the non-credentialed frontend/Rust checks, Clippy, npm audit, and native Tauri debug build on both `macos-latest` and `windows-latest`; the first native matrix run passed on both hosts;
 - tray, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
 
 ## Next action

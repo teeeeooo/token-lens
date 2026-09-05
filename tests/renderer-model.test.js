@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  compactTotalLabel,
   formatCompact,
   homeQuotaWindows,
   formatQuotaCount,
@@ -46,6 +47,9 @@ test('compact formatter keeps dashboard-scale labels', () => {
   assert.equal(formatCompact(999), '999');
   assert.equal(formatCompact(12_300), '12.3K');
   assert.equal(formatCompact(12_300_000), '12.3M');
+  assert.equal(compactTotalLabel(999, true), '');
+  assert.equal(compactTotalLabel(12_300, false), '');
+  assert.equal(compactTotalLabel(12_300, true), '≈ 12.3K');
 });
 test('quota rows keep the supported-provider product surface and additional lanes', () => {
   const rows = quotaRows({ providers: [{

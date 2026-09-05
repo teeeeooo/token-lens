@@ -12,6 +12,7 @@ import {
 } from './fixed-periods.js';
 import {
   clientColor,
+  compactTotalLabel,
   formatCompact,
   formatCost,
   formatNumber,
@@ -27,6 +28,7 @@ import {
 } from './renderer-model.js';
 import { exchangeRows, periodStartTimeMs } from './session-detail-model.js';
 import { historyViewModel } from './history-model.js';
+import { THEME_PRESETS, applyThemePreset, normalizeThemePreset, normalizeZoomFactor } from './appearance-model.js';
 
 installTokenMonitorFacade();
 
@@ -62,6 +64,10 @@ const state = {
     floatingBubbleEnabled: false,
     floatingBubbleTrigger: 'click',
     floatingBubbleContent: 'icon',
+    themePreset: 'default',
+    zoomFactor: 1,
+    showCompactTotalTokens: false,
+    windowsBackdrop: 'acrylic',
   },
   floatingBubble: { collapsed: false, side: null },
   settingsOpen: false,
@@ -133,10 +139,34 @@ root.innerHTML = `
           <p class="settings-note v2-settings-note">Bubble display currently preserves the original icon-only mode.</p>
         </div>
       </div>
+      <div class="settings-group settings-collapsible-group v2-settings-card">
+        <div class="settings-group-header"><span>Appearance</span></div>
+        <div class="settings-item v2-theme-item">
+          <span class="settings-item-text"><span class="settings-item-title">Theme</span></span>
+          <div id="themePresetChips" class="theme-preset-chips" role="radiogroup" aria-label="Interface theme"></div>
+        </div>
+        <div class="settings-item settings-slider-item v2-zoom-item">
+          <span class="settings-item-text"><span class="settings-item-title">Zoom</span></span>
+          <input id="zoomInput" type="range" min="70" max="160" step="10" value="100" aria-label="Zoom percentage" />
+          <span id="zoomValue" class="slider-value">100%</span>
+        </div>
+        <label class="checkbox-label settings-item">
+          <span class="settings-item-text"><span class="settings-item-title">Compact Total</span></span>
+          <input id="compactTotalInput" type="checkbox" />
+          <span class="settings-note settings-item-desc">Show an approximate K/M/B total beside the full token count.</span>
+        </label>
+        <div id="windowsBackdropRow" class="settings-item hidden">
+          <span id="windowsBackdropLabel" class="settings-item-text"><span class="settings-item-title">Windows Backdrop</span></span>
+          <div class="inline-options" role="radiogroup" aria-labelledby="windowsBackdropLabel">
+            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="off" /><span>Off</span></label>
+            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="acrylic" /><span>Acrylic</span></label>
+          </div>
+        </div>
+      </div>
     </section>
     <section class="total-panel">
       <div class="label-row"><span>TOTAL TOKENS</span></div>
-      <div class="total-number-row"><div id="totalTokens" class="total-number">0</div></div>
+      <div class="total-number-row"><div id="totalTokens" class="total-number">0</div><span id="totalTokensCompact" class="total-compact hidden"></span></div>
       <div id="cost" class="cost">$0.00</div>
     </section>
     <section id="homePanel" class="home-panel"></section>
@@ -162,6 +192,7 @@ const els = {
   status: document.querySelector('#status'),
   liveDot: document.querySelector('#liveDot'),
   totalTokens: document.querySelector('#totalTokens'),
+  totalTokensCompact: document.querySelector('#totalTokensCompact'),
   cost: document.querySelector('#cost'),
   monthPeriodTab: document.querySelector('#monthPeriodTab'),
   monthPeriodMenu: document.querySelector('#monthPeriodMenu'),
@@ -176,6 +207,12 @@ const els = {
   floatingBubbleInput: document.querySelector('#floatingBubbleInput'),
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
   floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')),
+  themePresetChips: document.querySelector('#themePresetChips'),
+  zoomInput: document.querySelector('#zoomInput'),
+  zoomValue: document.querySelector('#zoomValue'),
+  compactTotalInput: document.querySelector('#compactTotalInput'),
+  windowsBackdropRow: document.querySelector('#windowsBackdropRow'),
+  windowsBackdropInputs: Array.from(document.querySelectorAll('input[name="windowsBackdrop"]')),
   floatingBubbleTab: document.querySelector('#floatingBubbleTab'),
   viewSwitcher: document.querySelector('#viewSwitcher'),
   refreshButton: document.querySelector('#refreshButton'),
@@ -189,6 +226,25 @@ function setStatus(message = '', error = false) {
   els.liveDot.classList.toggle('live', !error && Boolean(state.stats));
 }
 
+function renderThemePresetControls() {
+  const active = state.settings.themePreset;
+  els.themePresetChips.replaceChildren(...THEME_PRESETS.map((preset) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `theme-preset-chip${preset.id === active ? ' active' : ''}`;
+    chip.setAttribute('role', 'radio');
+    chip.setAttribute('aria-checked', String(preset.id === active));
+    const dot = document.createElement('span');
+    dot.className = 'theme-preset-dot';
+    dot.style.background = preset.accent;
+    const label = document.createElement('span');
+    label.textContent = preset.label;
+    chip.append(dot, label);
+    chip.addEventListener('click', () => void saveSettings({ themePreset: preset.id }));
+    return chip;
+  }));
+}
+
 function applySettings(settings = {}) {
   state.settings = {
     ...state.settings,
@@ -197,13 +253,23 @@ function applySettings(settings = {}) {
     floatingBubbleEnabled: settings.floatingBubbleEnabled === true,
     floatingBubbleTrigger: settings.floatingBubbleTrigger === 'hover' ? 'hover' : 'click',
     floatingBubbleContent: 'icon',
+    themePreset: normalizeThemePreset(settings.themePreset ?? state.settings.themePreset),
+    zoomFactor: normalizeZoomFactor(settings.zoomFactor ?? state.settings.zoomFactor),
+    showCompactTotalTokens: settings.showCompactTotalTokens === true,
+    windowsBackdrop: settings.windowsBackdrop === 'off' ? 'off' : 'acrylic',
   };
+  applyThemePreset(document.documentElement, state.settings.themePreset);
   els.showTrayIconInput.checked = state.settings.showTrayIcon;
   els.floatingBubbleInput.checked = state.settings.floatingBubbleEnabled;
   els.floatingBubbleOptions.classList.toggle('hidden', !state.settings.floatingBubbleEnabled);
-  for (const input of els.floatingBubbleTriggerInputs) {
-    input.checked = input.value === state.settings.floatingBubbleTrigger;
-  }
+  els.zoomInput.value = String(Math.round(state.settings.zoomFactor * 100));
+  els.zoomValue.textContent = `${els.zoomInput.value}%`;
+  els.compactTotalInput.checked = state.settings.showCompactTotalTokens;
+  els.windowsBackdropRow.classList.toggle('hidden', !isWindows);
+  for (const input of els.floatingBubbleTriggerInputs) input.checked = input.value === state.settings.floatingBubbleTrigger;
+  for (const input of els.windowsBackdropInputs) input.checked = input.value === state.settings.windowsBackdrop;
+  renderThemePresetControls();
+  if (state.stats) renderHeadline();
 }
 
 function applyFloatingBubbleState(payload = {}) {
@@ -293,7 +359,11 @@ function syncPeriodTabs() {
 
 function renderHeadline() {
   const period = currentPeriod();
-  els.totalTokens.textContent = formatNumber(period.totalTokens);
+  const total = Math.max(0, Number(period.totalTokens) || 0);
+  els.totalTokens.textContent = formatNumber(total);
+  const compactLabel = compactTotalLabel(total, state.settings.showCompactTotalTokens);
+  els.totalTokensCompact.textContent = compactLabel;
+  els.totalTokensCompact.classList.toggle('hidden', !compactLabel);
   els.cost.textContent = formatCost(period.costUsd);
   syncPeriodTabs();
 }
@@ -1048,6 +1118,20 @@ els.floatingBubbleInput.addEventListener('change', () => {
 for (const input of els.floatingBubbleTriggerInputs) {
   input.addEventListener('change', () => {
     if (input.checked) void saveSettings({ floatingBubbleTrigger: input.value });
+  });
+}
+els.zoomInput.addEventListener('input', () => {
+  els.zoomValue.textContent = `${els.zoomInput.value}%`;
+});
+els.zoomInput.addEventListener('change', () => {
+  void saveSettings({ zoomFactor: normalizeZoomFactor(Number(els.zoomInput.value) / 100) });
+});
+els.compactTotalInput.addEventListener('change', () => {
+  void saveSettings({ showCompactTotalTokens: els.compactTotalInput.checked });
+});
+for (const input of els.windowsBackdropInputs) {
+  input.addEventListener('change', () => {
+    if (input.checked) void saveSettings({ windowsBackdrop: input.value });
   });
 }
 

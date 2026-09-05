@@ -28,7 +28,8 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
 - Codex reasoning follows the v1 additive public-total convention without double-counting Claude/Gemini/AGY reasoning;
 - the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
-- the retained appearance scope is now explicit: built-in theme presets, zoom, compact total tokens, OS-driven reduced motion, always-on live/tool indicators, and Windows `Off` / `Acrylic` only; custom colors/fonts/theme codes/layout swapping and v1 experimental Accent Blur are intentionally excluded;
+- the retained appearance subset is implemented: the three built-in Default/Obsidian/Porcelain presets, persisted 70–160% zoom, optional compact total tokens using fixed `K/M/B` units, OS-driven `prefers-reduced-motion`, and always-on live/tool indicators; custom colors/fonts/theme codes/layout swapping remain intentionally excluded;
+- Windows backdrop settings are narrowed to `Off` / `Acrylic` with Acrylic default-on; the native Tauri window-effects API owns Acrylic, floating-bubble collapse clears it, expansion restores it when enabled, and effect-application failure is deliberately non-fatal rather than falling back to the v1 experimental Accent Blur path;
 - Home restores Limits, Models, and long-range Activity/Trend modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
 - dashboard history is sourced directly from `tokscale graph` through a normalized `HistoryReport` and retained `getDashboardHistory` facade rather than the v1 persisted history subsystem; the rolling-year heatmap and 45-point trend patch today's bucket from live stats and preserve horizontal scroll position across refreshes;
 - DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri;
@@ -38,7 +39,7 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - overlapping renderer refreshes are serialized and coalesced so period changes cannot race an in-flight tokScale scan;
 - the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
 - macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
-- a minimal persisted settings store now owns floating-bubble enablement and click/hover trigger mode; bubble content is intentionally limited to the original icon-only mode for this slice;
+- the persisted settings store now owns the retained floating/tray and appearance controls, with older v2 settings receiving the new appearance defaults through serde-default migration; bubble content remains intentionally limited to the original icon-only mode;
 - floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs;
 - floating-bubble geometry is DPI-aware and recalculates the physical 34px-logical handle size when moving between monitors;
 - Windows-specific bubble policy is explicit: collapse against full monitor bounds with zero edge margin, while macOS/other desktop targets use the work area with the original vertical margin;
@@ -74,9 +75,9 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 
 Close the remaining user-facing parity work, then move into packaging:
 
-1. implement the accepted appearance subset: built-in presets, persisted zoom, compact-total toggle, OS-driven reduced motion, and Windows default-on Acrylic with floating-bubble suspend/restore;
-2. run a final retained-facade/UI parity audit and implement only basic utilities that are actually reachable from retained v2 UX;
-3. wire production tokScale sidecar/resource resolution and Windows release packaging, then use packaged artifacts for native Windows visual/interaction validation.
+1. run a final retained-facade/UI parity audit against the reachable v2 UX and implement only basic utilities that are still genuinely required;
+2. wire production tokScale sidecar/resource resolution and Windows release packaging;
+3. use the packaged Windows artifact to validate Acrylic, floating-bubble behavior, common DPI scales, multi-monitor movement, and final visual/interaction parity on native Windows.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
 
@@ -93,8 +94,8 @@ Implementation-time validation still required:
 - Gemini CLI quota end-to-end validation while the provider-owned OAuth access token is already valid;
 - AGY quota against a live Antigravity app/CLI/IDE source, plus automatic remote fallback only if an Antigravity-owned credential source is confirmed;
 - packaged tokScale resolution on release artifacts;
-- native Windows floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and expansion restore;
-- final macOS/Windows visual parity after tray behavior is restored.
+- native Windows Acrylic plus floating-bubble validation at common DPI scales (100/125/150%), multi-monitor movement, taskbar/skip-taskbar behavior, transparent mini-window chrome, and Acrylic suspend/restore across collapse/expansion;
+- final macOS/Windows visual parity on packaged artifacts.
 
 ## Authoritative references
 

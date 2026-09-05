@@ -13,13 +13,34 @@ pub enum FloatingBubbleTrigger {
     Hover,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreset {
+    #[default]
+    Default,
+    Obsidian,
+    Porcelain,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowsBackdrop {
+    Off,
+    #[default]
+    Acrylic,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     pub show_tray_icon: bool,
     pub floating_bubble_enabled: bool,
     pub floating_bubble_trigger: FloatingBubbleTrigger,
     pub floating_bubble_content: String,
+    pub theme_preset: ThemePreset,
+    pub zoom_factor: f64,
+    pub show_compact_total_tokens: bool,
+    pub windows_backdrop: WindowsBackdrop,
 }
 
 impl Default for AppSettings {
@@ -29,6 +50,10 @@ impl Default for AppSettings {
             floating_bubble_enabled: false,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
             floating_bubble_content: "icon".to_owned(),
+            theme_preset: ThemePreset::Default,
+            zoom_factor: 1.0,
+            show_compact_total_tokens: false,
+            windows_backdrop: WindowsBackdrop::Acrylic,
         }
     }
 }
@@ -40,6 +65,10 @@ pub struct SettingsPatch {
     pub floating_bubble_enabled: Option<bool>,
     pub floating_bubble_trigger: Option<FloatingBubbleTrigger>,
     pub floating_bubble_content: Option<String>,
+    pub theme_preset: Option<ThemePreset>,
+    pub zoom_factor: Option<f64>,
+    pub show_compact_total_tokens: Option<bool>,
+    pub windows_backdrop: Option<WindowsBackdrop>,
 }
 
 pub struct SettingsStore {
@@ -82,6 +111,18 @@ impl SettingsStore {
         if let Some(content) = patch.floating_bubble_content {
             value.floating_bubble_content = content;
         }
+        if let Some(theme) = patch.theme_preset {
+            value.theme_preset = theme;
+        }
+        if let Some(zoom) = patch.zoom_factor {
+            value.zoom_factor = zoom;
+        }
+        if let Some(compact) = patch.show_compact_total_tokens {
+            value.show_compact_total_tokens = compact;
+        }
+        if let Some(backdrop) = patch.windows_backdrop {
+            value.windows_backdrop = backdrop;
+        }
         *value = normalize_settings(value.clone());
         write_settings(&self.path, &value)?;
         Ok(value.clone())
@@ -92,6 +133,10 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
     if value.floating_bubble_content != "icon" {
         value.floating_bubble_content = "icon".to_owned();
     }
+    if !value.zoom_factor.is_finite() {
+        value.zoom_factor = 1.0;
+    }
+    value.zoom_factor = (value.zoom_factor.clamp(0.7, 1.6) * 10.0).round() / 10.0;
     value
 }
 fn read_settings(path: &Path) -> Option<AppSettings> {
@@ -113,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_keep_floating_bubble_disabled_and_icon_only() {
+    fn defaults_keep_retained_shell_and_appearance_policy() {
         let settings = AppSettings::default();
         assert!(settings.show_tray_icon);
         assert!(!settings.floating_bubble_enabled);
@@ -122,6 +167,10 @@ mod tests {
             FloatingBubbleTrigger::Click
         );
         assert_eq!(settings.floating_bubble_content, "icon");
+        assert_eq!(settings.theme_preset, ThemePreset::Default);
+        assert_eq!(settings.zoom_factor, 1.0);
+        assert!(!settings.show_compact_total_tokens);
+        assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
     }
 
     #[test]
@@ -131,6 +180,32 @@ mod tests {
             ..AppSettings::default()
         });
         assert_eq!(normalized.floating_bubble_content, "icon");
+    }
+
+    #[test]
+    fn zoom_is_clamped_to_retained_v1_range_and_step() {
+        let high = normalize_settings(AppSettings {
+            zoom_factor: 4.0,
+            ..AppSettings::default()
+        });
+        let stepped = normalize_settings(AppSettings {
+            zoom_factor: 1.24,
+            ..AppSettings::default()
+        });
+        assert_eq!(high.zoom_factor, 1.6);
+        assert_eq!(stepped.zoom_factor, 1.2);
+    }
+
+    #[test]
+    fn older_v2_settings_gain_appearance_defaults() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"showTrayIcon":false,"floatingBubbleEnabled":true,"floatingBubbleTrigger":"hover","floatingBubbleContent":"icon"}"#,
+        )
+        .expect("older v2 settings should deserialize");
+        assert_eq!(settings.theme_preset, ThemePreset::Default);
+        assert_eq!(settings.zoom_factor, 1.0);
+        assert!(!settings.show_compact_total_tokens);
+        assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
     }
 
     #[test]

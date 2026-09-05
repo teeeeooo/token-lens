@@ -42,6 +42,11 @@ export function formatCompact(value) {
   return `${(number / 1_000_000_000).toFixed(number >= 100_000_000_000 ? 0 : 1)}B`;
 }
 
+export function compactTotalLabel(value, enabled) {
+  const number = Math.max(0, finite(value));
+  return enabled === true && number >= 1_000 ? `≈ ${formatCompact(number)}` : '';
+}
+
 export function formatCost(value) {
   return `$${Math.max(0, finite(value)).toFixed(2)}`;
 }

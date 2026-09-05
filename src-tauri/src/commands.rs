@@ -1,4 +1,5 @@
 use crate::antigravity_quota;
+use crate::appearance;
 use crate::codex_business;
 use crate::domain::{
     HistoryReport, QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport,
@@ -120,6 +121,8 @@ pub fn update_settings(
     if !updated.floating_bubble_enabled {
         floating_bubble::expand_if_disabled(&window, &settings, &bubble)?;
     }
+    let bubble_collapsed = floating_bubble::current_state(&settings, &bubble)?.collapsed;
+    appearance::apply_to_window(&window, &updated, bubble_collapsed)?;
     Ok(updated)
 }
 

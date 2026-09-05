@@ -1,3 +1,4 @@
+use crate::appearance;
 use crate::settings::SettingsStore;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -285,6 +286,7 @@ pub fn collapse(
     state.collapsed = true;
     state.side = Some(side_for(target, area));
     apply_collapsed_window(window, target)?;
+    appearance::apply_backdrop(window, &settings.get()?, true);
     payload(settings, &state)
 }
 fn apply_collapsed_window(window: &WebviewWindow, target: Bounds) -> Result<(), String> {
@@ -370,6 +372,7 @@ pub fn expand(
     }
     state.collapsed = false;
     state.side = None;
+    appearance::apply_backdrop(window, &settings.get()?, false);
     payload(settings, &state)
 }
 

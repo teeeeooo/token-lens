@@ -1,5 +1,6 @@
 mod antigravity_local;
 mod antigravity_quota;
+mod appearance;
 mod codex_business;
 mod commands;
 mod domain;
@@ -33,6 +34,9 @@ pub fn run() {
             })?;
             let settings_store = SettingsStore::load(config_dir)?;
             let initial_settings = settings_store.get()?;
+            if let Some(window) = app.get_webview_window("main") {
+                appearance::apply_to_window(&window, &initial_settings, false)?;
+            }
             app.manage(settings_store);
             app.manage(FloatingBubbleController::default());
             tray::initialize(app.handle(), &initial_settings)?;

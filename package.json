@@ -11,6 +11,8 @@
     "build": "tauri build",
     "frontend:dev": "vite",
     "frontend:build": "vite build",
+    "prepare:tokscale-sidecar": "node scripts/tokscale-sidecar.mjs",
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "test:frontend": "node --test",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:live": "cargo test --manifest-path src-tauri/Cargo.toml live_ -- --ignored",

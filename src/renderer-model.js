@@ -170,6 +170,7 @@ export function quotaRows(limits) {
       providerId: id,
       name: clientLabel(id).replace(' Code', ''),
       plan: String(provider?.planLabel || ''),
+      accountEmail: String(provider?.accountEmail || '').trim(),
       status: provider?.status || 'unavailable',
       color: clientColor(id),
       iconClass: iconClassForClient(id),

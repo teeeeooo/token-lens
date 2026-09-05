@@ -69,15 +69,16 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - AGY quota now uses an isolated local-language-server adapter: it detects running Antigravity app, `agy`/CLI, and IDE processes in that order, probes only `127.0.0.1`, prefers grouped `RetrieveUserQuotaSummary`, and falls back to `GetUserStatus` / `GetCommandModelConfigs` without reintroducing the v1 quota framework;
 - AGY grouped local quota preserves Gemini and Claude/GPT 5-hour/weekly lanes; legacy local or remote model-only payloads remain conservative family windows and do not invent cadence;
 - the AGY remote OAuth path is deliberately only an explicit already-valid credential-snapshot seam (`ANTIGRAVITY_OAUTH_CREDENTIALS_FILE`); Token Lens does not log in, refresh, persist, onboard, or read another monitor's credential store;
-- no Antigravity installation/process or provider-owned credential source is present on the current Mac, so live AGY quota values remain an external validation gate.
+- no Antigravity installation/process or provider-owned credential source is present on the current Mac, so live AGY quota values remain an external validation gate;
+- a native macOS debug `.app` bundle now contains `Contents/MacOS/tokscale` beside `token-lens`, and the packaged sidecar reports exactly `tokscale 4.15.1`; Windows artifact layout remains the native workflow validation gate.
 
 ## Next action
 
-Close the remaining user-facing parity work, then move into packaging:
+Packaging is wired; the remaining gate is native Windows artifact/runtime validation:
 
-1. run a final retained-facade/UI parity audit against the reachable v2 UX and implement only basic utilities that are still genuinely required;
-2. wire production tokScale sidecar/resource resolution and Windows release packaging;
-3. use the packaged Windows artifact to validate Acrylic, floating-bubble behavior, common DPI scales, multi-monitor movement, and final visual/interaction parity on native Windows.
+1. run the dedicated Windows x64 packaging workflow and verify the unsigned NSIS installer, portable ZIP, checksums, and bundled tokScale 4.15.1 resolution;
+2. install/run the packaged Windows artifact and validate Acrylic, floating-bubble behavior, common DPI scales, multi-monitor movement, and taskbar/restore behavior;
+3. perform the final macOS/Windows visual/interaction parity pass and close only defects that affect the retained v2 product contract.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
 
@@ -85,7 +86,9 @@ Antigravity remote OAuth remains conditional: wire it only if an Antigravity-own
 
 No architecture decision currently blocks implementation.
 
-Packaging remains separate: development resolves the npm-installed native tokScale binary, but the production Tauri resource/sidecar path is not wired yet. Preserve the current Token Lens tokScale lifecycle policy when packaging is implemented.
+Production tokScale packaging is now wired through Tauri `externalBin`: the build stages the platform-native 4.15.1 npm binary under the required target-triple name, validates package identity plus `--version`, and runtime discovery prefers the sidecar next to the packaged app executable. The hardened no-runtime-download/update policy is unchanged.
+
+The final retained-facade audit found no reason to recreate v1 Electron-only push/utility APIs for unreachable UI. The current renderer calls only the implemented settings/stats/history/session/floating/tray surface; minimize/close/window state use Tauri directly, and hardened v1 app-update/download/account-mutation/diagnostic/export surfaces remain absent by policy.
 
 Implementation-time validation still required:
 

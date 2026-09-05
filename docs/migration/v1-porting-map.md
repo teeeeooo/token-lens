@@ -93,7 +93,7 @@ Do not carry these v1 units into v2 as architectural owners:
 - diagnostics/service-status subsystems;
 - export infrastructure;
 - macOS WidgetKit integration;
-- old Electron packaging scripts and Electron-specific CI;
+- old Electron packaging scripts and Electron-specific CI; preserve no-install Windows availability and checksums through Tauri-native packaging instead of porting the old builder implementation;
 - upstream Token Monitor documentation that does not describe Token Lens v2.
 
 When useful behavior exists inside one of these units, extract the smallest required semantic into the new architecture instead of importing the owner wholesale.

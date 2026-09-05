@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-v2/
 .DS_Store
 *.log
 .env
@@ -7,3 +8,4 @@ dist/
 !.env.example
 src-tauri/target/
 src-tauri/gen/
+src-tauri/binaries/tokscale-*

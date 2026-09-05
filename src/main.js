@@ -906,7 +906,7 @@ function renderLimits() {
     name.className = 'limit-name';
     name.append(iconSpan(row.iconClass, row.color));
     const title = document.createElement('span');
-    title.textContent = row.name;
+    title.textContent = row.accountEmail ? `${row.name} · ${row.accountEmail}` : row.name;
     name.append(title);
     const plan = document.createElement('span');
     plan.className = 'limit-plan';

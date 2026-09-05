@@ -31,6 +31,12 @@ impl TokscaleAdapter {
             }
         }
 
+        if let Some(candidate) = bundled_binary_candidate() {
+            if is_executable_candidate(&candidate) {
+                return Ok(Self::new(candidate, "bundled-sidecar"));
+            }
+        }
+
         if let Some(candidate) = project_binary_candidate() {
             if is_executable_candidate(&candidate) {
                 return Ok(Self::new(candidate, "project-package"));
@@ -171,6 +177,14 @@ fn binary_name() -> &'static str {
 
 fn is_executable_candidate(path: &Path) -> bool {
     path.is_file()
+}
+
+fn bundled_binary_candidate() -> Option<PathBuf> {
+    bundled_binary_candidate_from(&env::current_exe().ok()?)
+}
+
+fn bundled_binary_candidate_from(executable: &Path) -> Option<PathBuf> {
+    Some(executable.parent()?.join(binary_name()))
 }
 
 fn project_binary_candidate() -> Option<PathBuf> {
@@ -692,6 +706,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_candidate_is_resolved_next_to_the_app_executable() {
+        let executable = if cfg!(windows) {
+            PathBuf::from(r"C:\Program Files\Token Lens\token-lens.exe")
+        } else {
+            PathBuf::from("/Applications/Token Lens.app/Contents/MacOS/token-lens")
+        };
+        let candidate = bundled_binary_candidate_from(&executable).expect("candidate");
+        assert_eq!(
+            candidate.file_name().and_then(|value| value.to_str()),
+            Some(binary_name())
+        );
+        assert_eq!(candidate.parent(), executable.parent());
+    }
 
     const USAGE_FIXTURE: &str = r#"{
       "groupBy":"client,session,model",

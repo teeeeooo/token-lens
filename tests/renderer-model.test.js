@@ -53,7 +53,7 @@ test('compact formatter keeps dashboard-scale labels', () => {
 });
 test('quota rows keep the supported-provider product surface and additional lanes', () => {
   const rows = quotaRows({ providers: [{
-    provider: 'codex', planLabel: 'Plus', status: 'ok',
+    provider: 'codex', planLabel: 'Plus', accountEmail: 'dev@example.com', status: 'ok',
     windows: [
       { kind: 'session', remainingPercent: 35, label: '5h' },
       { kind: 'weekly', remainingPercent: 0, label: 'Weekly' },
@@ -69,6 +69,7 @@ test('quota rows keep the supported-provider product surface and additional lane
 
   assert.deepEqual(rows.map((row) => row.providerId), ['codex', 'claude', 'gemini', 'antigravity']);
   assert.equal(rows[0].plan, 'Plus');
+  assert.equal(rows[0].accountEmail, 'dev@example.com');
   assert.equal(rows[0].windows[2].additional, true);
   assert.equal(rows[0].windows[3].metric, 'credits');
   assert.equal(rows[0].windows[3].currency, 'CREDITS');

@@ -16,6 +16,7 @@ pub enum FloatingBubbleTrigger {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
+    pub show_tray_icon: bool,
     pub floating_bubble_enabled: bool,
     pub floating_bubble_trigger: FloatingBubbleTrigger,
     pub floating_bubble_content: String,
@@ -24,6 +25,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            show_tray_icon: true,
             floating_bubble_enabled: false,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
             floating_bubble_content: "icon".to_owned(),
@@ -34,6 +36,7 @@ impl Default for AppSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPatch {
+    pub show_tray_icon: Option<bool>,
     pub floating_bubble_enabled: Option<bool>,
     pub floating_bubble_trigger: Option<FloatingBubbleTrigger>,
     pub floating_bubble_content: Option<String>,
@@ -67,6 +70,9 @@ impl SettingsStore {
             .value
             .lock()
             .map_err(|_| "settings state lock was poisoned".to_owned())?;
+        if let Some(show) = patch.show_tray_icon {
+            value.show_tray_icon = show;
+        }
         if let Some(enabled) = patch.floating_bubble_enabled {
             value.floating_bubble_enabled = enabled;
         }
@@ -109,6 +115,7 @@ mod tests {
     #[test]
     fn defaults_keep_floating_bubble_disabled_and_icon_only() {
         let settings = AppSettings::default();
+        assert!(settings.show_tray_icon);
         assert!(!settings.floating_bubble_enabled);
         assert_eq!(
             settings.floating_bubble_trigger,

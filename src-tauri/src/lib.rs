@@ -3,6 +3,7 @@ mod domain;
 mod floating_bubble;
 mod settings;
 mod tokscale;
+mod tray;
 
 use floating_bubble::FloatingBubbleController;
 use settings::SettingsStore;
@@ -23,9 +24,25 @@ pub fn run() {
             let config_dir = app.path().app_config_dir().map_err(|error| {
                 format!("failed to resolve Token Lens config directory: {error}")
             })?;
-            app.manage(SettingsStore::load(config_dir)?);
+            let settings_store = SettingsStore::load(config_dir)?;
+            let initial_settings = settings_store.get()?;
+            app.manage(settings_store);
             app.manage(FloatingBubbleController::default());
+            tray::initialize(app.handle(), &initial_settings)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let should_hide = window
+                    .state::<SettingsStore>()
+                    .get()
+                    .map(|settings| settings.show_tray_icon)
+                    .unwrap_or(false);
+                if should_hide {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_contract_version,
@@ -35,6 +52,7 @@ pub fn run() {
             commands::get_tokscale_status,
             commands::get_settings,
             commands::update_settings,
+            commands::update_tray_summary,
             commands::get_floating_bubble_state,
             commands::collapse_floating_bubble_if_idle,
             commands::expand_floating_bubble,

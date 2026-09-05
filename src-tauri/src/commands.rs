@@ -4,7 +4,8 @@ use crate::floating_bubble::{
 };
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
 use crate::tokscale::TokscaleAdapter;
-use tauri::{State, WebviewWindow};
+use crate::tray::{self, TraySummary};
+use tauri::{AppHandle, State, WebviewWindow};
 
 #[tauri::command]
 pub async fn get_usage_report(
@@ -43,16 +44,23 @@ pub fn get_settings(settings: State<'_, SettingsStore>) -> Result<AppSettings, S
 
 #[tauri::command]
 pub fn update_settings(
+    app: AppHandle,
     window: WebviewWindow,
     settings: State<'_, SettingsStore>,
     bubble: State<'_, FloatingBubbleController>,
     patch: SettingsPatch,
 ) -> Result<AppSettings, String> {
     let updated = settings.update(patch)?;
+    tray::apply_settings(&app, &updated)?;
     if !updated.floating_bubble_enabled {
         floating_bubble::expand_if_disabled(&window, &settings, &bubble)?;
     }
     Ok(updated)
+}
+
+#[tauri::command]
+pub fn update_tray_summary(app: AppHandle, summary: TraySummary) -> Result<(), String> {
+    tray::update_summary(&app, &summary)
 }
 
 #[tauri::command]

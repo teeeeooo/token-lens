@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Core tokScale data path, preserved renderer surface, fixed-range refresh semantics, and the first Tauri floating-bubble/settings slice are implemented on `feat/v2-tokscale-vertical-slice`.
+Core tokScale data path, preserved renderer surface, fixed-range refresh semantics, floating-bubble behavior, and the retained native tray shell are implemented on `feat/v2-tokscale-vertical-slice`.
 
 ## Accepted baseline
 
@@ -44,16 +44,20 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
 - frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, Windows target check, and npm audit pass;
 - v2 GitHub Actions now runs the non-credentialed frontend/Rust checks, Clippy, npm audit, and native Tauri debug build on both `macos-latest` and `windows-latest`; the first native matrix run passed on both hosts;
-- tray, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
+- the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
+- with the tray enabled, window close now hides Token Lens instead of destroying the app, matching the v1 recoverability contract; disabling the tray restores normal close behavior;
+- the renderer listens for narrow tray actions rather than reintroducing Electron IPC, and publishes only the small Today usage/cost summary needed by the native tray;
+- the v2 settings surface now controls tray visibility as well as floating-bubble behavior;
+- rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
 
 ## Next action
 
 Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. restore the retained tray behavior and only the tray actions that remain in v2 scope;
-2. extend the minimal persisted settings only where the retained tray/window surfaces require it;
-3. restore rich Codex/Claude session detail against the normalized usage/session contract;
-4. perform native Windows floating-bubble validation before declaring cross-platform visual/interaction parity complete.
+1. validate the restored tray shell through native macOS/Windows builds and keep the tray surface limited to v2-retained actions;
+2. restore rich Codex/Claude session detail against the normalized usage/session contract;
+3. perform native Windows floating-bubble/tray UX validation before declaring cross-platform visual/interaction parity complete;
+4. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core Codex/Claude/AGY monitoring UX.
 
 After the base desktop shell is stable, add Codex Business `individualLimit` and AGY quota as narrow adapters.
 

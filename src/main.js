@@ -1,5 +1,6 @@
 import './electron/renderer/styles.css';
 import './styles.css';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { installTokenMonitorFacade } from './token-monitor-facade.js';
 import {
@@ -46,6 +47,7 @@ const VIEW_META = Object.freeze({
 const state = {
   stats: null,
   settings: {
+    showTrayIcon: true,
     floatingBubbleEnabled: false,
     floatingBubbleTrigger: 'click',
     floatingBubbleContent: 'icon',
@@ -98,6 +100,11 @@ root.innerHTML = `
       <div class="settings-group settings-collapsible-group v2-settings-card">
         <div class="settings-group-header"><span>Floating & Tray</span></div>
         <label class="checkbox-label settings-item">
+          <span class="settings-item-text"><span class="settings-item-title">Tray Icon</span></span>
+          <input id="showTrayIconInput" type="checkbox" />
+          <span class="settings-note settings-item-desc">Keep Token Lens available from the system tray or menu bar.</span>
+        </label>
+        <label class="checkbox-label settings-item">
           <span class="settings-item-text"><span class="settings-item-title">Floating Bubble</span></span>
           <input id="floatingBubbleInput" type="checkbox" />
           <span class="settings-note settings-item-desc">Collapse the widget into a draggable mini-window when it loses focus.</span>
@@ -148,6 +155,7 @@ const els = {
   limitsPanel: document.querySelector('#limitsPanel'),
   settingsPanel: document.querySelector('#settingsPanel'),
   settingsButton: document.querySelector('#settingsButton'),
+  showTrayIconInput: document.querySelector('#showTrayIconInput'),
   floatingBubbleInput: document.querySelector('#floatingBubbleInput'),
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
   floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')),
@@ -168,10 +176,12 @@ function applySettings(settings = {}) {
   state.settings = {
     ...state.settings,
     ...settings,
+    showTrayIcon: settings.showTrayIcon !== false,
     floatingBubbleEnabled: settings.floatingBubbleEnabled === true,
     floatingBubbleTrigger: settings.floatingBubbleTrigger === 'hover' ? 'hover' : 'click',
     floatingBubbleContent: 'icon',
   };
+  els.showTrayIconInput.checked = state.settings.showTrayIcon;
   els.floatingBubbleInput.checked = state.settings.floatingBubbleEnabled;
   els.floatingBubbleOptions.classList.toggle('hidden', !state.settings.floatingBubbleEnabled);
   for (const input of els.floatingBubbleTriggerInputs) {
@@ -239,87 +249,7 @@ function syncPeriodMenu() {
   const activeMode = slotForSelection(state.period) === 'month'
     ? normalizeMonthMode(state.period)
     : normalizeMonthMode(state.monthMode);
-  els.settingsButton.addEventListener('click', () => {
-  state.settingsOpen = !state.settingsOpen;
-  state.viewMenuOpen = false;
-  setPeriodMenuOpen(false);
-  renderSurface();
-});
-
-els.floatingBubbleInput.addEventListener('change', () => {
-  void saveSettings({ floatingBubbleEnabled: els.floatingBubbleInput.checked });
-});
-for (const input of els.floatingBubbleTriggerInputs) {
-  input.addEventListener('change', () => {
-    if (input.checked) void saveSettings({ floatingBubbleTrigger: input.value });
-  });
-}
-
-els.floatingBubbleTab.addEventListener('pointerdown', (event) => {
-  if (!state.floatingBubble.collapsed || event.button !== 0) return;
-  clearBubbleTimer('hoverReveal');
-  floatingBubbleDrag = {
-    pointerId: event.pointerId,
-    startX: event.screenX,
-    startY: event.screenY,
-    moved: false,
-    ...floatingBubblePointerRatio(event),
-  };
-  els.floatingBubbleTab.setPointerCapture(event.pointerId);
-  event.preventDefault();
-});
-
-els.floatingBubbleTab.addEventListener('pointermove', (event) => {
-  const drag = floatingBubbleDrag;
-  if (!drag || drag.pointerId !== event.pointerId) return;
-  if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
-  drag.moved = true;
-  els.floatingBubbleTab.classList.add('dragging');
-  void window.tokenMonitor.moveFloatingBubble({
-    offsetRatioX: drag.offsetRatioX,
-    offsetRatioY: drag.offsetRatioY,
-  }).then(applyFloatingBubbleState).catch(console.error);
-  event.preventDefault();
-});
-
-els.floatingBubbleTab.addEventListener('pointerup', (event) => {
-  const drag = finishFloatingBubbleDrag(event.pointerId);
-  if (!drag) return;
-  if (drag.moved) {
-    void window.tokenMonitor.moveFloatingBubble({
-      offsetRatioX: drag.offsetRatioX,
-      offsetRatioY: drag.offsetRatioY,
-    }).then(applyFloatingBubbleState).catch(console.error);
-  } else {
-    void expandFloatingBubble({ focus: true });
-  }
-  event.preventDefault();
-});
-els.floatingBubbleTab.addEventListener('pointercancel', (event) => finishFloatingBubbleDrag(event.pointerId));
-els.floatingBubbleTab.addEventListener('keydown', (event) => {
-  if (!['Enter', ' '].includes(event.key)) return;
-  event.preventDefault();
-  void expandFloatingBubble({ focus: true });
-});
-els.floatingBubbleTab.addEventListener('mouseenter', () => {
-  if (state.settings.floatingBubbleTrigger !== 'hover' || !state.floatingBubble.collapsed) return;
-  clearBubbleTimer('hoverReveal');
-  floatingBubbleHoverRevealTimer = setTimeout(() => {
-    floatingBubbleHoverRevealTimer = null;
-    if (!floatingBubbleDrag && state.floatingBubble.collapsed) void expandFloatingBubble({ focus: false });
-  }, 250);
-});
-els.floatingBubbleTab.addEventListener('mouseleave', () => clearBubbleTimer('hoverReveal'));
-document.addEventListener('mouseleave', () => {
-  if (state.settings.floatingBubbleTrigger !== 'hover' || state.floatingBubble.collapsed) return;
-  clearBubbleTimer('hoverCollapse');
-  floatingBubbleHoverCollapseTimer = setTimeout(() => {
-    floatingBubbleHoverCollapseTimer = null;
-    void collapseFloatingBubbleIfIdle();
-  }, 200);
-});
-
-for (const button of periodMenuButtons()) {
+  for (const button of periodMenuButtons()) {
     const active = button.dataset.fixedPeriod === activeMode;
     button.classList.toggle('is-current', active);
     button.setAttribute('aria-checked', String(active));
@@ -705,6 +635,11 @@ async function refresh({ force = false } = {}) {
   setStatus('Refreshing…');
   try {
     state.stats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    const today = state.stats?.periods?.today || {};
+    await window.tokenMonitor.updateTraySummary({
+      todayTokens: Number(today.totalTokens) || 0,
+      todayCostUsd: Number(today.costUsd) || 0,
+    });
     state.lastRefreshAt = Date.now();
     setStatus();
     render();
@@ -730,6 +665,95 @@ let floatingBubbleHoverRevealTimer = null;
 let floatingBubbleHoverCollapseTimer = null;
 let floatingBubbleDrag = null;
 let stopFocusListener = null;
+let stopTrayActionListener = null;
+
+els.settingsButton.addEventListener('click', () => {
+  state.settingsOpen = !state.settingsOpen;
+  state.viewMenuOpen = false;
+  setPeriodMenuOpen(false);
+  renderSurface();
+});
+
+els.showTrayIconInput.addEventListener('change', () => {
+  void saveSettings({ showTrayIcon: els.showTrayIconInput.checked });
+});
+
+els.floatingBubbleInput.addEventListener('change', () => {
+  void saveSettings({ floatingBubbleEnabled: els.floatingBubbleInput.checked });
+});
+for (const input of els.floatingBubbleTriggerInputs) {
+  input.addEventListener('change', () => {
+    if (input.checked) void saveSettings({ floatingBubbleTrigger: input.value });
+  });
+}
+
+els.floatingBubbleTab.addEventListener('pointerdown', (event) => {
+  if (!state.floatingBubble.collapsed || event.button !== 0) return;
+  clearBubbleTimer('hoverReveal');
+  floatingBubbleDrag = {
+    pointerId: event.pointerId,
+    startX: event.screenX,
+    startY: event.screenY,
+    moved: false,
+    ...floatingBubblePointerRatio(event),
+  };
+  els.floatingBubbleTab.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+
+els.floatingBubbleTab.addEventListener('pointermove', (event) => {
+  const drag = floatingBubbleDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  if (!drag.moved && Math.hypot(event.screenX - drag.startX, event.screenY - drag.startY) < 4) return;
+  drag.moved = true;
+  els.floatingBubbleTab.classList.add('dragging');
+  void window.tokenMonitor.moveFloatingBubble({
+    offsetRatioX: drag.offsetRatioX,
+    offsetRatioY: drag.offsetRatioY,
+  }).then(applyFloatingBubbleState).catch(console.error);
+  event.preventDefault();
+});
+
+els.floatingBubbleTab.addEventListener('pointerup', (event) => {
+  const drag = finishFloatingBubbleDrag(event.pointerId);
+  if (!drag) return;
+  if (drag.moved) {
+    void window.tokenMonitor.moveFloatingBubble({
+      offsetRatioX: drag.offsetRatioX,
+      offsetRatioY: drag.offsetRatioY,
+    }).then(applyFloatingBubbleState).catch(console.error);
+  } else {
+    void expandFloatingBubble({ focus: true });
+  }
+  event.preventDefault();
+});
+
+els.floatingBubbleTab.addEventListener('pointercancel', (event) => finishFloatingBubbleDrag(event.pointerId));
+
+els.floatingBubbleTab.addEventListener('keydown', (event) => {
+  if (!['Enter', ' '].includes(event.key)) return;
+  event.preventDefault();
+  void expandFloatingBubble({ focus: true });
+});
+
+els.floatingBubbleTab.addEventListener('mouseenter', () => {
+  if (state.settings.floatingBubbleTrigger !== 'hover' || !state.floatingBubble.collapsed) return;
+  clearBubbleTimer('hoverReveal');
+  floatingBubbleHoverRevealTimer = setTimeout(() => {
+    floatingBubbleHoverRevealTimer = null;
+    if (!floatingBubbleDrag && state.floatingBubble.collapsed) void expandFloatingBubble({ focus: false });
+  }, 250);
+});
+
+els.floatingBubbleTab.addEventListener('mouseleave', () => clearBubbleTimer('hoverReveal'));
+document.addEventListener('mouseleave', () => {
+  if (state.settings.floatingBubbleTrigger !== 'hover' || state.floatingBubble.collapsed) return;
+  clearBubbleTimer('hoverCollapse');
+  floatingBubbleHoverCollapseTimer = setTimeout(() => {
+    floatingBubbleHoverCollapseTimer = null;
+    void collapseFloatingBubbleIfIdle();
+  }, 200);
+});
 
 function clearBubbleTimer(name) {
   const timer = name === 'collapse'
@@ -879,8 +903,29 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (Date.now() - state.lastRefreshAt >= AUTO_REFRESH_MS) void refresh();
 });
+async function handleTrayAction(payload = {}) {
+  if (payload.action === 'refresh') {
+    await refresh({ force: true });
+    return;
+  }
+  if (payload.action === 'openView' && VIEW_ORDER.includes(payload.view)) {
+    state.settingsOpen = false;
+    setView(payload.view);
+    return;
+  }
+  if (payload.action === 'openSettings') {
+    state.settingsOpen = true;
+    state.viewMenuOpen = false;
+    setPeriodMenuOpen(false);
+    renderSurface();
+  }
+}
+
 async function bootstrapShell() {
   try {
+    stopTrayActionListener = await listen('token-lens://tray-action', ({ payload }) => {
+      void handleTrayAction(payload).catch(console.error);
+    });
     const [settings, bubble] = await Promise.all([
       window.tokenMonitor.getSettings(),
       window.tokenMonitor.getFloatingBubbleState(),
@@ -905,6 +950,7 @@ window.addEventListener('beforeunload', () => {
   clearBubbleTimer('hoverReveal');
   clearBubbleTimer('hoverCollapse');
   stopFocusListener?.();
+  stopTrayActionListener?.();
 }, { once: true });
 
 els.pinButton.classList.add('active');

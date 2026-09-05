@@ -7,6 +7,7 @@ import {
   moveFloatingBubble,
   peekFloatingBubble,
   updateSettings,
+  updateTraySummary,
 } from './backend.js';
 import { getStats } from './stats-compat.js';
 
@@ -16,6 +17,7 @@ export function installTokenMonitorFacade(target = window) {
     getTokscaleStatus,
     getSettings,
     updateSettings,
+    updateTraySummary,
     getFloatingBubbleState,
     collapseFloatingBubbleIfIdle,
     expandFloatingBubble,

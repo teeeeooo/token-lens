@@ -42,3 +42,7 @@ export function peekFloatingBubble() {
 export function moveFloatingBubble(offset = {}) {
   return invoke('move_floating_bubble', { offset });
 }
+
+export function updateTraySummary(summary) {
+  return invoke('update_tray_summary', { summary });
+}

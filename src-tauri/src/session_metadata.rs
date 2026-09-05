@@ -475,6 +475,8 @@ mod tests {
             report.sessions[0].session_title.as_deref(),
             Some("SECRET PREVIEW")
         );
+        drop(catalog);
+        drop(state);
         fs::remove_dir_all(home).expect("remove test home");
     }
 
@@ -488,6 +490,7 @@ mod tests {
         let metadata = read_claude_metadata(&file_path);
         assert_eq!(metadata.title.as_deref(), Some("Provider title"));
         assert_eq!(metadata.project_label.as_deref(), Some("predictor"));
+        drop(file);
         fs::remove_dir_all(home).expect("remove claude fixture");
     }
 

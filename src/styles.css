@@ -44,3 +44,17 @@ html, body, #app {
   margin: 4px 0 0;
   padding: 0 2px 2px;
 }
+
+/* Keep period controls clear of the titlebar window-action hit area. */
+.title-controls {
+  height: 42px;
+}
+
+.title-controls .tabs {
+  inset: 12px 0 0;
+  height: 30px;
+}
+
+.titlebar {
+  min-height: 42px;
+}

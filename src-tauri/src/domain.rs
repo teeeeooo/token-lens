@@ -7,6 +7,7 @@ pub enum UsagePeriod {
     Week,
     Month,
     AllTime,
+    Custom,
 }
 
 impl UsagePeriod {
@@ -15,7 +16,7 @@ impl UsagePeriod {
             Self::Today => &["--today"],
             Self::Week => &["--week"],
             Self::Month => &["--month"],
-            Self::AllTime => &[],
+            Self::AllTime | Self::Custom => &[],
         }
     }
 }
@@ -42,6 +43,8 @@ impl UsageGrouping {
 #[serde(rename_all = "camelCase")]
 pub struct UsageReport {
     pub period: UsagePeriod,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
     pub grouping: UsageGrouping,
     pub generated_at_ms: u64,
     pub entries: Vec<UsageEntry>,

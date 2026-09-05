@@ -1,7 +1,11 @@
-import { getQuotaReport, getUsageReport } from './backend.js';
+import { getQuotaReport, getUsageReport, getUsageSinceReport } from './backend.js';
 
 const DISJOINT_REASONING_CLIENTS = new Set(['codex']);
 const DEFAULT_LIMIT_REFRESH_MS = 5 * 60 * 1000;
+const TODAY_CACHE_MS = 30 * 1000;
+const MONTH_CACHE_MS = 2 * 60 * 1000;
+const ALL_TIME_CACHE_MS = 5 * 60 * 1000;
+const DERIVED_CACHE_MS = 60 * 1000;
 
 function finite(value) {
   const number = Number(value);
@@ -195,22 +199,48 @@ function latestGeneratedAt(reports) {
   return Math.max(0, ...reports.map((report) => finite(report?.generatedAtMs)));
 }
 
-export function createStatsLoader({ usage = getUsageReport, quota = getQuotaReport } = {}) {
-  return async function getStats() {
-    // Match v1's serial tokScale scans: parallel native scans cause avoidable CPU spikes.
-    const today = await usage('today', 'client_session_model');
-    const month = await usage('month', 'client_session_model');
-    const allTime = await usage('all_time', 'client_session_model');
-    const limitsReport = await quota();
-    const generatedAt = latestGeneratedAt([today, month, allTime, limitsReport]);
+export function createStatsLoader({
+  usage = getUsageReport,
+  usageSince = getUsageSinceReport,
+  quota = getQuotaReport,
+  now = () => Date.now(),
+} = {}) {
+  const cache = new Map();
+
+  async function cached(key, ttlMs, loader, force) {
+    const current = cache.get(key);
+    const timestamp = now();
+    if (!force && current && timestamp - current.at < ttlMs) return current.value;
+    const value = await loader();
+    cache.set(key, { at: timestamp, value });
+    return value;
+  }
+
+  return async function getStats(options = {}) {
+    const force = options?.force === true;
+    const derived = options?.derived && typeof options.derived === 'object' ? options.derived : null;
+    // Keep native scans serial. Cache slower-changing ranges so the renderer can poll cheaply.
+    const today = await cached('today', TODAY_CACHE_MS, () => usage('today', 'client_session_model'), force);
+    const month = await cached('month', MONTH_CACHE_MS, () => usage('month', 'client_session_model'), force);
+    const allTime = await cached('allTime', ALL_TIME_CACHE_MS, () => usage('all_time', 'client_session_model'), force);
+    let derivedReport = null;
+    if (derived?.key && derived?.since) {
+      const cacheKey = `derived:${derived.key}:${derived.since}`;
+      derivedReport = await cached(cacheKey, DERIVED_CACHE_MS, () => usageSince(derived.since, 'client_session_model'), force);
+    }
+    const limitsReport = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
+    const reports = [today, month, allTime, limitsReport, derivedReport].filter(Boolean);
+    const generatedAt = latestGeneratedAt(reports);
+    const periods = {
+      today: usageReportToCompatPeriod(today),
+      month: usageReportToCompatPeriod(month),
+      allTime: usageReportToCompatPeriod(allTime),
+    };
+    if (derivedReport) periods[derived.key] = usageReportToCompatPeriod(derivedReport);
 
     return {
       updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
-      periods: {
-        today: usageReportToCompatPeriod(today),
-        month: usageReportToCompatPeriod(month),
-        allTime: usageReportToCompatPeriod(allTime),
-      },
+      periods,
       limits: quotaReportToCompatLimits(limitsReport),
       devices: [],
       historyAvailable: false,

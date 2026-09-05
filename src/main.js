@@ -3,6 +3,13 @@ import './styles.css';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { installTokenMonitorFacade } from './token-monitor-facade.js';
 import {
+  derivedRequest,
+  displayLabel as periodDisplayLabel,
+  normalizeMonthMode,
+  periodMenuTargetIndex,
+  slotForSelection,
+} from './fixed-periods.js';
+import {
   clientColor,
   formatCompact,
   formatCost,
@@ -20,7 +27,9 @@ installTokenMonitorFacade();
 
 const appWindow = getCurrentWindow();
 const root = document.querySelector('#app');
-const PERIODS = ['today', 'month', 'allTime'];
+const PERIODS = ['today', 'month', 'week', 'last7', 'last30', 'allTime'];
+const MONTH_PERIODS = ['month', 'week', 'last7', 'last30'];
+const AUTO_REFRESH_MS = 30 * 1000;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
 const VIEW_META = Object.freeze({
   home: { label: 'Home', icon: 'view-icon-home' },
@@ -33,8 +42,13 @@ const VIEW_META = Object.freeze({
 const state = {
   stats: null,
   period: 'today',
+  monthMode: 'month',
+  periodMenuOpen: false,
   view: 'home',
   refreshing: false,
+  refreshQueued: false,
+  refreshQueuedForce: false,
+  lastRefreshAt: 0,
   viewMenuOpen: false,
   alwaysOnTop: true,
 };
@@ -51,10 +65,16 @@ root.innerHTML = `
       <div class="title-controls">
         <nav class="tabs" aria-label="Period tabs">
           <span class="tab-indicator" aria-hidden="true"></span>
-          <button class="tab active" data-period="today">DAY</button>
-          <button class="tab" data-period="month">MONTH</button>
-          <button class="tab" data-period="allTime">TOTAL</button>
+          <button class="tab active" data-period="today" data-period-slot="today">DAY</button>
+          <button id="monthPeriodTab" class="tab" data-period-slot="month" aria-haspopup="menu" aria-expanded="false">MONTH</button>
+          <button class="tab" data-period="allTime" data-period-slot="allTime">TOTAL</button>
         </nav>
+        <div id="monthPeriodMenu" class="view-switcher-menu period-menu hidden" role="menu" aria-labelledby="monthPeriodTab">
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="month">This month</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="week">This week</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="last7">Last 7 days</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="last30">Last 30 days</button>
+        </div>
         <div class="actions-hotspot" aria-hidden="true"></div>
         <div class="window-actions">
           <button id="pinButton" class="icon-button" title="Cycle window behavior">⇧</button>
@@ -89,6 +109,8 @@ const els = {
   liveDot: document.querySelector('#liveDot'),
   totalTokens: document.querySelector('#totalTokens'),
   cost: document.querySelector('#cost'),
+  monthPeriodTab: document.querySelector('#monthPeriodTab'),
+  monthPeriodMenu: document.querySelector('#monthPeriodMenu'),
   homePanel: document.querySelector('#homePanel'),
   breakdown: document.querySelector('#breakdown'),
   limitsPanel: document.querySelector('#limitsPanel'),
@@ -108,13 +130,66 @@ function currentPeriod() {
   return state.stats?.periods?.[state.period] || { totalTokens: 0, costUsd: 0 };
 }
 
+function periodMenuButtons() {
+  return Array.from(els.monthPeriodMenu?.querySelectorAll('[data-fixed-period]') || []);
+}
+
+function focusPeriodMenuButton(index) {
+  const buttons = periodMenuButtons();
+  if (!buttons.length) return;
+  const target = buttons[Math.max(0, Math.min(buttons.length - 1, Number(index) || 0))];
+  for (const button of buttons) button.tabIndex = button === target ? 0 : -1;
+  target?.focus();
+}
+
+function setPeriodMenuOpen(open, { restoreFocus = false, focus = '' } = {}) {
+  state.periodMenuOpen = Boolean(open);
+  els.monthPeriodMenu?.closest('.titlebar')?.classList.toggle('period-menu-open', state.periodMenuOpen);
+  els.monthPeriodMenu?.classList.toggle('hidden', !state.periodMenuOpen);
+  els.monthPeriodTab?.setAttribute('aria-expanded', String(state.periodMenuOpen));
+  syncPeriodMenu();
+  if (state.periodMenuOpen && focus) {
+    const buttons = periodMenuButtons();
+    const current = Math.max(0, buttons.findIndex((button) => button.classList.contains('is-current')));
+    focusPeriodMenuButton(focus === 'first' ? 0 : focus === 'last' ? buttons.length - 1 : current);
+  }
+  if (!state.periodMenuOpen && restoreFocus) els.monthPeriodTab?.focus();
+}
+
+function syncPeriodMenu() {
+  const activeMode = slotForSelection(state.period) === 'month'
+    ? normalizeMonthMode(state.period)
+    : normalizeMonthMode(state.monthMode);
+  for (const button of periodMenuButtons()) {
+    const active = button.dataset.fixedPeriod === activeMode;
+    button.classList.toggle('is-current', active);
+    button.setAttribute('aria-checked', String(active));
+    if (active) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+    button.tabIndex = state.periodMenuOpen && active ? 0 : -1;
+  }
+}
+
+function syncPeriodTabs() {
+  const activeSlot = slotForSelection(state.period);
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.dataset.periodSlot === activeSlot));
+  document.querySelector('.tabs')?.style.setProperty('--period-index', String(activeIndex));
+  for (const tab of tabs) {
+    const active = tab.dataset.periodSlot === activeSlot;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-pressed', String(active));
+  }
+  const mode = activeSlot === 'month' ? normalizeMonthMode(state.period) : normalizeMonthMode(state.monthMode);
+  els.monthPeriodTab.textContent = periodDisplayLabel(mode);
+  syncPeriodMenu();
+}
+
 function renderHeadline() {
   const period = currentPeriod();
   els.totalTokens.textContent = formatNumber(period.totalTokens);
   els.cost.textContent = formatCost(period.costUsd);
-  for (const button of document.querySelectorAll('[data-period]')) {
-    button.classList.toggle('active', button.dataset.period === state.period);
-  }
+  syncPeriodTabs();
 }
 
 function iconSpan(iconClass, color = '') {
@@ -374,6 +449,22 @@ function setView(view) {
   render();
 }
 
+function statsRequestOptions(force = false, period = state.period) {
+  const derived = derivedRequest(period, { locale: navigator.language });
+  return { force, ...(derived ? { derived } : {}) };
+}
+
+function setPeriod(period) {
+  if (!PERIODS.includes(period)) return false;
+  const changed = state.period !== period;
+  state.period = period;
+  if (MONTH_PERIODS.includes(period)) state.monthMode = period;
+  setPeriodMenuOpen(false);
+  render();
+  if (derivedRequest(period, { locale: navigator.language })) void refresh();
+  return changed;
+}
+
 function renderViewSwitcher() {
   const meta = VIEW_META[state.view];
   const switcher = document.createElement('div');
@@ -438,13 +529,19 @@ function render() {
   renderSurface();
 }
 
-async function refresh() {
-  if (state.refreshing) return;
+async function refresh({ force = false } = {}) {
+  if (state.refreshing) {
+    state.refreshQueued = true;
+    state.refreshQueuedForce ||= force;
+    return;
+  }
   state.refreshing = true;
+  const requestPeriod = state.period;
   els.refreshButton.classList.add('is-refreshing');
   setStatus('Refreshing…');
   try {
-    state.stats = await window.tokenMonitor.getStats();
+    state.stats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    state.lastRefreshAt = Date.now();
     setStatus();
     render();
     els.liveDot.classList.add('pulse');
@@ -455,18 +552,30 @@ async function refresh() {
   } finally {
     state.refreshing = false;
     els.refreshButton.classList.remove('is-refreshing');
+    if (state.refreshQueued) {
+      const queuedForce = state.refreshQueuedForce;
+      state.refreshQueued = false;
+      state.refreshQueuedForce = false;
+      queueMicrotask(() => void refresh({ force: queuedForce }));
+    }
   }
 }
 
-for (const button of document.querySelectorAll('[data-period]')) {
-  button.addEventListener('click', () => {
-    if (!PERIODS.includes(button.dataset.period)) return;
-    state.period = button.dataset.period;
-    render();
+for (const tab of document.querySelectorAll('.tab')) {
+  tab.addEventListener('click', (event) => {
+    const slot = tab.dataset.periodSlot || tab.dataset.period;
+    const activeSlot = slotForSelection(state.period);
+    if (slot === 'month' && activeSlot === 'month') {
+      event.stopPropagation();
+      setPeriodMenuOpen(!state.periodMenuOpen, { focus: state.periodMenuOpen ? '' : 'current' });
+      return;
+    }
+    setPeriodMenuOpen(false);
+    setPeriod(slot === 'month' ? normalizeMonthMode(state.monthMode) : tab.dataset.period);
   });
 }
 
-els.refreshButton.addEventListener('click', refresh);
+els.refreshButton.addEventListener('click', () => void refresh({ force: true }));
 els.minButton.addEventListener('click', () => appWindow.minimize());
 els.closeButton.addEventListener('click', () => appWindow.close());
 els.pinButton.addEventListener('click', async () => {
@@ -480,6 +589,58 @@ els.pinButton.addEventListener('click', async () => {
   }
 });
 
+for (const button of periodMenuButtons()) {
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const selection = normalizeMonthMode(button.dataset.fixedPeriod);
+    state.monthMode = selection;
+    setPeriodMenuOpen(false, { restoreFocus: true });
+    setPeriod(selection);
+  });
+}
+
+els.monthPeriodTab?.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  setPeriodMenuOpen(true, { focus: event.key === 'ArrowUp' ? 'last' : 'first' });
+});
+
+els.monthPeriodMenu?.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab') {
+    setPeriodMenuOpen(false);
+    return;
+  }
+  const buttons = periodMenuButtons();
+  const currentIndex = buttons.findIndex((button) => button === event.target);
+  const targetIndex = periodMenuTargetIndex(event.key, currentIndex, buttons.length);
+  if (targetIndex < 0) return;
+  event.preventDefault();
+  focusPeriodMenuButton(targetIndex);
+});
+
+document.addEventListener('click', (event) => {
+  if (!state.periodMenuOpen) return;
+  if (els.monthPeriodMenu?.contains(event.target) || els.monthPeriodTab?.contains(event.target)) return;
+  setPeriodMenuOpen(false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !state.periodMenuOpen) return;
+  event.preventDefault();
+  setPeriodMenuOpen(false, { restoreFocus: true });
+});
+
+const autoRefreshTimer = setInterval(() => {
+  if (document.visibilityState === 'visible') void refresh();
+}, AUTO_REFRESH_MS);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (Date.now() - state.lastRefreshAt >= AUTO_REFRESH_MS) void refresh();
+});
+window.addEventListener('beforeunload', () => clearInterval(autoRefreshTimer), { once: true });
+
 els.pinButton.classList.add('active');
+syncPeriodTabs();
 renderViewSwitcher();
 void refresh();

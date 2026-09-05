@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Core tokScale data path and first preserved renderer surface implemented on `feat/v2-tokscale-vertical-slice`.
+Core tokScale data path, first preserved renderer surface, and fixed-range refresh semantics implemented on `feat/v2-tokscale-vertical-slice`.
 
 ## Accepted baseline
 
@@ -30,22 +30,26 @@ Core tokScale data path and first preserved renderer surface implemented on `fea
 - the renderer now uses the original Token Lens stylesheet, icon assets, class vocabulary, 340x650 frameless transparent window geometry, and always-on-top behavior rather than the temporary skeleton UI;
 - Home currently restores Limits and Models modules; Tools, Models, Sessions, and Limits detail views are wired to live `getStats` data;
 - DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri;
+- the MONTH slot now preserves v1 `MONTH` / `WEEK` / `7D` / `30D` selection semantics, including locale-aware first-day-of-week behavior;
+- derived Week / Last 7 / Last 30 ranges use a narrow `--since YYYY-MM-DD` tokScale command rather than reintroducing the v1 history subsystem;
+- stats polling is visibility-aware at 30 seconds, while the compatibility layer caches Today (30s), Month (2m), derived ranges (1m), All Time (5m), and quota (5m); manual refresh bypasses all caches;
+- overlapping renderer refreshes are serialized and coalesced so period changes cannot race an in-flight tokScale scan;
 - the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
 - macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
 - local macOS native runtime smoke creates the frameless window cleanly after the transparency configuration is enabled;
-- frontend production build, JS/Rust unit tests, live tokScale smoke, Clippy, rustfmt, native Tauri debug build, and npm audit pass;
-- history/derived ranges, periodic refresh/cache, floating-bubble behavior, tray, settings, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
+- frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, and npm audit pass;
+- floating-bubble behavior, tray, settings, rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
 
 ## Next action
 
-Complete the preserved main-window behavior without reintroducing v1 backend breadth:
+Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. restore automatic refresh/cache semantics and derived Week / Last 7 / Last 30 usage ranges;
-2. validate live model/session rendering and period switching;
-3. implement floating-bubble and tray behavior from the original UX on the Tauri shell;
-4. add only the minimal settings needed by those retained surfaces.
+1. implement floating-bubble expand/collapse and movement using the original UX on the Tauri shell;
+2. restore the retained tray behavior and only the tray actions that remain in v2 scope;
+3. add the minimal persisted settings required by those retained surfaces;
+4. then restore rich Codex/Claude session detail against the normalized usage/session contract.
 
-After the base desktop shell is stable, add Codex Business `individualLimit`, AGY quota, and rich Codex/Claude session detail as narrow adapters.
+After the base desktop shell is stable, add Codex Business `individualLimit` and AGY quota as narrow adapters.
 
 ## Known open items
 

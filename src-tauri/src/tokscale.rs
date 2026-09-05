@@ -67,6 +67,9 @@ impl TokscaleAdapter {
         period: UsagePeriod,
         grouping: UsageGrouping,
     ) -> Result<UsageReport, String> {
+        if period == UsagePeriod::Custom {
+            return Err("custom usage ranges require an explicit since date".to_owned());
+        }
         let mut args = vec![
             "--json",
             "--client",
@@ -77,7 +80,32 @@ impl TokscaleAdapter {
         ];
         args.extend_from_slice(period.tokscale_args());
         let output = self.run(&args).await?;
-        parse_usage_report(&output, period, grouping)
+        parse_usage_report(&output, period, None, grouping)
+    }
+
+    pub async fn usage_since_report(
+        &self,
+        since: &str,
+        grouping: UsageGrouping,
+    ) -> Result<UsageReport, String> {
+        validate_date_key(since)?;
+        let args = [
+            "--json",
+            "--client",
+            TOKSCALE_CLIENTS,
+            "--group-by",
+            grouping.tokscale_value(),
+            "--no-spinner",
+            "--since",
+            since,
+        ];
+        let output = self.run(&args).await?;
+        parse_usage_report(
+            &output,
+            UsagePeriod::Custom,
+            Some(since.to_owned()),
+            grouping,
+        )
     }
 
     pub async fn quota_report(&self) -> Result<QuotaReport, String> {
@@ -170,6 +198,35 @@ fn parse_version(output: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn validate_date_key(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    let shape_ok = bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
+    if !shape_ok {
+        return Err("usage since date must use YYYY-MM-DD".to_owned());
+    }
+    let year = value[0..4].parse::<u16>().unwrap_or_default();
+    let month = value[5..7].parse::<u8>().unwrap_or_default();
+    let day = value[8..10].parse::<u8>().unwrap_or_default();
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if year == 0 || day == 0 || day > max_day {
+        return Err("usage since date is outside the supported calendar range".to_owned());
+    }
+    Ok(())
+}
+
 fn generated_at_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -225,6 +282,7 @@ struct RawUsageEntry {
 fn parse_usage_report(
     output: &str,
     period: UsagePeriod,
+    since: Option<String>,
     grouping: UsageGrouping,
 ) -> Result<UsageReport, String> {
     let raw: RawUsageReport = parse_json(output)?;
@@ -249,6 +307,7 @@ fn parse_usage_report(
 
     Ok(UsageReport {
         period,
+        since,
         grouping,
         generated_at_ms: generated_at_ms(),
         entries,
@@ -512,6 +571,7 @@ mod tests {
         let report = parse_usage_report(
             USAGE_FIXTURE,
             UsagePeriod::Today,
+            None,
             UsageGrouping::ClientSessionModel,
         )
         .expect("usage fixture should parse");
@@ -566,6 +626,17 @@ mod tests {
         assert_eq!(spend.reached, Some(false));
     }
 
+    #[test]
+    fn usage_since_date_validation_rejects_unsafe_or_invalid_shapes() {
+        assert!(validate_date_key("2026-08-30").is_ok());
+        assert!(validate_date_key("2024-02-29").is_ok());
+        assert!(validate_date_key("2026-02-29").is_err());
+        assert!(validate_date_key("2026-04-31").is_err());
+        assert!(validate_date_key("2026-13-30").is_err());
+        assert!(validate_date_key("2026-08-00").is_err());
+        assert!(validate_date_key("--debug").is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires local tokScale binary and provider credentials"]
     async fn live_tokscale_smoke() {
@@ -584,6 +655,14 @@ mod tests {
             .await
             .expect("live all-time usage should normalize");
         assert_eq!(all_time.source, TOKSCALE_SOURCE);
+
+        let custom = adapter
+            .usage_since_report("2026-01-01", UsageGrouping::ClientSessionModel)
+            .await
+            .expect("live custom-range usage should normalize");
+        assert_eq!(custom.period, UsagePeriod::Custom);
+        assert_eq!(custom.since.as_deref(), Some("2026-01-01"));
+        assert_eq!(custom.source, TOKSCALE_SOURCE);
 
         let quota = adapter
             .quota_report()

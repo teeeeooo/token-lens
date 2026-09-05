@@ -86,3 +86,52 @@ test('getStats compatibility loader keeps tokScale scans serial and exposes v1 p
   assert.deepEqual(stats.devices, []);
   assert.equal(stats.limits.providers.length, 0);
 });
+
+test('getStats caches slower ranges and refreshes today independently', async () => {
+  const calls = [];
+  let clock = 1_000_000;
+  const usage = async (period) => {
+    calls.push(`usage:${period}`);
+    return report([], clock);
+  };
+  const quota = async () => {
+    calls.push('quota');
+    return { generatedAtMs: clock, providers: [], source: 'tokscale' };
+  };
+  const getStats = createStatsLoader({ usage, quota, now: () => clock });
+  await getStats();
+  clock += 31_000;
+  await getStats();
+  assert.deepEqual(calls, [
+    'usage:today', 'usage:month', 'usage:all_time', 'quota',
+    'usage:today',
+  ]);
+});
+
+test('getStats exposes a cached derived period from an explicit since date', async () => {
+  const calls = [];
+  const usage = async (period) => report([], period === 'today' ? 1000 : 2000);
+  const usageSince = async (since, grouping) => {
+    calls.push(`${since}:${grouping}`);
+    return report([{ client: 'codex', model: 'gpt-5.6-sol', input: 10 }], 3000);
+  };
+  const quota = async () => ({ generatedAtMs: 4000, providers: [] });
+  const getStats = createStatsLoader({ usage, usageSince, quota, now: () => 10_000 });
+
+  const options = { derived: { key: 'last7', since: '2026-08-30' } };
+  const first = await getStats(options);
+  const second = await getStats(options);
+  assert.deepEqual(calls, ['2026-08-30:client_session_model']);
+  assert.equal(first.periods.last7.totalTokens, 10);
+  assert.equal(second.periods.last7.totalTokens, 10);
+});
+
+test('forced refresh bypasses all stats caches', async () => {
+  let calls = 0;
+  const usage = async () => { calls += 1; return report([]); };
+  const quota = async () => { calls += 1; return { generatedAtMs: 1, providers: [] }; };
+  const getStats = createStatsLoader({ usage, quota, now: () => 1000 });
+  await getStats();
+  await getStats({ force: true });
+  assert.equal(calls, 8);
+});

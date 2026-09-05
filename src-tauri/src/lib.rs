@@ -17,6 +17,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_contract_version,
             commands::get_usage_report,
+            commands::get_usage_since_report,
             commands::get_quota_report,
             commands::get_tokscale_status
         ])

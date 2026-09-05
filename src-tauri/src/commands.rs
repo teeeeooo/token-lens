@@ -12,6 +12,15 @@ pub async fn get_usage_report(
 }
 
 #[tauri::command]
+pub async fn get_usage_since_report(
+    adapter: State<'_, TokscaleAdapter>,
+    since: String,
+    grouping: UsageGrouping,
+) -> Result<UsageReport, String> {
+    adapter.usage_since_report(&since, grouping).await
+}
+
+#[tauri::command]
 pub async fn get_quota_report(adapter: State<'_, TokscaleAdapter>) -> Result<QuotaReport, String> {
     adapter.quota_report().await
 }

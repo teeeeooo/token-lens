@@ -3,6 +3,8 @@ name: Build Token Lens v2 Windows
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'feat/v2-*'
     tags:
       - 'token-lens-v2-*'
 

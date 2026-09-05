@@ -30,7 +30,7 @@ test('staging verifies package identity and copies a regular platform binary', a
     assert.equal(path.basename(staged.output), 'tokscale-aarch64-apple-darwin');
     assert.equal(await readFile(staged.output, 'utf8'), 'fake-binary');
     const mode = (await stat(staged.output)).mode & 0o777;
-    assert.equal(mode, 0o755);
+    if (process.platform !== 'win32') assert.equal(mode, 0o755);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

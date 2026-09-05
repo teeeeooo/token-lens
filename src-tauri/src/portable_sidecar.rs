@@ -196,7 +196,7 @@ fn portable_dir_is_active(directory: &Path) -> bool {
     {
         let mut options = OpenOptions::new();
         options.read(true).write(true).share_mode(0);
-        return options.open(lock_path).is_err();
+        options.open(lock_path).is_err()
     }
     #[cfg(not(windows))]
     true

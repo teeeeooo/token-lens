@@ -13,7 +13,7 @@
     "frontend:build": "vite build",
     "test:frontend": "node --test",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "test:live": "cargo test --manifest-path src-tauri/Cargo.toml live_tokscale_smoke -- --ignored",
+    "test:live": "cargo test --manifest-path src-tauri/Cargo.toml live_ -- --ignored",
     "test": "npm run test:frontend && npm run test:rust",
     "check": "npm run frontend:build && npm run test && cargo fmt --manifest-path src-tauri/Cargo.toml --check"
   },

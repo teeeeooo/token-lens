@@ -533,14 +533,20 @@ function renderLimits() {
 }
 function setView(view) {
   if (!VIEW_ORDER.includes(view)) return;
+  const changed = state.view !== view;
   state.view = view;
   state.viewMenuOpen = false;
   render();
+  if (changed && view === 'session') void refresh();
 }
 
 function statsRequestOptions(force = false, period = state.period) {
   const derived = derivedRequest(period, { locale: navigator.language });
-  return { force, ...(derived ? { derived } : {}) };
+  return {
+    force,
+    includeSessionMetadata: state.view === 'session',
+    ...(derived ? { derived } : {}),
+  };
 }
 
 function setPeriod(period) {

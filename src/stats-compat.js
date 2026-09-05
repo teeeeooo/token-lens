@@ -1,4 +1,4 @@
-import { getQuotaReport, getUsageReport, getUsageSinceReport } from './backend.js';
+import { getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport } from './backend.js';
 
 const DISJOINT_REASONING_CLIENTS = new Set(['codex']);
 const DEFAULT_LIMIT_REFRESH_MS = 5 * 60 * 1000;
@@ -6,6 +6,7 @@ const TODAY_CACHE_MS = 30 * 1000;
 const MONTH_CACHE_MS = 2 * 60 * 1000;
 const ALL_TIME_CACHE_MS = 5 * 60 * 1000;
 const DERIVED_CACHE_MS = 60 * 1000;
+const SESSION_METADATA_CACHE_MS = 60 * 1000;
 
 function finite(value) {
   const number = Number(value);
@@ -85,6 +86,7 @@ function emptySession(client, sessionId) {
     models: {},
     modelCosts: {},
     providers: {},
+    sessionTitle: '',
   };
 }
 
@@ -107,6 +109,36 @@ function addSession(period, entry, total) {
   addNumber(session.models, model, total);
   addNumber(session.modelCosts, model, entry?.cost);
   addNumber(session.providers, provider, total);
+}
+
+export function applySessionMetadata(periods, report) {
+  const metadataByKey = new Map((report?.sessions || []).map((item) => [
+    sessionKey(String(item?.client || '').trim().toLowerCase(), String(item?.sessionId || '').trim()),
+    item,
+  ]));
+  for (const period of Object.values(periods || {})) {
+    for (const [key, session] of Object.entries(period?.sessions || {})) {
+      const metadata = metadataByKey.get(key);
+      if (!metadata) continue;
+      session.sessionTitle = String(metadata.sessionTitle || '').trim();
+      session.projectLabel = String(metadata.projectLabel || '').trim();
+    }
+  }
+  return periods;
+}
+
+function sessionMetadataRefs(periods) {
+  const refs = new Map();
+  for (const period of Object.values(periods || {})) {
+    for (const session of Object.values(period?.sessions || {})) {
+      const client = String(session?.client || '').trim().toLowerCase();
+      const sessionId = String(session?.sessionId || '').trim();
+      if (!client || !sessionId || !['codex', 'claude'].includes(client)) continue;
+      refs.set(sessionKey(client, sessionId), { client, sessionId });
+    }
+  }
+  return Array.from(refs.values()).sort((a, b) =>
+    a.client.localeCompare(b.client) || a.sessionId.localeCompare(b.sessionId));
 }
 
 export function usageReportToCompatPeriod(report) {
@@ -203,6 +235,7 @@ export function createStatsLoader({
   usage = getUsageReport,
   usageSince = getUsageSinceReport,
   quota = getQuotaReport,
+  sessionMetadata = async () => ({ sessions: [] }),
   now = () => Date.now(),
 } = {}) {
   const cache = new Map();
@@ -218,6 +251,7 @@ export function createStatsLoader({
 
   return async function getStats(options = {}) {
     const force = options?.force === true;
+    const includeSessionMetadata = options?.includeSessionMetadata === true;
     const derived = options?.derived && typeof options.derived === 'object' ? options.derived : null;
     // Keep native scans serial. Cache slower-changing ranges so the renderer can poll cheaply.
     const today = await cached('today', TODAY_CACHE_MS, () => usage('today', 'client_session_model'), force);
@@ -238,6 +272,22 @@ export function createStatsLoader({
     };
     if (derivedReport) periods[derived.key] = usageReportToCompatPeriod(derivedReport);
 
+    const metadataRefs = includeSessionMetadata ? sessionMetadataRefs(periods) : [];
+    if (metadataRefs.length) {
+      const metadataKey = metadataRefs.map((item) => `${item.client}:${item.sessionId}`).join('|');
+      try {
+        const metadataReport = await cached(
+          `sessionMetadata:${metadataKey}`,
+          SESSION_METADATA_CACHE_MS,
+          () => sessionMetadata(metadataRefs),
+          force,
+        );
+        applySessionMetadata(periods, metadataReport);
+      } catch (_) {
+        // Session titles are optional enrichment; usage/quota must remain available if metadata lookup fails.
+      }
+    }
+
     return {
       updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
       periods,
@@ -248,4 +298,4 @@ export function createStatsLoader({
   };
 }
 
-export const getStats = createStatsLoader();
+export const getStats = createStatsLoader({ sessionMetadata: getSessionMetadata });

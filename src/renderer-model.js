@@ -112,10 +112,18 @@ export function sessionRows(period) {
         .sort((a, b) => finite(b[1]) - finite(a[1]));
       const model = models[0]?.[0] || '';
       const messages = Math.max(0, Math.round(finite(session?.messageCount)));
+      const context = [clientLabel(session?.client), model].filter(Boolean).join(' · ');
+      const sessionTitle = String(session?.sessionTitle || '').trim();
+      const projectLabel = String(session?.projectLabel || '').trim();
+      const sessionId = String(session?.sessionId || '').trim();
+      const name = sessionTitle || projectLabel || sessionId || context || 'Session';
+      const detailParts = [];
+      if (context && name !== context) detailParts.push(context);
+      if (messages > 0) detailParts.push(`${formatNumber(messages)} msg${messages === 1 ? '' : 's'}`);
       return {
         key,
-        name: [clientLabel(session?.client), model].filter(Boolean).join(' · '),
-        detail: messages > 0 ? `${formatNumber(messages)} msg${messages === 1 ? '' : 's'}` : '',
+        name,
+        detail: detailParts.join(' · '),
         value: finite(session?.totalTokens),
         cost: finite(session?.costUsd),
         color: clientColor(session?.client),

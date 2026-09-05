@@ -19,6 +19,7 @@ const period = {
     'codex:rollout-1': {
       client: 'codex', sessionId: 'rollout-1', totalTokens: 700, costUsd: 7,
       messageCount: 12, models: { 'gpt-5.6-sol': 700 },
+      sessionTitle: 'Restore tray behavior', projectLabel: 'token-lens',
     },
   },
 };
@@ -34,8 +35,8 @@ test('renderer rows preserve v1 ranking semantics for supported tools', () => {
 
   const sessions = sessionRows(period);
   assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].name, 'Codex · gpt-5.6-sol');
-  assert.equal(sessions[0].detail, '12 msgs');
+  assert.equal(sessions[0].name, 'Restore tray behavior');
+  assert.equal(sessions[0].detail, 'Codex · gpt-5.6-sol · 12 msgs');
 });
 
 test('compact formatter keeps dashboard-scale labels', () => {
@@ -62,4 +63,19 @@ test('quota rows keep the three-provider product surface and additional lanes', 
   assert.equal(rows[2].status, 'unavailable');
   assert.equal(quotaWindowLabel(rows[0].windows[0]), '5-hour');
   assert.equal(quotaWindowLabel(rows[0].windows[2]), 'GPT Reserve weekly');
+});
+
+
+test('session rows fall back to project label and then session id without transcript-derived text', () => {
+  const project = sessionRows({ sessions: {
+    'claude:s2': { client: 'claude', sessionId: 's2', projectLabel: 'predictor', totalTokens: 10, models: { opus: 10 } },
+  } });
+  assert.equal(project[0].name, 'predictor');
+  assert.equal(project[0].detail, 'Claude Code · opus');
+
+  const idOnly = sessionRows({ sessions: {
+    'codex:s3': { client: 'codex', sessionId: 's3', totalTokens: 10, models: { 'gpt-5': 10 } },
+  } });
+  assert.equal(idOnly[0].name, 's3');
+  assert.equal(idOnly[0].detail, 'Codex · gpt-5');
 });

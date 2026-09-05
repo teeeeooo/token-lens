@@ -135,3 +135,41 @@ test('forced refresh bypasses all stats caches', async () => {
   await getStats({ force: true });
   assert.equal(calls, 8);
 });
+
+
+test('getStats batch-decorates Codex and Claude sessions with provider-owned metadata', async () => {
+  const entry = {
+    client: 'codex', provider: 'openai', model: 'gpt-5.6-sol', sessionId: 'rollout-1',
+    input: 10, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 1, messageCount: 1, cost: 0.1,
+  };
+  const usage = async () => report([entry]);
+  const quota = async () => ({ generatedAtMs: 4000, providers: [] });
+  const metadataCalls = [];
+  const sessionMetadata = async (refs) => {
+    metadataCalls.push(refs);
+    return { sessions: [{
+      client: 'codex', sessionId: 'rollout-1', sessionTitle: 'Provider title', projectLabel: 'token-lens',
+    }] };
+  };
+  const getStats = createStatsLoader({ usage, quota, sessionMetadata, now: () => 10_000 });
+  const stats = await getStats({ includeSessionMetadata: true });
+
+  assert.deepEqual(metadataCalls, [[{ client: 'codex', sessionId: 'rollout-1' }]]);
+  for (const period of Object.values(stats.periods)) {
+    assert.equal(period.sessions['codex:rollout-1'].sessionTitle, 'Provider title');
+    assert.equal(period.sessions['codex:rollout-1'].projectLabel, 'token-lens');
+  }
+});
+
+
+test('getStats avoids provider session metadata I/O outside the Sessions view', async () => {
+  const usage = async () => report([{
+    client: 'codex', provider: 'openai', model: 'gpt-5', sessionId: 's1', input: 1,
+  }]);
+  const quota = async () => ({ generatedAtMs: 1, providers: [] });
+  let metadataCalls = 0;
+  const sessionMetadata = async () => { metadataCalls += 1; return { sessions: [] }; };
+  const getStats = createStatsLoader({ usage, quota, sessionMetadata, now: () => 1_000 });
+  await getStats();
+  assert.equal(metadataCalls, 0);
+});

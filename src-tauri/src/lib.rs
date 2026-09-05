@@ -1,6 +1,7 @@
 mod commands;
 mod domain;
 mod floating_bubble;
+mod session_metadata;
 mod settings;
 mod tokscale;
 mod tray;
@@ -50,6 +51,7 @@ pub fn run() {
             commands::get_usage_since_report,
             commands::get_quota_report,
             commands::get_tokscale_status,
+            commands::get_session_metadata,
             commands::get_settings,
             commands::update_settings,
             commands::update_tray_summary,

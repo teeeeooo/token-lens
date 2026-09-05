@@ -40,24 +40,26 @@ Core tokScale data path, preserved renderer surface, fixed-range refresh semanti
 - floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs;
 - floating-bubble geometry is DPI-aware and recalculates the physical 34px-logical handle size when moving between monitors;
 - Windows-specific bubble policy is explicit: collapse against full monitor bounds with zero edge margin, while macOS/other desktop targets use the work area with the original vertical margin;
-- `x86_64-pc-windows-msvc` cargo check passes from macOS with the Windows target/toolchain resources, but this is compile validation rather than native Windows UX validation;
+- macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
-- frontend production build, JS/Rust unit tests, live tokScale smoke including custom ranges, Clippy, rustfmt, native Tauri debug build, Windows target check, and npm audit pass;
+- frontend production build, JS/Rust unit tests, live tokScale/session-metadata smoke, Clippy, rustfmt, native macOS Tauri debug build, and npm audit pass locally; Windows compile/build validation is owned by the native GitHub Actions job rather than a macOS cross-target check;
 - v2 GitHub Actions now runs the non-credentialed frontend/Rust checks, Clippy, npm audit, and native Tauri debug build on both `macos-latest` and `windows-latest`; the first native matrix run passed on both hosts;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
 - with the tray enabled, window close now hides Token Lens instead of destroying the app, matching the v1 recoverability contract; disabling the tray restores normal close behavior;
 - the renderer listens for narrow tray actions rather than reintroducing Electron IPC, and publishes only the small Today usage/cost summary needed by the native tray;
 - the v2 settings surface now controls tray visibility as well as floating-bubble behavior;
-- rich session detail, Codex Business enrichment, and AGY quota adapter are not implemented yet.
+- session-list identification now uses a separate read-only provider-metadata adapter rather than transcript text: Codex resolves provider-owned `display_title` / `title` from local Codex SQLite state/catalog data, while Claude resolves explicit `aiTitle` metadata from its JSONL session files;
+- renderer session-title fallback is provider-owned title → project/path basename → session identifier, with client/model/message information kept as secondary context; full working-directory paths and raw prompt/response fields are not part of the normalized metadata payload;
+- session metadata is requested only while the Sessions view is active, then batch-enriched and cached independently from tokScale usage so metadata lookup failure cannot take down usage/quota reporting; payload-shape regression tests and a local ignored live smoke enforce the privacy boundary;
+- Codex/Claude per-turn session usage/metadata detail, Codex Business enrichment, and the AGY quota adapter are not implemented yet.
 
 ## Next action
 
 Complete the preserved desktop-shell behavior without reintroducing v1 backend breadth:
 
-1. validate the restored tray shell through native macOS/Windows builds and keep the tray surface limited to v2-retained actions;
-2. restore rich Codex/Claude session detail against the normalized usage/session contract;
-3. perform native Windows floating-bubble/tray UX validation before declaring cross-platform visual/interaction parity complete;
-4. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core Codex/Claude/AGY monitoring UX.
+1. restore Codex/Claude per-turn session usage/metadata detail against the normalized privacy-preserving session contract;
+2. perform native Windows floating-bubble/tray UX validation before declaring cross-platform visual/interaction parity complete;
+3. defer advanced v1 tray-composer/generated-bar modes unless they prove necessary to preserve the core monitoring UX.
 
 After the base desktop shell is stable, add Codex Business `individualLimit` and AGY quota as narrow adapters.
 

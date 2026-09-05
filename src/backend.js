@@ -16,6 +16,10 @@ export function getTokscaleStatus() {
   return invoke('get_tokscale_status');
 }
 
+export function getSessionMetadata(sessions = []) {
+  return invoke('get_session_metadata', { sessions });
+}
+
 export function getSettings() {
   return invoke('get_settings');
 }

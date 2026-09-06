@@ -1,119 +1,149 @@
-# Token Lens
+# 🔍 Token Lens
 
-**A focused desktop monitor for AI coding-tool token usage and account quota.**
+**A lightweight, privacy-focused desktop monitor for AI coding-tool token usage and account quotas.**
 
-Token Lens v2 is a security-conscious downstream application derived from [Javis603/token-monitor](https://github.com/Javis603/token-monitor). It preserves the established Token Lens dashboard and floating-monitor workflow while replacing the Electron backend with a smaller Tauri 2 architecture centered on tokScale.
+[![Built with Tauri 2](https://img.shields.io/badge/Tauri-2-blue.svg?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Powered by Rust](https://img.shields.io/badge/Rust-Stable-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Current provider capabilities:
+Token Lens gives you a compact view of AI coding-tool usage, remaining quotas, reset times, model usage, and session activity without turning the monitor itself into an account manager.
 
-| Provider | Usage | Quota | Session aggregation | Session identification metadata | Per-turn detail |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Codex | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Claude Code | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Gemini CLI | ✅ | ✅ | ✅ | ✅ | — |
-| Antigravity (AGY) | ✅ | ✅ | ✅ | tokScale-provided metadata only | — |
+It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**. Token Lens v2 replaces the Electron backend used by v1 with a smaller **Tauri 2 + Rust** architecture and uses **tokScale** as the primary usage/quota data engine.
 
-The provider set is an explicit runtime allowlist, not a permanent architectural ceiling. Future providers may be added through a reviewed adapter without redesigning the normalized domain or renderer.
+---
 
-## Product goals
+## ✨ Key Features
 
-- preserve the Token Lens dashboard, limits view, activity charts, model/session exploration, tray behavior, and floating monitor UX;
-- show reliable current, short-window, weekly, reset, and provider-specific quota information;
-- show actual usage by day/week/month/all-time, including model/session breakdown, token categories, and cost when available;
-- keep provider authentication state outside Token Lens ownership;
-- remain substantially smaller and simpler than the Electron-based v1 application.
+- 🪟 **Floating Monitor & System Tray** — keep Token Lens visible as an always-on-top floating monitor or access it from the native tray.
+- ⏱️ **Quota & Reset Visibility** — monitor available short-window, weekly, reset, credit, and provider-specific limits with periodic background refresh.
+- 📊 **Usage & Cost Analytics** — inspect Day, Week, Month, Last 7 Days, Last 30 Days, and All-Time usage with model/session breakdowns, token categories, and cost where available.
+- 🧭 **Session Exploration** — identify sessions using provider-owned metadata and inspect per-turn usage/tool metadata for supported providers without turning Token Lens into a transcript viewer.
+- ⚡ **Tauri 2 + tokScale** — a focused native desktop shell with a deliberately smaller backend/runtime surface than the Electron-based v1 line.
+- 🔒 **Privacy-Focused Data Boundary** — prompt/response content is not exposed to the renderer or displayed by Token Lens.
 
-## Architecture
+---
 
-Token Lens v2 uses Tauri 2 for the desktop shell and pins tokScale as the primary usage/quota data engine. tokScale remains authoritative wherever it provides supported usage or base quota data. Token Lens-owned provider integrations are limited to confirmed quota gaps plus the narrow session metadata/detail adapters required by the retained UX.
+## 🔌 Supported Providers
 
-Raw tokScale/provider payloads stay behind stable Rust domain contracts before reaching the renderer. The renderer keeps only the compatibility surface required by the retained v2 UX rather than recreating the old Electron IPC framework.
+| Provider | Usage | Quota & Limits | Session Aggregation | Session Metadata | Per-Turn Detail |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Codex** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Claude Code** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Gemini CLI** | ✅ | ✅ | ✅ | ✅ | — |
+| **Antigravity (AGY)** | ✅ | ✅ | ✅ | tokScale-provided metadata only | — |
 
-For the authoritative system contract, see [`docs/architecture/v2-architecture.md`](docs/architecture/v2-architecture.md). For current engineering state and remaining validation, read [`STATE.md`](STATE.md) first.
+The provider set is an explicit runtime allowlist, not a permanent architectural ceiling. New providers may be added through a reviewed adapter and security/data-contract update; model identifiers themselves are not hardcoded into an allowlist.
 
-## Security and privacy
+---
 
-Token Lens is a monitor, not an authentication manager.
+## 🚀 Getting Started on Windows
 
-- runtime providers are limited to Codex, Claude, Gemini CLI, and Antigravity;
-- model identifiers are not hardcoded into an allowlist;
-- Token Lens does not own provider credentials; it consumes only existing provider-owned state or explicitly supplied read-only credential snapshots where the architecture permits them;
-- Token Lens does not provide general account switching, refresh provider OAuth credentials, or maintain its own credential store;
-- runtime tokScale download/update, Hub/multi-device sync, Discord RPC, updater, export, diagnostics/service-status, and broad provider-management frameworks are excluded;
-- renderer-facing session data excludes prompt/response text, content previews, reasoning summaries, and transcript-derived title fallbacks;
-- provider-owned titles and project/path basenames may be used for session identification;
-- the Tauri WebView runs with an explicit CSP: packaged scripts only, Tauri IPC as the only non-self connection surface, and a narrow inline-style exception for the retained dynamic renderer.
+Token Lens v2 currently produces pre-built Windows x64 artifacts through [GitHub Actions](https://github.com/teeeeooo/token-lens/actions/workflows/v2-build-windows.yml). Official GitHub Releases publication is not yet part of the v2 workflow.
 
-Local session files may still be parsed in-process to derive approved usage metadata, so Token Lens should be treated as privileged local developer tooling.
+From a successful **Build Token Lens v2 Windows** run, download the `token-lens-v2-windows-x64` artifact. It contains:
 
-## Windows distribution
+| Package | File | Description |
+| :--- | :--- | :--- |
+| **Installer** | `Token-Lens-Setup-<version>.exe` | Standard unsigned NSIS installer. |
+| **Portable** | `Token-Lens-<version>.exe` | Single-file, no-install executable. The app extracts only its embedded tokScale sidecar to an isolated temporary run directory. |
+| **Checksums** | `SHA256SUMS.txt` | SHA-256 hashes for the Windows executables. |
 
-Windows x64 packaging emits:
+### Windows SmartScreen / endpoint protection
 
-```text
-Token-Lens-Setup-<version>.exe   # NSIS installer
-Token-Lens-<version>.exe         # single-file no-install portable
-SHA256SUMS.txt
-```
+Token Lens Windows artifacts are currently **unsigned**. Windows SmartScreen, WDAC/AppLocker, EDR, or organization policy may warn about or block them.
 
-Windows release packaging uses Tauri NSIS plus the pinned tokScale native sidecar. The build validates package identity and the sidecar's reported version, and Token Lens does not download or update tokScale at runtime.
+On a personal machine, Windows may offer **More info → Run anyway** for an unsigned application. On managed or corporate endpoints, follow your organization's software and code-signing policy instead of bypassing local controls.
 
-The portable EXE keeps the normal Tauri application executable as the outer GUI PE and appends a compressed `tokscale.exe` payload. At runtime it extracts only tokScale under the system temp directory, holds an active-run lock, removes the run directory on normal exit, and clears unlocked stale run directories on a later launch.
+You can compare the downloaded files against `SHA256SUMS.txt` before running them.
 
-Artifacts are intentionally unsigned. Windows SmartScreen, WDAC/AppLocker, EDR, or organization policy may warn about or block them; managed endpoints should follow the applicable local software policy.
+### Portable behavior
 
-## Development
+The portable EXE keeps the normal Token Lens GUI executable as the outer PE and appends a compressed, pinned `tokscale.exe` payload. At runtime Token Lens extracts **only tokScale** under the system temporary directory, holds an active-run lock, removes that run directory on normal teardown, and performs best-effort cleanup of unlocked stale run directories on a later portable launch.
 
-Requirements:
+Token Lens does not download or update tokScale at runtime.
 
-- Node.js >= 22.15.0
-- Rust stable toolchain
-- platform prerequisites required by Tauri 2
+---
 
-Install locked dependencies and run the core local checks:
+## 🔒 Security & Privacy
+
+Token Lens is a **monitor**, not an authentication manager or transcript viewer.
+
+1. **No Token Lens credential store** — Token Lens does not own provider accounts, provide general account switching, or refresh provider OAuth credentials. It consumes only existing provider-owned state or explicitly supplied read-only credential snapshots where the architecture permits them.
+2. **Content-minimized session processing** — local provider session files may be read in-process to derive approved metadata such as timestamps, token/cache counts, tool names, turn structure, provider-owned titles, and project labels. Prompt/response text, content previews, reasoning summaries, and transcript-derived title fallbacks are excluded from the renderer-facing data model.
+3. **Restricted WebView surface** — the Tauri frontend runs under an explicit Content Security Policy. Packaged scripts are self-only, arbitrary external WebView connections are not allowed, and only the inline-style compatibility required by the retained renderer is permitted.
+4. **Narrow provider networking** — when quota data requires it, Rust backend adapters may contact the relevant official provider API or a detected local provider service. Token Lens does not provide a general-purpose network client surface to the renderer.
+5. **No Token Lens cloud service** — no Hub/multi-device sync, Discord RPC, Token Lens telemetry backend, in-app updater, or silent runtime tokScale download/update is part of the v2 product.
+
+For the durable security, privacy, and provider-authority rules, see [`docs/architecture/v2-architecture.md`](docs/architecture/v2-architecture.md).
+
+---
+
+## 🛠️ Development & Building
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) `>= 22.15.0`
+- [Rust](https://rustup.rs/) stable toolchain
+- platform prerequisites required by [Tauri 2](https://v2.tauri.app/start/prerequisites/)
+
+### Setup
 
 ```bash
+git clone https://github.com/teeeeooo/token-lens.git
+cd token-lens
 npm ci
+```
+
+Run the core local checks:
+
+```bash
 npm run check
 ```
 
-GitHub CI additionally runs Clippy with warnings denied, a native Tauri debug build, and `npm audit --audit-level=high` on both macOS and Windows.
-
-Run the desktop app during development:
+Launch the desktop app in development mode:
 
 ```bash
 npm run dev
 ```
 
-On Windows, generate release artifacts under `dist-v2/` with:
+On Windows, build the unsigned NSIS installer and single-EXE portable artifacts under `dist-v2/`:
 
 ```bash
 npm run package:windows
 ```
 
-## Upstream relationship
+GitHub CI additionally runs Clippy with warnings denied, a native Tauri debug build, and `npm audit --audit-level=high` on both macOS and Windows.
 
-Token Lens originated as a downstream of the MIT-licensed [Javis603/token-monitor](https://github.com/Javis603/token-monitor) project. The Electron-based v1 line initially tracked upstream Token Monitor v0.53.0 at commit `0b17b1ec53ccd60508a645144ccb7db74027168c`.
+---
 
-v2 is intentionally different from a normal source-tree fork: it is an orphan lineage and does not routinely merge upstream Token Monitor commits. The v1 lineage remains historical/reference evidence for proven UI behavior, provider edge cases, and security decisions.
+## 🏛️ Architecture & Upstream Roots
 
-Relevant upstream changes should still be reviewed selectively, especially when they reveal changes in provider log/API schemas, quota semantics, model/session attribution, or other behavior that may affect Token Lens. Upstream workflows or broad feature additions are not automatically imported into the v2 release path.
+Token Lens v2 uses **Tauri 2** for the desktop shell and pins **tokScale 4.15.1** as the current primary usage/quota dependency. Raw tokScale/provider payloads stay behind stable Rust domain contracts before reaching the renderer.
 
-For v2 maintenance, tokScale is the primary evolving dependency for actual usage and supported subscription-quota behavior. Each Token Lens release pins and validates a tokScale version; provider-specific Token Lens adapters remain deliberately narrow so external changes have a small maintenance surface.
+Token Lens-owned provider integrations remain deliberately narrow: they cover confirmed quota gaps plus the session metadata/detail behavior required by the retained UX. The current examples are Codex Business `individualLimit`, Gemini CLI quota, AGY quota, Codex/Claude/Gemini session metadata, and Codex/Claude per-turn usage detail.
 
-In short:
+Token Lens originated as a downstream of the MIT-licensed [Javis603/token-monitor](https://github.com/Javis603/token-monitor) project. The Electron-based v1 line initially tracked upstream Token Monitor **v0.53.0** at commit `0b17b1ec53ccd60508a645144ccb7db74027168c`.
 
-- **Token Monitor upstream** is a semantic/reference source, not a routine merge source for v2;
-- **Token Lens v1** is the historical implementation reference;
-- **tokScale** is the primary evolving usage/quota dependency;
-- **Token Lens-owned adapters** cover confirmed quota gaps plus the narrow session metadata/detail behavior required by the retained UX, and are reviewed independently.
+v2 is an orphan lineage rather than a routine source-tree continuation of upstream. Maintenance follows these roles:
 
-## Documentation
+- **Token Monitor upstream** — semantic/reference source for relevant provider behavior, schema changes, and proven edge cases;
+- **Token Lens v1** — historical implementation reference for validated UI behavior and security decisions;
+- **tokScale** — primary evolving dependency for actual usage and supported subscription-quota behavior;
+- **Token Lens-owned adapters** — reviewed, narrow integrations for confirmed gaps and retained session UX.
 
-Start with [`STATE.md`](STATE.md) for current status, then [`docs/README.md`](docs/README.md) for documentation routing. The durable v2 architecture contract is [`docs/architecture/v2-architecture.md`](docs/architecture/v2-architecture.md).
+Relevant upstream changes are reviewed selectively rather than merged automatically into v2.
 
-## License
+### Project documentation
 
-MIT. See [`LICENSE`](LICENSE).
+- [`STATE.md`](STATE.md) — current implementation and validation state
+- [`docs/README.md`](docs/README.md) — documentation map
+- [`docs/architecture/v2-architecture.md`](docs/architecture/v2-architecture.md) — durable v2 architecture/security contract
+- [`docs/migration/v1-porting-map.md`](docs/migration/v1-porting-map.md) — v1 → v2 preservation decisions
 
-Token Lens is an unofficial downstream project and is not affiliated with or endorsed by the upstream maintainer, OpenAI, Anthropic, or Google.
+---
+
+## 📄 License & Disclaimer
+
+Distributed under the [MIT License](LICENSE).
+
+Token Lens is an independent downstream project and is not affiliated with, sponsored by, or endorsed by the upstream Token Monitor maintainer, OpenAI, Anthropic, or Google.

@@ -1,10 +1,22 @@
-# 🔍 Token Lens
+<div align="center">
+  <img src=".github/assets/app.png" alt="Token Lens logo" width="120">
+  <h1>Token Lens</h1>
+</div>
 
-**A lightweight, privacy-focused desktop monitor for AI coding-tool token usage and account quotas.**
+<p align="center">
+  <em>A lightweight, privacy-focused desktop monitor for AI coding-tool token usage and account quotas.</em>
+</p>
 
-[![Built with Tauri 2](https://img.shields.io/badge/Tauri-2-blue.svg?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Powered by Rust](https://img.shields.io/badge/Rust-Stable-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-2-blue.svg?logo=tauri&logoColor=white" alt="Built with Tauri 2"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-Stable-orange.svg?logo=rust&logoColor=white" alt="Powered by Rust"></a>
+  <img src="https://img.shields.io/badge/Windows-x64-0078D4.svg?logo=windows&logoColor=white" alt="Windows x64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
+
+<div align="center">
+  <img src=".github/assets/demo.gif" alt="Token Lens dashboard demo" width="520">
+</div>
 
 Token Lens gives you a compact view of AI coding-tool usage, remaining quotas, reset times, model usage, and session activity without turning the monitor itself into an account manager.
 
@@ -20,6 +32,25 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 - 🧭 **Session Exploration** — identify sessions using provider-owned metadata and inspect per-turn usage/tool metadata for supported providers without turning Token Lens into a transcript viewer.
 - ⚡ **Tauri 2 + tokScale** — a focused native desktop shell with a deliberately smaller backend/runtime surface than the Electron-based v1 line.
 - 🔒 **Privacy-Focused Data Boundary** — prompt/response content is not exposed to the renderer or displayed by Token Lens.
+
+---
+
+## Showcase
+
+<table>
+<tr>
+<td width="33%" align="center"><img src=".github/assets/home-view.png" width="300" alt="Token Lens Home view"><br><sub>Home — quota status, model mix, activity heatmap, and recent trend</sub></td>
+<td width="33%" align="center"><img src=".github/assets/limits-view.png" width="300" alt="Token Lens Limits view"><br><sub>Limits — provider quota windows, reset times, and available credits</sub></td>
+<td width="33%" align="center"><img src=".github/assets/models-view.png" width="300" alt="Token Lens Models view"><br><sub>Models — token usage and cost aggregated by model</sub></td>
+</tr>
+<tr>
+<td width="33%" align="center"><img src=".github/assets/sessions-view.png" width="300" alt="Token Lens Sessions view"><br><sub>Sessions — provider-owned titles/project labels with usage metadata</sub></td>
+<td width="33%" align="center"><img src=".github/assets/session-detail.png" width="300" alt="Token Lens Session Detail view"><br><sub>Session Detail — exchange, token, cache, reasoning, and tool metadata</sub></td>
+<td width="33%" align="center"><img src=".github/assets/floating-monitor.png" width="300" alt="Token Lens floating monitor"><br><sub>Floating Monitor — collapse the dashboard to the compact Σ handle</sub></td>
+</tr>
+</table>
+
+<sub>Showcase images use synthetic mock data captured from the v2 renderer on macOS. Windows uses the same renderer with its platform-specific Acrylic backdrop option.</sub>
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`, with a final floating-monitor/window-control parity update now implemented locally. CSP and retired-subsystem CSS cleanup remain applied. Local frontend/Rust checks, Clippy, npm audit, and the native macOS Tauri debug build are green for the new Bubble implementation; fresh macOS/Windows CI and Windows packaging validation are the remaining automated gates before packaged Windows runtime/visual validation.
+v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`, including the final floating-monitor/window-control parity update. CSP and retired-subsystem CSS cleanup remain applied. Local validation is green, and commit `b32da1c` passed fresh native macOS/Windows CI plus the Windows installer/single-EXE packaging workflow. No automated gate remains before packaged Windows runtime/visual validation.
 
 ## Accepted baseline
 
@@ -77,12 +77,16 @@ v2 feature implementation and Windows package-shape automation are complete on `
 
 ## Next action
 
-The Bubble/window-control implementation is locally validated. Before packaged Windows runtime/visual validation:
+No additional implementation or automated packaging gate remains before packaged Windows runtime/visual validation. Commit `b32da1c` is green in `Token Lens v2 CI` run `34038926176` on both macOS and Windows, and in `Build Token Lens v2 Windows` run `34038926218`. The downloaded Windows artifact independently passes `SHA256SUMS.txt` verification and both executables are Windows GUI PE files.
 
-1. push the current code-bearing stack and confirm fresh native macOS/Windows CI plus the Windows packaging workflow are green;
-2. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
-3. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
-4. validate Acrylic, the six Bubble display modes, minimize/quit behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
+1. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
+2. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
+3. validate Acrylic, the six Bubble display modes, minimize/quit behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
+
+Current `b32da1c` Windows artifact checksums:
+
+- `Token-Lens-Setup-2.0.0-alpha.0.exe`: `22b91932407aea39915105737e2c490c85d1ae8223bb7a43bfa6213f23612fb8`;
+- `Token-Lens-2.0.0-alpha.0.exe`: `8fb9d7e8e80426c18a9c47f767d3df25e6bda88ecfe9ef3e6ada20261566de11`.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. The v1 token/cost text modes and custom tray/bubble composer remain intentionally excluded; only the six accepted compact quota modes are retained.
 

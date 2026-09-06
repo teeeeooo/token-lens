@@ -96,6 +96,16 @@ Appearance parity is intentionally narrower than v1. Preserve only the controls 
 
 The Windows Acrylic implementation must use a supported Tauri/Windows integration path. Do not reintroduce v1's undocumented `SetWindowCompositionAttribute` Accent Blur implementation merely for visual parity.
 
+### Floating monitor and window controls
+
+Floating Bubble is enabled by default and its default content is the compact provider-limit display: provider icon plus remaining quota percentage. Retain only six v1-derived display modes in v2: `limitsAllSessions`, `icon`, `barsSession`, `barsWeekly`, `barsAllSessions`, and `bars`. Do not restore the token/cost text modes or the custom tray/bubble composer merely for settings parity.
+
+The compact quota selector follows the explicit v2 provider order and preserves the proven v1 primary/secondary semantics: prefer session, then daily, weekly, billing, and finally an otherwise-classified metered quota when a provider such as Gemini exposes model buckets without a canonical cadence. Additional Codex lanes are not eligible for the compact primary selection. With two or more eligible providers, `limitsAllSessions` shows the first two providers' primary remaining percentages; with one provider, it may show that provider's primary and secondary percentages.
+
+Window controls are explicit and predictable: the minimize button collapses the expanded app into Floating Bubble when Bubble is enabled. If Bubble is disabled, minimize hides to the tray when the tray is enabled and otherwise performs the operating-system minimize action. Ordinary focus loss must not collapse the app. The close button quits Token Lens regardless of tray visibility. Bubble click restores the full window; the optional hover trigger may temporarily reveal the expanded window and collapse it again when the preview is left.
+
+The collapsed native window has a fixed 34px logical height and a content-driven logical width bounded to a compact range. Resizing, edge docking, dragging, and movement between monitors must recompute physical dimensions for the destination DPI while preserving the current left/right dock side. Windows continues to suspend Acrylic while collapsed and restore it on expansion.
+
 ## Primary data engine
 
 tokScale is the primary data engine for v2.
@@ -227,10 +237,10 @@ Preserve only the API surface that the retained v2 renderer actually calls. The 
 
 - usage/dashboard: `getStats`, `getDashboardHistory`, `getSessionDetail`, `getTokscaleStatus`;
 - settings: `getSettings`, `updateSettings`;
-- floating monitor: `getFloatingBubbleState`, `collapseFloatingBubbleIfIdle`, `expandFloatingBubble`, `peekFloatingBubble`, `moveFloatingBubble`;
+- floating/window behavior: `getFloatingBubbleState`, `collapseFloatingBubbleIfIdle`, `minimizeMainWindow`, `setFloatingBubbleWidth`, `expandFloatingBubble`, `peekFloatingBubble`, `moveFloatingBubble`;
 - tray summary: `updateTraySummary`.
 
-Native window controls such as minimize, close, drag, always-on-top, and window state use Tauri APIs directly. Tray navigation arrives through a narrow Tauri event rather than a recreated Electron IPC surface.
+Close, drag, always-on-top, and ordinary native window state use Tauri APIs directly; minimize uses the narrow facade because it owns the Bubble → tray → OS fallback policy. Tray navigation arrives through a narrow Tauri event rather than a recreated Electron IPC surface.
 
 Do not recreate v1 facade APIs for unreachable or explicitly removed UI. Hub/multi-device, unrelated provider facades, credential/account mutation, account switching, diagnostics/repair, export/session archive management, service status, updater/download surfaces, manual subscription-cost tracking, and standalone model-pricing lookup remain out of scope unless a later architecture decision makes one reachable again.
 

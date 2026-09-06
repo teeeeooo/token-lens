@@ -28,6 +28,11 @@ import {
 } from './renderer-model.js';
 import { exchangeRows, periodStartTimeMs } from './session-detail-model.js';
 import { historyViewModel } from './history-model.js';
+import {
+  bubblePercentLabel,
+  floatingBubbleModel,
+  normalizeBubbleContent,
+} from './floating-bubble-model.js';
 import { THEME_PRESETS, applyThemePreset, normalizeThemePreset, normalizeZoomFactor } from './appearance-model.js';
 
 installTokenMonitorFacade();
@@ -42,6 +47,8 @@ const PERIODS = ['today', 'month', 'week', 'last7', 'last30', 'allTime'];
 const MONTH_PERIODS = ['month', 'week', 'last7', 'last30'];
 const AUTO_REFRESH_MS = 30 * 1000;
 const HISTORY_REFRESH_MS = 10 * 60 * 1000;
+const BUBBLE_LOGICAL_HEIGHT = 34;
+const BUBBLE_MAX_WIDTH = 240;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
 const VIEW_META = Object.freeze({
   home: { label: 'Home', icon: 'view-icon-home' },
@@ -61,9 +68,9 @@ const state = {
   historyFollowEnd: true,
   settings: {
     showTrayIcon: true,
-    floatingBubbleEnabled: false,
+    floatingBubbleEnabled: true,
     floatingBubbleTrigger: 'click',
-    floatingBubbleContent: 'icon',
+    floatingBubbleContent: 'limitsAllSessions',
     themePreset: 'default',
     zoomFactor: 1,
     showCompactTotalTokens: false,
@@ -126,7 +133,7 @@ root.innerHTML = `
         <label class="checkbox-label settings-item">
           <span class="settings-item-text"><span class="settings-item-title">Floating Bubble</span></span>
           <input id="floatingBubbleInput" type="checkbox" />
-          <span class="settings-note settings-item-desc">Collapse the widget into a draggable mini-window when it loses focus.</span>
+          <span class="settings-note settings-item-desc">Use the minimize button to collapse Token Lens into a draggable quota monitor.</span>
         </label>
         <div id="floatingBubbleOptions" class="presence-feature-body hidden">
           <div class="settings-item">
@@ -136,7 +143,17 @@ root.innerHTML = `
               <label class="inline-option"><input type="radio" name="floatingBubbleTrigger" value="hover" /><span>Hover</span></label>
             </div>
           </div>
-          <p class="settings-note v2-settings-note">Bubble display currently preserves the original icon-only mode.</p>
+          <label class="settings-item" for="floatingBubbleContentInput">
+            <span class="settings-item-text"><span class="settings-item-title">Bubble display</span></span>
+            <select id="floatingBubbleContentInput">
+              <option value="limitsAllSessions">Provider limits</option>
+              <option value="icon">Icon only</option>
+              <option value="barsSession">Lowest session</option>
+              <option value="barsWeekly">Lowest weekly</option>
+              <option value="barsAllSessions">First two provider bars</option>
+              <option value="bars">Lowest remaining</option>
+            </select>
+          </label>
         </div>
       </div>
       <div class="settings-group settings-collapsible-group v2-settings-card">
@@ -184,7 +201,7 @@ root.innerHTML = `
       </span>
     </footer>
   </main>
-  <button id="floatingBubbleTab" class="floating-bubble-tab" type="button" aria-hidden="true"><span>Σ</span></button>
+  <button id="floatingBubbleTab" class="floating-bubble-tab" type="button" aria-hidden="true"><div id="floatingBubbleContent" class="floating-bubble-content is-icon"><span>Σ</span></div></button>
 `;
 
 const els = {
@@ -207,6 +224,8 @@ const els = {
   floatingBubbleInput: document.querySelector('#floatingBubbleInput'),
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
   floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')),
+  floatingBubbleContentInput: document.querySelector('#floatingBubbleContentInput'),
+  floatingBubbleContent: document.querySelector('#floatingBubbleContent'),
   themePresetChips: document.querySelector('#themePresetChips'),
   zoomInput: document.querySelector('#zoomInput'),
   zoomValue: document.querySelector('#zoomValue'),
@@ -250,9 +269,9 @@ function applySettings(settings = {}) {
     ...state.settings,
     ...settings,
     showTrayIcon: settings.showTrayIcon !== false,
-    floatingBubbleEnabled: settings.floatingBubbleEnabled === true,
+    floatingBubbleEnabled: settings.floatingBubbleEnabled !== false,
     floatingBubbleTrigger: settings.floatingBubbleTrigger === 'hover' ? 'hover' : 'click',
-    floatingBubbleContent: 'icon',
+    floatingBubbleContent: normalizeBubbleContent(settings.floatingBubbleContent ?? state.settings.floatingBubbleContent),
     themePreset: normalizeThemePreset(settings.themePreset ?? state.settings.themePreset),
     zoomFactor: normalizeZoomFactor(settings.zoomFactor ?? state.settings.zoomFactor),
     showCompactTotalTokens: settings.showCompactTotalTokens === true,
@@ -262,6 +281,11 @@ function applySettings(settings = {}) {
   els.showTrayIconInput.checked = state.settings.showTrayIcon;
   els.floatingBubbleInput.checked = state.settings.floatingBubbleEnabled;
   els.floatingBubbleOptions.classList.toggle('hidden', !state.settings.floatingBubbleEnabled);
+  els.floatingBubbleContentInput.value = state.settings.floatingBubbleContent;
+  els.minButton.title = state.settings.floatingBubbleEnabled
+    ? 'Minimize to floating bubble'
+    : state.settings.showTrayIcon ? 'Minimize to tray' : 'Minimize';
+  els.closeButton.title = 'Quit Token Lens';
   els.zoomInput.value = String(Math.round(state.settings.zoomFactor * 100));
   els.zoomValue.textContent = `${els.zoomInput.value}%`;
   els.compactTotalInput.checked = state.settings.showCompactTotalTokens;
@@ -272,7 +296,84 @@ function applySettings(settings = {}) {
   if (state.stats) renderHeadline();
 }
 
-function applyFloatingBubbleState(payload = {}) {
+function bubbleProviderIcon(selection) {
+  const icon = document.createElement('span');
+  icon.className = `bubble-provider-icon row-icon ${selection.iconClass || ''}`;
+  if (selection.color) icon.style.color = selection.color;
+  icon.setAttribute('aria-hidden', 'true');
+  return icon;
+}
+
+function bubbleBar(percent) {
+  const track = document.createElement('span');
+  track.className = 'bubble-bar-track';
+  const fill = document.createElement('span');
+  fill.className = 'bubble-bar-fill';
+  const value = Number(percent);
+  fill.style.setProperty('--bubble-fill', String(Number.isFinite(value) ? Math.max(0, Math.min(1, value / 100)) : 0));
+  track.append(fill);
+  return track;
+}
+
+function renderFloatingBubbleContent() {
+  const content = els.floatingBubbleContent;
+  const model = floatingBubbleModel(state.stats?.limits, state.settings.floatingBubbleContent);
+  content.className = `floating-bubble-content is-${model.kind}`;
+  if (model.kind === 'icon') {
+    const mark = document.createElement('span');
+    mark.className = 'bubble-sigma';
+    mark.textContent = 'Σ';
+    content.replaceChildren(mark);
+    return;
+  }
+  if (model.kind === 'limits') {
+    const nodes = [];
+    model.entries.forEach((entry, index) => {
+      if (index) {
+        const separator = document.createElement('span');
+        separator.className = 'bubble-separator';
+        separator.textContent = '·';
+        nodes.push(separator);
+      }
+      const item = document.createElement('span');
+      item.className = 'bubble-limit-entry';
+      const text = document.createElement('span');
+      text.className = 'bubble-limit-text';
+      text.textContent = entry.percents.map(bubblePercentLabel).filter(Boolean).join(' · ');
+      item.append(bubbleProviderIcon(entry), text);
+      nodes.push(item);
+    });
+    content.replaceChildren(...nodes);
+    return;
+  }
+  const stack = document.createElement('span');
+  stack.className = 'bubble-bars-stack';
+  if (model.kind === 'providerBars') {
+    stack.append(bubbleBar(model.primaryPercent), bubbleBar(model.secondaryPercent));
+    content.replaceChildren(bubbleProviderIcon(model), stack);
+    return;
+  }
+  for (const percent of model.percents || []) stack.append(bubbleBar(percent));
+  content.replaceChildren(stack);
+}
+
+function measureFloatingBubbleWidth() {
+  const probe = els.floatingBubbleContent.cloneNode(true);
+  probe.classList.add('floating-bubble-measure');
+  document.body.append(probe);
+  const width = Math.ceil(probe.getBoundingClientRect().width);
+  probe.remove();
+  return Math.max(BUBBLE_LOGICAL_HEIGHT, Math.min(BUBBLE_MAX_WIDTH, width || BUBBLE_LOGICAL_HEIGHT));
+}
+
+async function syncFloatingBubbleWidth({ applyState = true } = {}) {
+  renderFloatingBubbleContent();
+  const payload = await window.tokenMonitor.setFloatingBubbleWidth(measureFloatingBubbleWidth());
+  if (applyState && payload?.collapsed) applyFloatingBubbleState(payload, { renderContent: false });
+  return payload;
+}
+
+function applyFloatingBubbleState(payload = {}, { renderContent = true } = {}) {
   const side = payload.collapsed && ['left', 'right'].includes(payload.side) ? payload.side : null;
   state.floatingBubble = { collapsed: Boolean(side), side };
   for (const node of [document.documentElement, document.body]) {
@@ -287,6 +388,7 @@ function applyFloatingBubbleState(payload = {}) {
     els.settingsPanel.classList.add('hidden');
     els.settingsPanel.setAttribute('aria-hidden', 'true');
   }
+  if (renderContent) renderFloatingBubbleContent();
 }
 
 async function saveSettings(patch) {
@@ -294,6 +396,7 @@ async function saveSettings(patch) {
   applySettings(settings);
   const bubble = await window.tokenMonitor.getFloatingBubbleState();
   applyFloatingBubbleState(bubble);
+  await syncFloatingBubbleWidth();
   renderSurface();
   return settings;
 }
@@ -1077,6 +1180,7 @@ async function refresh({ force = false } = {}) {
     state.lastRefreshAt = Date.now();
     setStatus();
     render();
+    await syncFloatingBubbleWidth();
     els.liveDot.classList.add('pulse');
     setTimeout(() => els.liveDot.classList.remove('pulse'), 1200);
   } catch (error) {
@@ -1094,11 +1198,9 @@ async function refresh({ force = false } = {}) {
   }
 }
 
-let floatingBubbleCollapseTimer = null;
 let floatingBubbleHoverRevealTimer = null;
 let floatingBubbleHoverCollapseTimer = null;
 let floatingBubbleDrag = null;
-let stopFocusListener = null;
 let stopTrayActionListener = null;
 
 els.settingsButton.addEventListener('click', () => {
@@ -1120,6 +1222,9 @@ for (const input of els.floatingBubbleTriggerInputs) {
     if (input.checked) void saveSettings({ floatingBubbleTrigger: input.value });
   });
 }
+els.floatingBubbleContentInput.addEventListener('change', () => {
+  void saveSettings({ floatingBubbleContent: normalizeBubbleContent(els.floatingBubbleContentInput.value) });
+});
 els.zoomInput.addEventListener('input', () => {
   els.zoomValue.textContent = `${els.zoomInput.value}%`;
 });
@@ -1204,14 +1309,9 @@ document.addEventListener('mouseleave', () => {
 });
 
 function clearBubbleTimer(name) {
-  const timer = name === 'collapse'
-    ? floatingBubbleCollapseTimer
-    : name === 'hoverReveal'
-      ? floatingBubbleHoverRevealTimer
-      : floatingBubbleHoverCollapseTimer;
+  const timer = name === 'hoverReveal' ? floatingBubbleHoverRevealTimer : floatingBubbleHoverCollapseTimer;
   if (timer) clearTimeout(timer);
-  if (name === 'collapse') floatingBubbleCollapseTimer = null;
-  else if (name === 'hoverReveal') floatingBubbleHoverRevealTimer = null;
+  if (name === 'hoverReveal') floatingBubbleHoverRevealTimer = null;
   else floatingBubbleHoverCollapseTimer = null;
 }
 
@@ -1219,6 +1319,15 @@ async function collapseFloatingBubbleIfIdle() {
   if (!state.settings.floatingBubbleEnabled || state.floatingBubble.collapsed) return;
   try {
     applyFloatingBubbleState(await window.tokenMonitor.collapseFloatingBubbleIfIdle());
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function minimizeWindow() {
+  try {
+    await syncFloatingBubbleWidth({ applyState: false });
+    applyFloatingBubbleState(await window.tokenMonitor.minimizeMainWindow());
   } catch (error) {
     console.error(error);
   }
@@ -1235,15 +1344,6 @@ async function expandFloatingBubble({ focus = true } = {}) {
   } catch (error) {
     console.error(error);
   }
-}
-
-function scheduleFloatingBubbleCollapse(delay = 180) {
-  clearBubbleTimer('collapse');
-  if (!state.settings.floatingBubbleEnabled || state.floatingBubble.collapsed) return;
-  floatingBubbleCollapseTimer = setTimeout(() => {
-    floatingBubbleCollapseTimer = null;
-    void collapseFloatingBubbleIfIdle();
-  }, delay);
 }
 
 function floatingBubblePointerRatio(event) {
@@ -1280,7 +1380,7 @@ for (const tab of document.querySelectorAll('.tab')) {
 }
 
 els.refreshButton.addEventListener('click', () => void refresh({ force: true }));
-els.minButton.addEventListener('click', () => appWindow.minimize());
+els.minButton.addEventListener('click', () => void minimizeWindow());
 els.closeButton.addEventListener('click', () => appWindow.close());
 els.pinButton.addEventListener('click', async () => {
   state.alwaysOnTop = !state.alwaysOnTop;
@@ -1386,19 +1486,13 @@ async function bootstrapShell() {
     setStatus(error?.message || 'Failed to load settings', true);
   }
 
-  stopFocusListener = await appWindow.onFocusChanged(({ payload: focused }) => {
-    if (focused) clearBubbleTimer('collapse');
-    else scheduleFloatingBubbleCollapse();
-  });
   await refresh();
 }
 
 window.addEventListener('beforeunload', () => {
   clearInterval(autoRefreshTimer);
-  clearBubbleTimer('collapse');
   clearBubbleTimer('hoverReveal');
   clearBubbleTimer('hoverCollapse');
-  stopFocusListener?.();
   stopTrayActionListener?.();
 }, { once: true });
 

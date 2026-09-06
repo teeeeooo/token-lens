@@ -151,6 +151,78 @@ html.is-mac-legacy .shell {
   width: auto;
   height: 24px;
 }
+.floating-bubble-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-width: 34px;
+  padding: 0 8px;
+  color: var(--number);
+  white-space: nowrap;
+}
+.floating-bubble-content.is-icon { padding: 0; }
+.floating-bubble-content .bubble-sigma {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+.floating-bubble-content .bubble-provider-icon {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+}
+.floating-bubble-content .bubble-limit-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+}
+.floating-bubble-content .bubble-limit-text,
+.floating-bubble-content .bubble-separator {
+  padding: 0;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+.floating-bubble-content .bubble-separator { color: var(--muted); }
+.floating-bubble-content .bubble-bars-stack {
+  display: grid;
+  gap: 4px;
+  width: 34px;
+  padding: 0;
+}
+.floating-bubble-content .bubble-bar-track {
+  display: block;
+  width: 34px;
+  height: 4px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(var(--line-rgb), 0.20);
+}
+.floating-bubble-content .bubble-bar-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border-radius: inherit;
+  background: currentColor;
+  transform: scaleX(var(--bubble-fill, 0));
+  transform-origin: left center;
+}
+.floating-bubble-content.floating-bubble-measure {
+  position: fixed;
+  top: -10000px;
+  left: -10000px;
+  width: max-content;
+  height: 34px;
+  visibility: hidden;
+  pointer-events: none;
+}
 .floating-bubble-tab.dragging { cursor: grabbing; }
 html.floating-bubble-collapsed-left,
 body.floating-bubble-collapsed-left,

@@ -47,9 +47,9 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             show_tray_icon: true,
-            floating_bubble_enabled: false,
+            floating_bubble_enabled: true,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
-            floating_bubble_content: "icon".to_owned(),
+            floating_bubble_content: "limitsAllSessions".to_owned(),
             theme_preset: ThemePreset::Default,
             zoom_factor: 1.0,
             show_compact_total_tokens: false,
@@ -130,8 +130,16 @@ impl SettingsStore {
 }
 
 fn normalize_settings(mut value: AppSettings) -> AppSettings {
-    if value.floating_bubble_content != "icon" {
-        value.floating_bubble_content = "icon".to_owned();
+    const BUBBLE_CONTENT_VALUES: [&str; 6] = [
+        "limitsAllSessions",
+        "icon",
+        "barsSession",
+        "barsWeekly",
+        "barsAllSessions",
+        "bars",
+    ];
+    if !BUBBLE_CONTENT_VALUES.contains(&value.floating_bubble_content.as_str()) {
+        value.floating_bubble_content = "limitsAllSessions".to_owned();
     }
     if !value.zoom_factor.is_finite() {
         value.zoom_factor = 1.0;
@@ -161,12 +169,12 @@ mod tests {
     fn defaults_keep_retained_shell_and_appearance_policy() {
         let settings = AppSettings::default();
         assert!(settings.show_tray_icon);
-        assert!(!settings.floating_bubble_enabled);
+        assert!(settings.floating_bubble_enabled);
         assert_eq!(
             settings.floating_bubble_trigger,
             FloatingBubbleTrigger::Click
         );
-        assert_eq!(settings.floating_bubble_content, "icon");
+        assert_eq!(settings.floating_bubble_content, "limitsAllSessions");
         assert_eq!(settings.theme_preset, ThemePreset::Default);
         assert_eq!(settings.zoom_factor, 1.0);
         assert!(!settings.show_compact_total_tokens);
@@ -174,12 +182,17 @@ mod tests {
     }
 
     #[test]
-    fn normalization_rejects_unimplemented_bubble_content() {
-        let normalized = normalize_settings(AppSettings {
+    fn normalization_keeps_supported_bubble_modes_and_rejects_retired_content() {
+        let bars = normalize_settings(AppSettings {
+            floating_bubble_content: "barsWeekly".to_owned(),
+            ..AppSettings::default()
+        });
+        assert_eq!(bars.floating_bubble_content, "barsWeekly");
+        let retired = normalize_settings(AppSettings {
             floating_bubble_content: "tokens".to_owned(),
             ..AppSettings::default()
         });
-        assert_eq!(normalized.floating_bubble_content, "icon");
+        assert_eq!(retired.floating_bubble_content, "limitsAllSessions");
     }
 
     #[test]

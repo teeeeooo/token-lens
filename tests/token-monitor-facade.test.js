@@ -17,6 +17,8 @@ test('installs only the retained compatibility methods implemented so far', () =
     'updateTraySummary',
     'getFloatingBubbleState',
     'collapseFloatingBubbleIfIdle',
+    'minimizeMainWindow',
+    'setFloatingBubbleWidth',
     'expandFloatingBubble',
     'peekFloatingBubble',
     'moveFloatingBubble',

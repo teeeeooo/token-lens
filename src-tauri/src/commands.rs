@@ -144,7 +144,52 @@ pub fn collapse_floating_bubble_if_idle(
     settings: State<'_, SettingsStore>,
     bubble: State<'_, FloatingBubbleController>,
 ) -> Result<FloatingBubblePayload, String> {
-    floating_bubble::collapse(&window, &settings, &bubble)
+    floating_bubble::collapse_if_idle(&window, &settings, &bubble)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MinimizeTarget {
+    Bubble,
+    Tray,
+    Os,
+}
+
+fn minimize_target(settings: &AppSettings) -> MinimizeTarget {
+    if settings.floating_bubble_enabled {
+        MinimizeTarget::Bubble
+    } else if settings.show_tray_icon {
+        MinimizeTarget::Tray
+    } else {
+        MinimizeTarget::Os
+    }
+}
+
+#[tauri::command]
+pub fn minimize_main_window(
+    window: WebviewWindow,
+    settings: State<'_, SettingsStore>,
+    bubble: State<'_, FloatingBubbleController>,
+) -> Result<FloatingBubblePayload, String> {
+    match minimize_target(&settings.get()?) {
+        MinimizeTarget::Bubble => return floating_bubble::collapse(&window, &settings, &bubble),
+        MinimizeTarget::Tray => window
+            .hide()
+            .map_err(|error| format!("failed to hide Token Lens window: {error}"))?,
+        MinimizeTarget::Os => window
+            .minimize()
+            .map_err(|error| format!("failed to minimize Token Lens window: {error}"))?,
+    }
+    floating_bubble::current_state(&settings, &bubble)
+}
+
+#[tauri::command]
+pub fn set_floating_bubble_width(
+    window: WebviewWindow,
+    settings: State<'_, SettingsStore>,
+    bubble: State<'_, FloatingBubbleController>,
+    width: f64,
+) -> Result<FloatingBubblePayload, String> {
+    floating_bubble::set_collapsed_width(&window, &settings, &bubble, width)
 }
 
 #[tauri::command]
@@ -172,4 +217,29 @@ pub fn move_floating_bubble(
     offset: BubbleDragOffset,
 ) -> Result<FloatingBubblePayload, String> {
     floating_bubble::move_to_cursor(&window, &settings, &bubble, offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimize_policy_prefers_bubble_then_tray_then_os() {
+        let defaults = AppSettings::default();
+        assert_eq!(minimize_target(&defaults), MinimizeTarget::Bubble);
+
+        let tray = AppSettings {
+            floating_bubble_enabled: false,
+            show_tray_icon: true,
+            ..AppSettings::default()
+        };
+        assert_eq!(minimize_target(&tray), MinimizeTarget::Tray);
+
+        let os = AppSettings {
+            floating_bubble_enabled: false,
+            show_tray_icon: false,
+            ..AppSettings::default()
+        };
+        assert_eq!(minimize_target(&os), MinimizeTarget::Os);
+    }
 }

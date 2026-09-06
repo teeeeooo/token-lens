@@ -2,7 +2,7 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`. CSP and retired-subsystem CSS cleanup are applied, native macOS/Windows CI and Windows packaging are green for the current code-bearing stack, and the remaining product gate is packaged Windows runtime/visual validation.
+v2 feature implementation and Windows package-shape automation are complete on `feat/v2-tokscale-vertical-slice`, with a final floating-monitor/window-control parity update now implemented locally. CSP and retired-subsystem CSS cleanup remain applied. Local frontend/Rust checks, Clippy, npm audit, and the native macOS Tauri debug build are green for the new Bubble implementation; fresh macOS/Windows CI and Windows packaging validation are the remaining automated gates before packaged Windows runtime/visual validation.
 
 ## Accepted baseline
 
@@ -40,16 +40,16 @@ v2 feature implementation and Windows package-shape automation are complete on `
 - overlapping renderer refreshes are serialized and coalesced so period changes cannot race an in-flight tokScale scan;
 - the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
 - macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
-- the persisted settings store now owns the retained floating/tray and appearance controls, with older v2 settings receiving the new appearance defaults through serde-default migration; bubble content remains intentionally limited to the original icon-only mode;
+- the persisted settings store now owns the retained floating/tray and appearance controls; fresh installs default Floating Bubble on with `limitsAllSessions`, while existing persisted v2 choices remain preserved, and the accepted bubble modes are limited to provider limits, icon-only, lowest session, lowest weekly, first-two-provider bars, and lowest-remaining bars;
 - floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs;
-- floating-bubble geometry is DPI-aware and recalculates the physical 34px-logical handle size when moving between monitors;
+- floating-bubble geometry is DPI-aware with a fixed 34px logical height and content-driven logical width; docking, dragging, resizing, and movement between monitors recalculate physical dimensions at the destination scale factor;
 - Windows-specific bubble policy is explicit: collapse against full monitor bounds with zero edge margin, while macOS/other desktop targets use the work area with the original vertical margin;
 - macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
 - frontend production build, JS/Rust unit tests, live tokScale/session-metadata/session-detail smoke, Clippy, rustfmt, native macOS Tauri debug build, and npm audit pass locally; Windows compile/build validation is owned by the native GitHub Actions job rather than a macOS cross-target check;
 - v2 GitHub Actions now runs the non-credentialed frontend/Rust checks, Clippy, npm audit, and native Tauri debug build on both `macos-latest` and `windows-latest`; the first native matrix run passed on both hosts;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
-- with the tray enabled, window close now hides Token Lens instead of destroying the app, matching the v1 recoverability contract; disabling the tray restores normal close behavior;
+- window controls now use explicit v2 semantics: minimize collapses to Floating Bubble when enabled, otherwise hides to the tray when available and finally falls back to OS minimize; close always quits, and ordinary focus loss no longer collapses the window;
 - the renderer listens for narrow tray actions rather than reintroducing Electron IPC, and publishes only the small Today usage/cost summary needed by the native tray;
 - the v2 settings surface now controls tray visibility as well as floating-bubble behavior;
 - session-list identification now uses a separate read-only provider-metadata adapter rather than transcript text: Codex resolves provider-owned `display_title` / `title` from local Codex SQLite state/catalog data, while Claude resolves explicit `aiTitle` metadata from its JSONL session files;
@@ -77,13 +77,14 @@ v2 feature implementation and Windows package-shape automation are complete on `
 
 ## Next action
 
-No additional implementation or automated packaging gate remains before packaged Windows runtime/visual validation:
+The Bubble/window-control implementation is locally validated. Before packaged Windows runtime/visual validation:
 
-1. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
-2. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
-3. validate Acrylic, floating-bubble behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
+1. push the current code-bearing stack and confirm fresh native macOS/Windows CI plus the Windows packaging workflow are green;
+2. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
+3. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
+4. validate Acrylic, the six Bubble display modes, minimize/quit behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, and final macOS/Windows visual parity.
 
-Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. Advanced v1 tray-composer/generated-bar modes remain deferred unless they prove necessary to preserve the core monitoring UX.
+Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. The v1 token/cost text modes and custom tray/bubble composer remain intentionally excluded; only the six accepted compact quota modes are retained.
 
 ## Known open items
 
@@ -91,7 +92,7 @@ No architecture decision currently blocks implementation.
 
 Production tokScale packaging is wired through Tauri `externalBin` for installed bundles and the single-file portable overlay for no-install Windows use. The build stages the platform-native 4.15.1 npm binary under the required target-triple name, validates package identity plus `--version`, and portable runtime discovery prefers its embedded compressed payload before adjacent/project/PATH fallbacks. The hardened no-runtime-download/update policy is unchanged.
 
-The final retained-facade audit found no reason to recreate v1 Electron-only push/utility APIs for unreachable UI. The current renderer calls only the implemented settings/stats/history/session/floating/tray surface; minimize/close/window state use Tauri directly, and hardened v1 app-update/download/account-mutation/diagnostic/export surfaces remain absent by policy.
+The final retained-facade audit found no reason to recreate v1 Electron-only push/utility APIs for unreachable UI. The current renderer calls only the implemented settings/stats/history/session/floating/tray surface; minimize uses a narrow Tauri command because it owns the Bubble → tray → OS fallback policy, while close/drag/pin use native Tauri window behavior directly. Hardened v1 app-update/download/account-mutation/diagnostic/export surfaces remain absent by policy.
 
 External/runtime validation still required:
 

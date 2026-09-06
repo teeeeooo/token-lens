@@ -44,16 +44,8 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let should_hide = window
-                    .state::<SettingsStore>()
-                    .get()
-                    .map(|settings| settings.show_tray_icon)
-                    .unwrap_or(false);
-                if should_hide {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                window.app_handle().exit(0);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -70,6 +62,8 @@ pub fn run() {
             commands::update_tray_summary,
             commands::get_floating_bubble_state,
             commands::collapse_floating_bubble_if_idle,
+            commands::minimize_main_window,
+            commands::set_floating_bubble_width,
             commands::expand_floating_bubble,
             commands::peek_floating_bubble,
             commands::move_floating_bubble

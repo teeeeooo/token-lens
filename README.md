@@ -26,7 +26,7 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 
 ## ✨ Key Features
 
-- 🪟 **Floating Monitor & System Tray** — keep Token Lens visible as an always-on-top floating monitor or access it from the native tray.
+- 🪟 **Floating Monitor & System Tray** — minimize Token Lens into a draggable provider-quota bubble, or reopen it from the native tray. The default bubble shows provider icons with remaining quota percentages.
 - ⏱️ **Quota & Reset Visibility** — monitor available short-window, weekly, reset, credit, and provider-specific limits with periodic background refresh.
 - 📊 **Usage & Cost Analytics** — inspect Day, Week, Month, Last 7 Days, Last 30 Days, and All-Time usage with model/session breakdowns, token categories, and cost where available.
 - 🧭 **Session Exploration** — identify sessions using provider-owned metadata and inspect per-turn usage/tool metadata for supported providers without turning Token Lens into a transcript viewer.
@@ -46,11 +46,11 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 <tr>
 <td width="33%" align="center"><img src=".github/assets/sessions-view.png" width="300" alt="Token Lens Sessions view"><br><sub>Sessions — provider-owned titles/project labels with usage metadata</sub></td>
 <td width="33%" align="center"><img src=".github/assets/session-detail.png" width="300" alt="Token Lens Session Detail view"><br><sub>Session Detail — exchange, token, cache, reasoning, and tool metadata</sub></td>
-<td width="33%" align="center"><img src=".github/assets/floating-monitor.png" width="300" alt="Token Lens floating monitor"><br><sub>Floating Monitor — collapse the dashboard to the compact Σ handle</sub></td>
+<td width="33%" align="center"><img src=".github/assets/floating-monitor.png" width="300" alt="Token Lens floating monitor"><br><sub>Floating Monitor — minimize into a compact provider-quota bubble</sub></td>
 </tr>
 </table>
 
-<sub>Showcase images use synthetic mock data captured from the v2 renderer on macOS. Windows uses the same renderer with its platform-specific Acrylic backdrop option.</sub>
+<sub>Showcase images use synthetic mock data rendered with the v2 UI on macOS. Windows uses the same renderer with its platform-specific Acrylic backdrop option.</sub>
 
 ---
 

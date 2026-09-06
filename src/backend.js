@@ -45,6 +45,15 @@ export function getFloatingBubbleState() {
 export function collapseFloatingBubbleIfIdle() {
   return invoke('collapse_floating_bubble_if_idle');
 }
+
+export function minimizeMainWindow() {
+  return invoke('minimize_main_window');
+}
+
+export function setFloatingBubbleWidth(width) {
+  return invoke('set_floating_bubble_width', { width });
+}
+
 export function expandFloatingBubble() {
   return invoke('expand_floating_bubble');
 }

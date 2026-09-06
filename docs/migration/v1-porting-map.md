@@ -30,6 +30,12 @@ Port renderer assets selectively; remove code paths for features excluded from v
 
 Appearance is a deliberate subset rather than full v1 settings parity. Retain built-in theme presets, zoom, compact total-token display, OS-driven reduced-motion behavior, always-on live/tool indicators, and a Windows-only `Off` / `Acrylic` backdrop with Acrylic default-on. Do not port custom interface/vendor colors, font customization, localized compact-token unit selection, Theme Code sharing, Settings/Refresh placement swapping, opacity/blur sliders, or the experimental Accent Blur implementation.
 
+### Floating bubble
+
+Retain the v1 compact quota-monitor semantics without porting its full tray-composer framework. v2 supports only `limitsAllSessions`, `icon`, `barsSession`, `barsWeekly`, `barsAllSessions`, and `bars`; token/cost text modes and `custom` composition remain excluded. `limitsAllSessions` is the v2 default and shows provider icons plus remaining quota percentages using the explicit v2 provider order. Preserve the v1 primary/secondary quota selection semantics, including canonical-window preference and ignoring additional Codex lanes in compact displays.
+
+The v2 window shell deliberately changes the trigger semantics: Floating Bubble is default-on, the explicit minimize button collapses to the bubble, ordinary focus loss does not. If Bubble is disabled, minimize falls back to tray hide when the tray is enabled and otherwise to the OS minimize action. Close means quit. Variable-width bubble content keeps a fixed 34px logical height and must preserve docking, dragging, and destination-monitor DPI behavior.
+
 ### Dashboard history
 
 Retain the user-facing activity heatmap and recent usage trend, but do not port the v1 persisted history/collector subsystem. v2 obtains long-range daily history directly from `tokscale graph`, normalizes only the daily usage/cost/activity fields needed by the renderer, and patches the current local-day bucket from live `getStats` data between history refreshes.

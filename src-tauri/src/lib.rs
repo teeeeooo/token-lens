@@ -1,6 +1,8 @@
 mod antigravity_local;
 mod antigravity_quota;
 mod appearance;
+mod background_process;
+mod claude_quota;
 mod codex_business;
 mod commands;
 mod domain;

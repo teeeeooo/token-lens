@@ -20,11 +20,24 @@ const MAX_RPC_LINE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RateLimitWindow {
+    #[serde(alias = "used_percent")]
+    used_percent: Option<f64>,
+    #[serde(alias = "resets_at", alias = "reset_at")]
+    resets_at: Option<Value>,
+    #[serde(alias = "window_duration_mins")]
+    window_duration_mins: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RateLimitSnapshot {
     #[serde(alias = "limit_id")]
     limit_id: Option<String>,
     #[serde(alias = "plan_type")]
     plan_type: Option<String>,
+    primary: Option<RateLimitWindow>,
+    secondary: Option<RateLimitWindow>,
     #[serde(alias = "individual_limit")]
     individual_limit: Option<IndividualLimit>,
 }
@@ -85,6 +98,8 @@ struct AppServerSnapshot {
     account_email: Option<String>,
     account_plan: Option<String>,
     rate_plan: Option<String>,
+    primary: Option<RateLimitWindow>,
+    secondary: Option<RateLimitWindow>,
     individual_limit: Option<IndividualLimit>,
 }
 
@@ -162,22 +177,38 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
-    if snapshot
-        .rate_plan
-        .as_deref()
-        .or(snapshot.account_plan.as_deref())
-        .is_some_and(|plan| !business_like_plan(plan))
-    {
-        return report;
-    }
+    apply_base_rate_limits(&mut report.providers[index], &snapshot);
 
-    if let Some(individual_limit) = snapshot.individual_limit.as_ref() {
-        apply_individual_limit(&mut report.providers[index], individual_limit);
+    let business_plan = report.providers[index]
+        .plan
+        .as_deref()
+        .or(snapshot.rate_plan.as_deref())
+        .or(snapshot.account_plan.as_deref())
+        .is_some_and(business_like_plan);
+    if business_plan {
+        if let Some(individual_limit) = snapshot.individual_limit.as_ref() {
+            apply_individual_limit(&mut report.providers[index], individual_limit);
+        }
     }
     report
 }
 
 fn provider_needs_enrichment(provider: &QuotaProvider) -> bool {
+    provider_needs_base_quota(provider) || provider_needs_individual_limit(provider)
+}
+
+fn provider_needs_base_quota(provider: &QuotaProvider) -> bool {
+    !provider.windows.iter().any(|window| {
+        !window.additional
+            && matches!(
+                window.kind,
+                QuotaWindowKind::Session | QuotaWindowKind::Daily | QuotaWindowKind::Weekly
+            )
+            && window.remaining_percent.is_some()
+    })
+}
+
+fn provider_needs_individual_limit(provider: &QuotaProvider) -> bool {
     if !provider.plan.as_deref().is_some_and(business_like_plan) {
         return false;
     }
@@ -210,6 +241,88 @@ fn enrichment_context_matches(
     let expected_email = normalize_identity(expected_email);
     let rpc_email = normalize_identity(rpc_email);
     !matches!((expected_email, rpc_email), (Some(left), Some(right)) if left != right)
+}
+
+fn apply_base_rate_limits(provider: &mut QuotaProvider, snapshot: &AppServerSnapshot) -> usize {
+    let mut added = 0;
+    for (slot, raw) in [
+        ("primary", snapshot.primary.as_ref()),
+        ("secondary", snapshot.secondary.as_ref()),
+    ] {
+        let Some(raw) = raw else {
+            continue;
+        };
+        let Some(used_percent) = raw.used_percent.filter(|value| value.is_finite()) else {
+            continue;
+        };
+        let kind = rate_window_kind(slot, raw.window_duration_mins);
+        if provider.windows.iter().any(|window| {
+            !window.additional && window.kind == kind && window.remaining_percent.is_some()
+        }) {
+            continue;
+        }
+        let used_percent = used_percent.clamp(0.0, 100.0);
+        let window = QuotaWindow {
+            kind,
+            label: rate_window_label(kind).to_owned(),
+            metric: "quota",
+            additional: false,
+            used: None,
+            limit: None,
+            remaining: None,
+            used_percent: Some(used_percent),
+            remaining_percent: Some(100.0 - used_percent),
+            remaining_label: None,
+            resets_at: raw.resets_at.as_ref().and_then(rpc_reset_to_rfc3339),
+            currency: None,
+            show_meter: true,
+            source: CODEX_APP_SERVER_SOURCE,
+        };
+        let insert_at = provider
+            .windows
+            .iter()
+            .position(|candidate| candidate.additional)
+            .unwrap_or(provider.windows.len());
+        provider.windows.insert(insert_at, window);
+        added += 1;
+    }
+    added
+}
+
+fn rate_window_kind(slot: &str, minutes: Option<u64>) -> QuotaWindowKind {
+    match minutes.unwrap_or_default() {
+        value if value == 30 * 24 * 60 => QuotaWindowKind::Billing,
+        value if value >= 7 * 24 * 60 => QuotaWindowKind::Weekly,
+        value if value >= 24 * 60 => QuotaWindowKind::Daily,
+        value if value == 5 * 60 => QuotaWindowKind::Session,
+        _ if slot.eq_ignore_ascii_case("secondary") => QuotaWindowKind::Weekly,
+        _ => QuotaWindowKind::Session,
+    }
+}
+
+fn rate_window_label(kind: QuotaWindowKind) -> &'static str {
+    match kind {
+        QuotaWindowKind::Session => "5h",
+        QuotaWindowKind::Daily => "Daily",
+        QuotaWindowKind::Weekly => "Weekly",
+        QuotaWindowKind::Billing => "Monthly",
+        QuotaWindowKind::Other => "Quota",
+    }
+}
+
+fn rpc_reset_to_rfc3339(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_owned())
+            }
+        }
+        Value::Number(value) => value.as_i64().and_then(epoch_seconds_to_rfc3339),
+        _ => None,
+    }
 }
 
 fn apply_individual_limit(provider: &mut QuotaProvider, raw: &IndividualLimit) -> bool {
@@ -340,7 +453,10 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
         let plan_hint = selected.plan_type.as_deref().or(account
             .as_ref()
             .and_then(|value| value.plan_type.as_deref()));
-        if selected.individual_limit.is_none() && plan_hint.is_some_and(business_like_plan) {
+        let empty_base = selected.primary.is_none() && selected.secondary.is_none();
+        let missing_business_limit =
+            selected.individual_limit.is_none() && plan_hint.is_some_and(business_like_plan);
+        if empty_base || missing_business_limit {
             sleep(EMPTY_LIMIT_RETRY_DELAY).await;
             if let Ok(retry) = rpc_call::<RateLimitResponse>(
                 &mut stdin,
@@ -360,6 +476,8 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
             account_email: account.as_ref().and_then(|value| value.email.clone()),
             account_plan: account.and_then(|value| value.plan_type),
             rate_plan: selected.plan_type,
+            primary: selected.primary,
+            secondary: selected.secondary,
             individual_limit: selected.individual_limit,
         })
     }
@@ -396,6 +514,7 @@ fn spawn_app_server(command: &Path) -> Result<Child, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    crate::background_process::configure_tokio(&mut process);
     process.spawn().map_err(|error| {
         format!(
             "failed to start Codex App Server from {}: {error}",
@@ -524,18 +643,53 @@ fn add_windows_candidates(candidates: &mut Vec<PathBuf>) {
     if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         push_candidate(candidates, local.join("Programs/Codex/resources/codex.exe"));
         let bin = local.join("OpenAI/Codex/bin");
-        push_candidate(candidates, bin.join("codex.exe"));
-        if let Ok(entries) = fs::read_dir(&bin) {
+        add_codex_bin_candidates(candidates, &bin);
+        let packages = local.join("Packages");
+        if let Ok(entries) = fs::read_dir(packages) {
             for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                    push_candidate(candidates, entry.path().join("codex.exe"));
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("OpenAI.Codex_")
+                    && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                {
+                    add_codex_bin_candidates(
+                        candidates,
+                        &entry.path().join("LocalCache/Local/OpenAI/Codex/bin"),
+                    );
                 }
             }
         }
         push_candidate(candidates, local.join("Microsoft/WindowsApps/codex.exe"));
+        push_candidate(candidates, local.join("Microsoft/WindowsApps/Codex.exe"));
     }
-    if let Some(program_files) = env::var_os("ProgramFiles").map(PathBuf::from) {
-        push_candidate(candidates, program_files.join("Codex/resources/codex.exe"));
+    for root in ["ProgramFiles", "ProgramW6432"] {
+        if let Some(program_files) = env::var_os(root).map(PathBuf::from) {
+            push_candidate(candidates, program_files.join("Codex/resources/codex.exe"));
+            let windows_apps = program_files.join("WindowsApps");
+            if let Ok(entries) = fs::read_dir(windows_apps) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !name.starts_with("OpenAI.Codex_")
+                        || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    {
+                        continue;
+                    }
+                    push_candidate(candidates, entry.path().join("app/resources/codex.exe"));
+                    push_candidate(candidates, entry.path().join("app/Codex.exe"));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn add_codex_bin_candidates(candidates: &mut Vec<PathBuf>, bin: &Path) {
+    push_candidate(candidates, bin.join("codex.exe"));
+    if let Ok(entries) = fs::read_dir(bin) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                push_candidate(candidates, entry.path().join("codex.exe"));
+            }
+        }
     }
 }
 
@@ -654,6 +808,43 @@ mod tests {
         assert!(apply_individual_limit(&mut business, &limit()));
         assert!(!provider_needs_enrichment(&business));
         assert!(!provider_needs_enrichment(&provider("Plus")));
+    }
+
+    #[test]
+    fn app_server_base_windows_fill_empty_tokscale_quota_without_replacing_existing_data() {
+        let mut empty = provider("Business");
+        empty.windows.clear();
+        let snapshot = AppServerSnapshot {
+            primary: Some(RateLimitWindow {
+                used_percent: Some(20.0),
+                resets_at: Some(json!("2026-09-08T01:00:00Z")),
+                window_duration_mins: Some(5 * 60),
+            }),
+            secondary: Some(RateLimitWindow {
+                used_percent: Some(40.0),
+                resets_at: Some(json!(1_789_171_200_i64)),
+                window_duration_mins: Some(7 * 24 * 60),
+            }),
+            ..AppServerSnapshot::default()
+        };
+        assert_eq!(apply_base_rate_limits(&mut empty, &snapshot), 2);
+        assert_eq!(empty.windows[0].kind, QuotaWindowKind::Session);
+        assert_eq!(empty.windows[0].remaining_percent, Some(80.0));
+        assert_eq!(empty.windows[0].source, CODEX_APP_SERVER_SOURCE);
+        assert_eq!(empty.windows[1].kind, QuotaWindowKind::Weekly);
+        assert_eq!(empty.windows[1].remaining_percent, Some(60.0));
+        assert!(empty.windows[1].resets_at.is_some());
+
+        let mut existing = provider("Business");
+        assert_eq!(apply_base_rate_limits(&mut existing, &snapshot), 1);
+        assert_eq!(
+            existing
+                .windows
+                .iter()
+                .filter(|window| window.kind == QuotaWindowKind::Session)
+                .count(),
+            1
+        );
     }
 
     #[test]

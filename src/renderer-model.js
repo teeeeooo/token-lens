@@ -137,6 +137,8 @@ export function sessionRows(period) {
         key,
         name,
         detail: detailParts.join(' · '),
+        context,
+        messageCount: messages,
         value: finite(session?.totalTokens),
         cost: finite(session?.costUsd),
         color: clientColor(session?.client),
@@ -194,6 +196,10 @@ export function quotaRows(limits) {
   }).sort((a, b) => providerRank(a.providerId) - providerRank(b.providerId));
 }
 
+export function homeQuotaRows(limits) {
+  return quotaRows(limits).filter((row) => homeQuotaWindows(row).length > 0);
+}
+
 export function formatQuotaCount(window, showUsed = false) {
   const used = optionalFinite(window?.used);
   const limit = optionalFinite(window?.limit);
@@ -204,10 +210,15 @@ export function formatQuotaCount(window, showUsed = false) {
 
 
 export function homeQuotaWindows(row) {
-  const windows = Array.isArray(row?.windows) ? row.windows.filter((window) => window?.remainingPercent != null) : [];
+  const windows = Array.isArray(row?.windows)
+    ? row.windows.filter((window) => window?.remainingPercent != null
+      || (window?.metric === 'spend' && window?.used != null)
+      || (window?.metric === 'credits' && (window?.remaining != null || window?.used != null)))
+    : [];
+  const remaining = (window) => window.remainingPercent == null ? 101 : window.remainingPercent;
   const constrained = (items, count = 2) => items
     .slice()
-    .sort((a, b) => a.remainingPercent - b.remainingPercent || a.label.localeCompare(b.label))
+    .sort((a, b) => remaining(a) - remaining(b) || a.label.localeCompare(b.label))
     .slice(0, count);
   if (row?.providerId === 'gemini') return constrained(windows);
   if (row?.providerId === 'antigravity') {
@@ -217,7 +228,13 @@ export function homeQuotaWindows(row) {
     }
     return constrained(windows);
   }
-  return windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind)).slice(0, 2);
+  const priority = new Map([['session', 0], ['daily', 1], ['weekly', 2], ['billing', 3], ['other', 4]]);
+  return windows
+    .filter((window) => !window.additional)
+    .sort((a, b) => (priority.get(a.kind) ?? 9) - (priority.get(b.kind) ?? 9)
+      || remaining(a) - remaining(b)
+      || a.label.localeCompare(b.label))
+    .slice(0, 2);
 }
 
 export function quotaWindowLabel(window) {
@@ -236,14 +253,14 @@ export function quotaWindowLabel(window) {
   return label || 'Quota';
 }
 
-export function formatResetTime(value, now = new Date()) {
+export function formatResetTime(value, now = new Date(), locale = undefined) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return '';
   const sameDay = date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   if (sameDay) return `Resets ${time}`;
-  const day = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const day = date.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
   return `Resets ${day} ${time}`;
 }

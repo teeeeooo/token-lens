@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   compactTotalLabel,
   formatCompact,
+  homeQuotaRows,
   homeQuotaWindows,
   formatQuotaCount,
   modelRows,
@@ -144,4 +145,30 @@ test('Antigravity keeps grouped quota labels and Home chooses the constrained la
     { kind: 'other', label: 'Claude + GPT', remainingPercent: 20 },
   ] };
   assert.deepEqual(homeQuotaWindows(legacy).map((window) => window.label), ['Claude + GPT', 'Gemini']);
+});
+
+
+test('Home limits hide unavailable providers and retain usable billing-only quota', () => {
+  const rows = homeQuotaRows({ providers: [
+    { provider: 'codex', planLabel: 'Business', status: 'ok', windows: [] },
+    {
+      provider: 'claude', planLabel: 'Enterprise zero', status: 'ok',
+      windows: [{
+        kind: 'billing', metric: 'spend', label: 'Usage credits',
+        used: 235, limit: 2000, remaining: 1765, remainingPercent: 88.25, currency: 'USD',
+      }],
+    },
+  ] });
+  assert.deepEqual(rows.map((row) => row.providerId), ['claude']);
+  assert.equal(rows[0].plan, 'Enterprise zero');
+  assert.equal(homeQuotaWindows(rows[0])[0].metric, 'spend');
+});
+
+test('Home treats uncapped Claude spend as usable quota without inventing a percentage', () => {
+  const rows = homeQuotaRows({ providers: [{
+    provider: 'claude', status: 'ok',
+    windows: [{ kind: 'billing', metric: 'spend', label: 'Usage credits', used: 12.5, currency: 'USD' }],
+  }] });
+  assert.equal(rows.length, 1);
+  assert.equal(homeQuotaWindows(rows[0])[0].remainingPercent, null);
 });

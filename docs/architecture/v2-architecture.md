@@ -81,6 +81,8 @@ Preserve the established Token Lens renderer behavior and visual language wherev
 
 Port UI assets and behavior intentionally from v1. Runtime-specific Electron code must be replaced at the compatibility boundary rather than allowed to reshape the product.
 
+Home is a concise monitoring surface, not a provider-health inventory. Its Limits module renders only providers with at least one usable quota/billing window. The dedicated Limits view may still render every supported provider, including unavailable/no-window states, so setup and collection failures remain inspectable without cluttering Home.
+
 ### Appearance subset
 
 Appearance parity is intentionally narrower than v1. Preserve only the controls that materially affect readability, monitor compatibility, or the established visual identity:
@@ -90,6 +92,8 @@ Appearance parity is intentionally narrower than v1. Preserve only the controls 
 - follow the operating system `prefers-reduced-motion` preference directly; do not expose a separate Reduce Motion setting;
 - keep the live indicator and provider/tool icons as always-on product UI rather than user-configurable toggles;
 - keep compact total-token display as a user option, using the fixed international `K/M/B` unit convention; do not expose alternate localized unit systems;
+- use the operating-system UI font stack (`system-ui`, with Segoe UI on Windows) as the fixed interface font; do not restore font-selection controls;
+- retain the narrow interface-language setting with `Auto (system)` default plus English, Korean, Japanese, Simplified Chinese, and Traditional Chinese for the v2-visible surface; locale-sensitive dates/ranges follow the resolved system/user locale;
 - on Windows, provide only `Off` / `Acrylic` backdrop selection, defaulting to Acrylic; do not port v1 opacity/blur sliders or the experimental Accent Blur path;
 - Acrylic must be disabled while the floating bubble is collapsed and restored on expansion when enabled; unsupported Windows environments fall back to the normal transparent surface without failing the app;
 - remove custom font selection, Theme Code import/export, Settings/Refresh placement swapping, and other fine-grained appearance composition controls.
@@ -102,7 +106,7 @@ Floating Bubble is enabled by default and its default content is the compact pro
 
 The compact quota selector follows the explicit v2 provider order and preserves the proven v1 primary/secondary semantics: prefer session, then daily, weekly, billing, and finally an otherwise-classified metered quota when a provider such as Gemini exposes model buckets without a canonical cadence. Additional Codex lanes are not eligible for the compact primary selection. With two or more eligible providers, `limitsAllSessions` shows the first two providers' primary remaining percentages; with one provider, it may show that provider's primary and secondary percentages.
 
-Window controls are explicit and predictable: the minimize button collapses the expanded app into Floating Bubble when Bubble is enabled. If Bubble is disabled, minimize hides to the tray when the tray is enabled and otherwise performs the operating-system minimize action. Ordinary focus loss must not collapse the app. The close button quits Token Lens regardless of tray visibility. Bubble click restores the full window; the optional hover trigger may temporarily reveal the expanded window and collapse it again when the preview is left.
+Window controls are explicit and predictable: the minimize button collapses the expanded app into Floating Bubble when Bubble is enabled. If Bubble is disabled, minimize hides to the tray when the tray is enabled and otherwise performs the operating-system minimize action. Ordinary focus loss must not collapse the app. The close button quits Token Lens regardless of tray visibility. Bubble click restores the full window; the optional hover trigger may temporarily reveal the expanded window and collapse it again when the preview is left. The DAY/MONTH/TOTAL period selector owns a dedicated centered titlebar column and the right-side window-control region owns its own full hover target; neither surface may cover or disable the other.
 
 The collapsed native window has a fixed 34px logical height and a content-driven logical width bounded to a compact range. Resizing, edge docking, dragging, and movement between monitors must recompute physical dimensions for the destination DPI while preserving the current left/right dock side. Windows continues to suspend Acrylic while collapsed and restore it on expansion.
 
@@ -121,8 +125,8 @@ Use tokScale for:
 - session aggregation where tokScale provides it;
 - input/output/cache/reasoning token breakdown;
 - cost calculation;
-- Codex base subscription quota;
-- Claude base subscription quota.
+- Codex base subscription quota when tokScale returns usable windows;
+- Claude base subscription quota when tokScale returns usable windows.
 
 Do not duplicate tokScale parsing or provider logic merely to preserve v1 internals.
 
@@ -132,8 +136,8 @@ Do not duplicate tokScale parsing or provider logic merely to preserve v1 intern
 
 - tokScale is authoritative for normal quota windows and actual usage.
 - tokScale also supplies reset-credit information and ordinary credit/spend-control status when available.
-- Codex App Server is a supplement only for Business/Team/Enterprise monthly `individualLimit` data that tokScale 4.15.1 does not expose as a structured quota window.
-- App Server enrichment must never replace healthy tokScale/OAuth base quota data.
+- Codex App Server is a supplement for confirmed gaps: it may fill missing canonical primary/secondary quota windows when tokScale identifies the account but returns no usable base quota, and it may supply Business/Team/Enterprise monthly `individualLimit` data that tokScale 4.15.1 does not expose as a structured quota window.
+- App Server enrichment must never replace healthy tokScale/OAuth base quota data; existing canonical windows win and only missing lanes are added.
 - Workspace/account mismatch protection from v1 remains a required semantic when enriching Business quota.
 
 The Business monthly credit window preserves:
@@ -145,16 +149,17 @@ The Business monthly credit window preserves:
 
 ### Claude
 
-- tokScale is authoritative for Claude quota and actual usage in the initial v2 scope.
-- 5-hour, weekly, and scoped/Opus quota exposed by tokScale should be normalized and shown.
-- v1 prepaid-credit and monthly monetary enrichment are not part of the initial v2 scope.
+- tokScale remains authoritative for Claude actual usage and for any healthy quota windows it reports.
+- A narrow read-only Claude OAuth usage enrichment may fill missing 5-hour/weekly windows and the `spend` / `extra_usage` monthly monetary `Usage credits` lane confirmed by Windows/v1 parity testing. Existing tokScale windows are never replaced.
+- The enrichment reads only an already-present Claude Code access token from provider-owned storage (including Windows Credential Manager when applicable), calls the official usage endpoint, and never refreshes, rotates, writes, logs in, or owns Claude credentials.
+- Provider plan text is preserved as reported; Token Lens does not reinterpret provider-internal tier labels merely for presentation.
 - do not create a separate Claude account-management framework.
 
 ### Gemini CLI
 
 - tokScale is authoritative for Gemini CLI actual usage, including model/session aggregation and token/cost data.
 - Gemini CLI quota is a narrow read-only Google Code Assist enrichment because tokScale 4.15.1 does not expose Gemini quota through `tokscale usage --json`.
-- reuse the Gemini CLI-owned `~/.gemini/oauth_creds.json` access token only while it is already valid; Token Lens must not refresh OAuth, write credentials, call `onboardUser`, or create/attach a Google Cloud project.
+- reuse only an already-valid Gemini CLI-owned access token. Support the current Gemini CLI secure-storage contract (`gemini-cli-oauth` / `main-account` on the native keychain, including Windows Credential Manager) plus the older `~/.gemini/oauth_creds.json` migration source; Token Lens must not refresh OAuth, write credentials, call `onboardUser`, or create/attach a Google Cloud project.
 - follow Gemini CLI's `loadCodeAssist` → `retrieveUserQuota` flow and keep model identifiers allowlist-free behind the normalized quota contract.
 - Gemini session identification may use the provider-owned `tmp/<project-key>` location plus `projects.json` path-to-key mapping to expose only a project basename; prompt/response-derived title fallbacks remain prohibited.
 
@@ -262,7 +267,7 @@ Preserve the current Token Lens tokScale distribution/update policy rather than 
 
 The v2 implementation pins tokScale per Token Lens release and stages the matching platform-native npm package as a Tauri external binary. Production discovery prefers an embedded portable payload when the current executable carries one, otherwise the adjacent bundled sidecar; development may fall back to the pinned project package, and `TOKEN_LENS_TOKSCALE_BIN` remains an explicit developer/test override.
 
-The hardened Token Lens policy remains **no runtime tokScale download/update**. npm package identity and the staged binary's `--version` are validated at build time, and packaged runtime status exposes the bundled source/version. Windows distribution preserves the v1 single-file portable UX without changing the runtime sidecar boundary: the no-install `Token-Lens-<version>.exe` is the normal Tauri app PE with the pinned `tokscale.exe` appended as a compressed payload. When the portable payload is present, runtime discovery extracts only tokScale into an isolated system-temp run directory, holds an active-run lock, removes that directory on normal process exit, and removes unlocked stale run directories on a later portable launch. NSIS installations continue to use the normal adjacent Tauri `externalBin` sidecar. Windows release executables must use the GUI PE subsystem so launching the desktop app never opens a console window; the packaging gate verifies unsigned GUI subsystem output for the NSIS installer, the normal app executable, and the single-file portable artifact.
+The hardened Token Lens policy remains **no runtime tokScale download/update**. npm package identity and the staged binary's `--version` are validated at build time, and packaged runtime status exposes the bundled source/version. Windows distribution preserves the v1 single-file portable UX without changing the runtime sidecar boundary: the no-install `Token-Lens-<version>.exe` is the normal Tauri app PE with the pinned `tokscale.exe` appended as a compressed payload. When the portable payload is present, runtime discovery extracts only tokScale into an isolated system-temp run directory, holds an active-run lock, removes that directory on normal process exit, and removes unlocked stale run directories on a later portable launch. NSIS installations continue to use the normal adjacent Tauri `externalBin` sidecar. Windows release executables must use the GUI PE subsystem so launching the desktop app never opens a console window; the packaging gate verifies unsigned GUI subsystem output for the NSIS installer, the normal app executable, and the single-file portable artifact. Token Lens-owned background subprocesses and probes (tokScale, Codex App Server, and Windows PowerShell discovery helpers) must also use the Windows no-console creation flag so periodic refresh never flashes CMD/PowerShell windows.
 
 The exact implementation may change to fit Tauri, but the user-facing lifecycle policy does not change merely because the shell changed.
 

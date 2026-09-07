@@ -271,10 +271,13 @@ fn command_text(
         return Err(format!("{command} timed out"));
     }
     let timeout = (deadline - now).min(maximum);
-    let mut child = Command::new(command)
+    let mut process = Command::new(command);
+    process
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    crate::background_process::configure_std(&mut process);
+    let mut child = process
         .spawn()
         .map_err(|_| format!("failed to run {command}"))?;
     let stdout = child

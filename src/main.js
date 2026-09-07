@@ -17,6 +17,7 @@ import {
   formatCost,
   formatNumber,
   formatPercent,
+  homeQuotaRows,
   homeQuotaWindows,
   formatQuotaCount,
   formatResetTime,
@@ -34,6 +35,7 @@ import {
   normalizeBubbleContent,
 } from './floating-bubble-model.js';
 import { THEME_PRESETS, applyThemePreset, normalizeThemePreset, normalizeZoomFactor } from './appearance-model.js';
+import { applyTranslations, normalizeLanguage, resolveLanguage, translate } from './i18n.js';
 
 installTokenMonitorFacade();
 
@@ -51,12 +53,16 @@ const BUBBLE_LOGICAL_HEIGHT = 34;
 const BUBBLE_MAX_WIDTH = 240;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
 const VIEW_META = Object.freeze({
-  home: { label: 'Home', icon: 'view-icon-home' },
-  tool: { label: 'Tools', icon: 'view-icon-tool' },
-  model: { label: 'Models', icon: 'view-icon-model' },
-  session: { label: 'Sessions', icon: 'view-icon-session' },
-  limits: { label: 'Limits', icon: 'view-icon-limits' },
+  home: { labelKey: 'view.home', icon: 'view-icon-home' },
+  tool: { labelKey: 'view.tool', icon: 'view-icon-tool' },
+  model: { labelKey: 'view.model', icon: 'view-icon-model' },
+  session: { labelKey: 'view.session', icon: 'view-icon-session' },
+  limits: { labelKey: 'view.limits', icon: 'view-icon-limits' },
 });
+let activeLanguage = resolveLanguage('auto', navigator.languages);
+let activeLocale = navigator.languages?.[0] || navigator.language || 'en';
+const t = (key, params = {}) => translate(activeLanguage, key, params);
+const currentLocale = () => activeLocale;
 
 const state = {
   stats: null,
@@ -75,6 +81,7 @@ const state = {
     zoomFactor: 1,
     showCompactTotalTokens: false,
     windowsBackdrop: 'acrylic',
+    language: 'auto',
   },
   floatingBubble: { collapsed: false, side: null },
   settingsOpen: false,
@@ -101,7 +108,7 @@ root.innerHTML = `
         </div>
         <div id="status" class="status"></div>
       </div>
-      <div class="title-controls">
+      <div class="period-controls">
         <nav class="tabs" aria-label="Period tabs">
           <span class="tab-indicator" aria-hidden="true"></span>
           <button class="tab active" data-period="today" data-period-slot="today">DAY</button>
@@ -109,80 +116,92 @@ root.innerHTML = `
           <button class="tab" data-period="allTime" data-period-slot="allTime">TOTAL</button>
         </nav>
         <div id="monthPeriodMenu" class="view-switcher-menu period-menu hidden" role="menu" aria-labelledby="monthPeriodTab">
-          <button class="view-switcher-menu-item" type="button" data-fixed-period="month">This month</button>
-          <button class="view-switcher-menu-item" type="button" data-fixed-period="week">This week</button>
-          <button class="view-switcher-menu-item" type="button" data-fixed-period="last7">Last 7 days</button>
-          <button class="view-switcher-menu-item" type="button" data-fixed-period="last30">Last 30 days</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="month" data-i18n="period.month">This month</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="week" data-i18n="period.week">This week</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="last7" data-i18n="period.last7">Last 7 days</button>
+          <button class="view-switcher-menu-item" type="button" data-fixed-period="last30" data-i18n="period.last30">Last 30 days</button>
         </div>
-        <div class="actions-hotspot" aria-hidden="true"></div>
+      </div>
+      <div class="window-control-region">
         <div class="window-actions">
-          <button id="pinButton" class="icon-button" title="Cycle window behavior">⇧</button>
-          <button id="minButton" class="icon-button" title="Minimize">−</button>
-          <button id="closeButton" class="icon-button" title="Close">×</button>
+          <button id="pinButton" class="icon-button" data-i18n-title="window.pin" title="Cycle window behavior">⇧</button>
+          <button id="minButton" class="icon-button" data-i18n-title="window.minimize" title="Minimize">−</button>
+          <button id="closeButton" class="icon-button" data-i18n-title="window.quit" title="Quit Token Lens">×</button>
         </div>
       </div>
     </header>
     <section id="settingsPanel" class="settings-panel hidden" aria-hidden="true">
       <div class="settings-group settings-collapsible-group v2-settings-card">
-        <div class="settings-group-header"><span>Floating & Tray</span></div>
+        <div class="settings-group-header"><span data-i18n="settings.floatingTray">Floating & Tray</span></div>
         <label class="checkbox-label settings-item">
-          <span class="settings-item-text"><span class="settings-item-title">Tray Icon</span></span>
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.trayIcon">Tray Icon</span></span>
           <input id="showTrayIconInput" type="checkbox" />
-          <span class="settings-note settings-item-desc">Keep Token Lens available from the system tray or menu bar.</span>
+          <span class="settings-note settings-item-desc" data-i18n="settings.trayDesc">Keep Token Lens available from the system tray or menu bar.</span>
         </label>
         <label class="checkbox-label settings-item">
-          <span class="settings-item-text"><span class="settings-item-title">Floating Bubble</span></span>
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.bubble">Floating Bubble</span></span>
           <input id="floatingBubbleInput" type="checkbox" />
-          <span class="settings-note settings-item-desc">Use the minimize button to collapse Token Lens into a draggable quota monitor.</span>
+          <span class="settings-note settings-item-desc" data-i18n="settings.bubbleDesc">Use the minimize button to collapse Token Lens into a draggable quota monitor.</span>
         </label>
         <div id="floatingBubbleOptions" class="presence-feature-body hidden">
           <div class="settings-item">
-            <span id="floatingBubbleTriggerLabel" class="settings-item-text"><span class="settings-item-title">Open on</span></span>
+            <span id="floatingBubbleTriggerLabel" class="settings-item-text"><span class="settings-item-title" data-i18n="settings.openOn">Open on</span></span>
             <div class="inline-options" role="radiogroup" aria-labelledby="floatingBubbleTriggerLabel">
-              <label class="inline-option"><input type="radio" name="floatingBubbleTrigger" value="click" /><span>Click</span></label>
-              <label class="inline-option"><input type="radio" name="floatingBubbleTrigger" value="hover" /><span>Hover</span></label>
+              <label class="inline-option"><input type="radio" name="floatingBubbleTrigger" value="click" /><span data-i18n="settings.click">Click</span></label>
+              <label class="inline-option"><input type="radio" name="floatingBubbleTrigger" value="hover" /><span data-i18n="settings.hover">Hover</span></label>
             </div>
           </div>
           <label class="settings-item" for="floatingBubbleContentInput">
-            <span class="settings-item-text"><span class="settings-item-title">Bubble display</span></span>
+            <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.bubbleDisplay">Bubble display</span></span>
             <select id="floatingBubbleContentInput">
-              <option value="limitsAllSessions">Provider limits</option>
-              <option value="icon">Icon only</option>
-              <option value="barsSession">Lowest session</option>
-              <option value="barsWeekly">Lowest weekly</option>
-              <option value="barsAllSessions">First two provider bars</option>
-              <option value="bars">Lowest remaining</option>
+              <option value="limitsAllSessions" data-i18n="settings.bubble.providerLimits">Provider limits</option>
+              <option value="icon" data-i18n="settings.bubble.icon">Icon only</option>
+              <option value="barsSession" data-i18n="settings.bubble.lowestSession">Lowest session</option>
+              <option value="barsWeekly" data-i18n="settings.bubble.lowestWeekly">Lowest weekly</option>
+              <option value="barsAllSessions" data-i18n="settings.bubble.firstTwoBars">First two provider bars</option>
+              <option value="bars" data-i18n="settings.bubble.lowestRemaining">Lowest remaining</option>
             </select>
           </label>
         </div>
       </div>
       <div class="settings-group settings-collapsible-group v2-settings-card">
-        <div class="settings-group-header"><span>Appearance</span></div>
+        <div class="settings-group-header"><span data-i18n="settings.appearance">Appearance</span></div>
+        <label class="settings-item" for="languageInput">
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.language">Interface language</span></span>
+          <select id="languageInput">
+            <option value="auto" data-i18n="settings.language.auto">Auto (system)</option>
+            <option value="en" data-i18n="settings.language.en">English</option>
+            <option value="ko" data-i18n="settings.language.ko">한국어</option>
+            <option value="ja" data-i18n="settings.language.ja">日本語</option>
+            <option value="zh-CN" data-i18n="settings.language.zh-CN">简体中文</option>
+            <option value="zh-TW" data-i18n="settings.language.zh-TW">繁體中文</option>
+          </select>
+        </label>
         <div class="settings-item v2-theme-item">
-          <span class="settings-item-text"><span class="settings-item-title">Theme</span></span>
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.theme">Theme</span></span>
           <div id="themePresetChips" class="theme-preset-chips" role="radiogroup" aria-label="Interface theme"></div>
         </div>
         <div class="settings-item settings-slider-item v2-zoom-item">
-          <span class="settings-item-text"><span class="settings-item-title">Zoom</span></span>
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.zoom">Zoom</span></span>
           <input id="zoomInput" type="range" min="70" max="160" step="10" value="100" aria-label="Zoom percentage" />
           <span id="zoomValue" class="slider-value">100%</span>
         </div>
         <label class="checkbox-label settings-item">
-          <span class="settings-item-text"><span class="settings-item-title">Compact Total</span></span>
+          <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.compactTotal">Compact Total</span></span>
           <input id="compactTotalInput" type="checkbox" />
-          <span class="settings-note settings-item-desc">Show an approximate K/M/B total beside the full token count.</span>
+          <span class="settings-note settings-item-desc" data-i18n="settings.compactTotalDesc">Show an approximate K/M/B total beside the full token count.</span>
         </label>
         <div id="windowsBackdropRow" class="settings-item hidden">
-          <span id="windowsBackdropLabel" class="settings-item-text"><span class="settings-item-title">Windows Backdrop</span></span>
+          <span id="windowsBackdropLabel" class="settings-item-text"><span class="settings-item-title" data-i18n="settings.backdrop">Windows Backdrop</span></span>
           <div class="inline-options" role="radiogroup" aria-labelledby="windowsBackdropLabel">
-            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="off" /><span>Off</span></label>
-            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="acrylic" /><span>Acrylic</span></label>
+            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="off" /><span data-i18n="settings.off">Off</span></label>
+            <label class="inline-option"><input type="radio" name="windowsBackdrop" value="acrylic" /><span data-i18n="settings.acrylic">Acrylic</span></label>
           </div>
         </div>
       </div>
     </section>
     <section class="total-panel">
-      <div class="label-row"><span>TOTAL TOKENS</span></div>
+      <div class="label-row"><span data-i18n="dashboard.totalTokens">TOTAL TOKENS</span></div>
       <div class="total-number-row"><div id="totalTokens" class="total-number">0</div><span id="totalTokensCompact" class="total-compact hidden"></span></div>
       <div id="cost" class="cost">$0.00</div>
     </section>
@@ -194,9 +213,9 @@ root.innerHTML = `
     <footer class="footer">
       <div id="viewSwitcher" class="view-switcher"></div>
       <span id="footerActionSlot">
-        <span class="utility-actions is-swapped">
-          <button id="refreshButton" class="refresh-button" title="Refresh" aria-label="Refresh"><span class="refresh-button-icon" aria-hidden="true">↻</span><span class="refresh-button-spinner" aria-hidden="true"></span></button>
-          <button id="settingsButton" class="icon-button settings-icon-button" title="Settings" aria-label="Settings"></button>
+        <span class="utility-actions">
+          <button id="refreshButton" class="refresh-button" data-i18n-title="settings.refresh" data-i18n-aria-label="settings.refresh" title="Refresh" aria-label="Refresh"><span class="refresh-button-icon" aria-hidden="true">↻</span><span class="refresh-button-spinner" aria-hidden="true"></span></button>
+          <button id="settingsButton" class="icon-button settings-icon-button" data-i18n-title="settings.settings" data-i18n-aria-label="settings.settings" title="Settings" aria-label="Settings"></button>
         </span>
       </span>
     </footer>
@@ -220,6 +239,7 @@ const els = {
   limitsPanel: document.querySelector('#limitsPanel'),
   settingsPanel: document.querySelector('#settingsPanel'),
   settingsButton: document.querySelector('#settingsButton'),
+  languageInput: document.querySelector('#languageInput'),
   showTrayIconInput: document.querySelector('#showTrayIconInput'),
   floatingBubbleInput: document.querySelector('#floatingBubbleInput'),
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
@@ -257,7 +277,7 @@ function renderThemePresetControls() {
     dot.className = 'theme-preset-dot';
     dot.style.background = preset.accent;
     const label = document.createElement('span');
-    label.textContent = preset.label;
+    label.textContent = preset.id === 'default' ? t('settings.theme.default') : preset.label;
     chip.append(dot, label);
     chip.addEventListener('click', () => void saveSettings({ themePreset: preset.id }));
     return chip;
@@ -276,16 +296,24 @@ function applySettings(settings = {}) {
     zoomFactor: normalizeZoomFactor(settings.zoomFactor ?? state.settings.zoomFactor),
     showCompactTotalTokens: settings.showCompactTotalTokens === true,
     windowsBackdrop: settings.windowsBackdrop === 'off' ? 'off' : 'acrylic',
+    language: normalizeLanguage(settings.language ?? state.settings.language),
   };
+  activeLanguage = resolveLanguage(state.settings.language, navigator.languages);
+  activeLocale = state.settings.language === 'auto'
+    ? (navigator.languages?.[0] || navigator.language || activeLanguage)
+    : activeLanguage;
+  document.documentElement.lang = activeLanguage;
+  applyTranslations(document, activeLanguage);
   applyThemePreset(document.documentElement, state.settings.themePreset);
   els.showTrayIconInput.checked = state.settings.showTrayIcon;
+  els.languageInput.value = state.settings.language;
   els.floatingBubbleInput.checked = state.settings.floatingBubbleEnabled;
   els.floatingBubbleOptions.classList.toggle('hidden', !state.settings.floatingBubbleEnabled);
   els.floatingBubbleContentInput.value = state.settings.floatingBubbleContent;
   els.minButton.title = state.settings.floatingBubbleEnabled
-    ? 'Minimize to floating bubble'
-    : state.settings.showTrayIcon ? 'Minimize to tray' : 'Minimize';
-  els.closeButton.title = 'Quit Token Lens';
+    ? t('window.minimizeBubble')
+    : state.settings.showTrayIcon ? t('window.minimizeTray') : t('window.minimize');
+  els.closeButton.title = t('window.quit');
   els.zoomInput.value = String(Math.round(state.settings.zoomFactor * 100));
   els.zoomValue.textContent = `${els.zoomInput.value}%`;
   els.compactTotalInput.checked = state.settings.showCompactTotalTokens;
@@ -381,7 +409,7 @@ function applyFloatingBubbleState(payload = {}, { renderContent = true } = {}) {
     node.classList.toggle('floating-bubble-collapsed-right', side === 'right');
   }
   els.floatingBubbleTab.setAttribute('aria-hidden', String(!side));
-  els.floatingBubbleTab.title = side ? 'Expand Token Lens' : '';
+  els.floatingBubbleTab.title = side ? t('window.expand') : '';
   if (side) {
     state.settingsOpen = false;
     els.shell.classList.remove('settings-open');
@@ -403,6 +431,54 @@ async function saveSettings(patch) {
 
 function currentPeriod() {
   return state.stats?.periods?.[state.period] || { totalTokens: 0, costUsd: 0 };
+}
+
+function localizedQuotaWindowLabel(window) {
+  const label = quotaWindowLabel(window);
+  if (window?.metric === 'spend' && /^Usage credits$/i.test(label)) return t('quota.usageCredits');
+  if (label === '5-hour') return t('quota.fiveHour');
+  if (label === 'Weekly') return t('quota.weekly');
+  if (label === 'Monthly') return t('quota.monthly');
+  if (label === 'Quota') return t('quota.quota');
+  if (label === 'Additional') return t('quota.additional');
+  return label;
+}
+
+function localizedResetTime(value) {
+  const reset = formatResetTime(value, new Date(), currentLocale());
+  return reset ? `${t('quota.resets')} ${reset.replace(/^Resets\s+/, '')}` : '';
+}
+
+function quotaMoney(value, currency = 'USD') {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '';
+  const code = String(currency || 'USD').trim().toUpperCase() || 'USD';
+  try {
+    return new Intl.NumberFormat(currentLocale(), {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: Number.isInteger(number) ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(number);
+  } catch (_) {
+    return `${code} ${number.toLocaleString(currentLocale(), { maximumFractionDigits: 2 })}`;
+  }
+}
+
+function quotaWindowValue(window, { detail = false } = {}) {
+  const percent = window?.remainingPercent == null ? '' : formatPercent(window.remainingPercent);
+  if (window?.metric === 'spend' && window?.used != null) {
+    const remaining = window.remaining == null ? '' : quotaMoney(window.remaining, window.currency);
+    const limit = window.limit == null ? '' : quotaMoney(window.limit, window.currency);
+    const absolute = remaining && limit ? `${remaining}/${limit}` : quotaMoney(window.used, window.currency);
+    return percent ? `${detail ? t('quota.left', { value: percent }) : percent} · ${absolute}` : absolute;
+  }
+  if (window?.metric === 'credits' && window?.currency === 'CREDITS') {
+    const count = formatQuotaCount(window);
+    if (count) return percent ? `${detail ? t('quota.left', { value: percent }) : percent} · ${count} cr` : `${count} cr`;
+  }
+  if (!percent) return '—';
+  return detail ? t('quota.left', { value: percent }) : percent;
 }
 
 function periodMenuButtons() {
@@ -520,12 +596,12 @@ function homeListRow(row, kind) {
 }
 
 function renderHomeModels() {
-  const { module, body } = homeModule('MODELS', 'model', 'view-icon-model');
+  const { module, body } = homeModule(t('home.models'), 'model', 'view-icon-model');
   const rows = modelRows(currentPeriod()).slice(0, 5);
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = 'No model usage';
+    empty.textContent = t('home.noModelUsage');
     body.append(empty);
     return module;
   }
@@ -534,8 +610,15 @@ function renderHomeModels() {
 }
 
 function renderHomeLimits() {
-  const { module, body } = homeModule('LIMITS', 'limits', 'view-icon-limits');
-  const rows = quotaRows(state.stats?.limits);
+  const { module, body } = homeModule(t('home.limits'), 'limits', 'view-icon-limits');
+  const rows = homeQuotaRows(state.stats?.limits);
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'home-module-empty';
+    empty.textContent = t('home.noLimits');
+    body.append(empty);
+    return module;
+  }
   for (const row of rows) {
     const account = document.createElement('div');
     account.className = 'home-limit-account';
@@ -553,7 +636,7 @@ function renderHomeLimits() {
     if (!compactWindows.length) {
       const empty = document.createElement('div');
       empty.className = 'home-module-empty';
-      empty.textContent = row.status === 'ok' ? 'No quota windows' : 'Unavailable';
+      empty.textContent = row.status === 'ok' ? t('common.noQuotaWindows') : t('common.unavailable');
       windows.append(empty);
     }
     for (const window of compactWindows) {
@@ -563,10 +646,10 @@ function renderHomeLimits() {
       line.className = 'home-limit-window-line';
       const label = document.createElement('span');
       label.className = 'home-limit-window-label';
-      label.textContent = quotaWindowLabel(window);
+      label.textContent = localizedQuotaWindowLabel(window);
       const value = document.createElement('span');
       value.className = 'home-list-value';
-      value.textContent = window.remainingPercent == null ? '—' : formatPercent(window.remainingPercent);
+      value.textContent = quotaWindowValue(window);
       if (window.remainingPercent != null && window.remainingPercent < 20) value.classList.add('home-limit-value-critical');
       else if (window.remainingPercent != null && window.remainingPercent < 50) {
         value.classList.add('home-limit-value-low');
@@ -574,7 +657,7 @@ function renderHomeLimits() {
       }
       line.append(label, value);
       item.append(line);
-      const reset = formatResetTime(window.resetsAt);
+      const reset = localizedResetTime(window.resetsAt);
       if (reset) {
         const resetText = document.createElement('span');
         resetText.className = 'home-limit-reset';
@@ -592,7 +675,7 @@ function renderHomeLimits() {
 function shortHistoryDate(key) {
   const value = new Date(`${String(key).slice(0, 10)}T00:00:00Z`);
   if (Number.isNaN(value.getTime())) return String(key || '');
-  return new Intl.DateTimeFormat(navigator.language, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(value);
+  return new Intl.DateTimeFormat(currentLocale(), { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(value);
 }
 
 function historyHeatmapSvg(heatmap) {
@@ -600,13 +683,13 @@ function historyHeatmapSvg(heatmap) {
   const height = Math.max(1, Number(heatmap?.height || 0));
   const months = (heatmap?.monthLabels || []).map((month) => {
     const x = month.col * ((heatmap?.cell || 9) + (heatmap?.gap || 3));
-    const label = new Intl.DateTimeFormat(navigator.language, { month: 'short', timeZone: 'UTC' })
+    const label = new Intl.DateTimeFormat(currentLocale(), { month: 'short', timeZone: 'UTC' })
       .format(new Date(`${month.date}T00:00:00Z`));
     return `<text class="heat-month" x="${x}" y="9">${label}</text>`;
   }).join('');
   const cells = (heatmap?.cells || []).map((cell) => {
     const level = Math.max(0, Math.min(4, Number(cell.intensity) || 0));
-    const title = `${shortHistoryDate(cell.date)} · ${formatCompact(cell.tokens)} tokens`;
+    const title = `${shortHistoryDate(cell.date)} · ${t('history.tokens', { value: formatCompact(cell.tokens) })}`;
     return `<rect class="heat lvl-${level}" x="${cell.x}" y="${cell.y}" width="${cell.size}" height="${cell.size}" rx="2"><title>${title}</title></rect>`;
   }).join('');
   return `<svg class="dash-heatmap" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-label="Token usage activity by day">${months}${cells}</svg>`;
@@ -624,7 +707,7 @@ function renderHomeActivity() {
   head.className = 'home-module-head';
   const label = document.createElement('span');
   label.className = 'home-module-label';
-  label.textContent = 'ACTIVITY';
+  label.textContent = t('home.activity');
   const meta = document.createElement('span');
   meta.className = 'home-module-meta';
   head.append(label, meta);
@@ -633,18 +716,18 @@ function renderHomeActivity() {
   module.append(head, body);
 
   if (state.historyLoading && !state.history) {
-    meta.textContent = 'Loading';
+    meta.textContent = t('home.loading');
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = 'Loading usage history…';
+    empty.textContent = t('home.loadingHistory');
     body.append(empty);
     return module;
   }
   if (state.historyError && !state.history) {
-    meta.textContent = 'Unavailable';
+    meta.textContent = t('common.unavailable');
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = 'Usage history unavailable';
+    empty.textContent = t('home.historyUnavailable');
     body.append(empty);
     return module;
   }
@@ -654,11 +737,11 @@ function renderHomeActivity() {
   }
 
   const view = historyViewModel(state.history, state.stats?.periods?.today || {});
-  meta.textContent = `${formatNumber(view.activeDays)} active days`;
+  meta.textContent = t('home.activeDays', { count: formatNumber(view.activeDays) });
   if (!view.daily.some((day) => Number(day.tokens) > 0)) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = 'No usage history';
+    empty.textContent = t('home.noHistory');
     body.append(empty);
     return module;
   }
@@ -673,10 +756,10 @@ function renderHomeActivity() {
   const trendHead = document.createElement('div');
   trendHead.className = 'home-trend-head';
   const trendTitle = document.createElement('span');
-  trendTitle.textContent = 'TREND';
+  trendTitle.textContent = t('home.trend');
   const peak = document.createElement('span');
   peak.className = 'home-module-meta';
-  peak.textContent = `Peak ${formatCompact(view.peakDayTokens)}`;
+  peak.textContent = t('home.peak', { value: formatCompact(view.peakDayTokens) });
   trendHead.append(trendTitle, peak);
   const plot = document.createElement('div');
   plot.className = 'home-trend-plot';
@@ -731,7 +814,12 @@ function breakdownRow(row, max, kind) {
   if (row.detail) {
     const detail = document.createElement('span');
     detail.className = 'row-detail';
-    detail.textContent = row.detail;
+    if (kind === 'session' && row.messageCount > 0) {
+      detail.textContent = [row.context, t('session.messages', { count: formatNumber(row.messageCount) })]
+        .filter(Boolean).join(' · ');
+    } else {
+      detail.textContent = row.detail;
+    }
     label.append(detail);
   }
   name.append(label);
@@ -781,7 +869,7 @@ async function openSessionDetail(row) {
     sessionId: row.sessionId,
     sessionCost: Number(row.cost) || 0,
     title: row.name || row.sessionId,
-    startTimeMs: periodStartTimeMs(state.period, { locale: navigator.language }),
+    startTimeMs: periodStartTimeMs(state.period, { locale: currentLocale() }),
     loading: true,
     error: false,
     detail: null,
@@ -832,13 +920,17 @@ function sessionTurnNode(turn) {
   label.className = 'detail-turn-label';
   const title = document.createElement('span');
   title.className = 'detail-turn-title';
-  title.textContent = `AI ${turn.label}`;
+  title.textContent = t('session.turn', { label: turn.label });
   const tokens = turn.tokens || {};
   const cache = (Number(tokens.cacheRead) || 0) + (Number(tokens.cacheWrite) || 0);
   const split = document.createElement('span');
   split.className = 'detail-turn-split';
-  split.textContent = `in ${formatNumber(tokens.input || 0)} · out ${formatNumber(tokens.output || 0)} · cache ${formatNumber(cache)}`
-    + (tokens.reasoning ? ` · reason ${formatNumber(tokens.reasoning)}` : '');
+  split.textContent = t('session.split', {
+    input: formatNumber(tokens.input || 0),
+    output: formatNumber(tokens.output || 0),
+    cache: formatNumber(cache),
+    reason: tokens.reasoning ? t('session.reason', { value: formatNumber(tokens.reasoning) }) : '',
+  });
   const tools = document.createElement('span');
   tools.className = 'detail-turn-tools';
   tools.textContent = turn.tools ? `⊢ ${turn.tools}` : '';
@@ -912,27 +1004,27 @@ function renderSessionDetail() {
   const back = document.createElement('button');
   back.type = 'button';
   back.className = 'detail-back';
-  back.textContent = '‹ Sessions';
+  back.textContent = t('session.back');
   back.addEventListener('click', closeSessionDetail);
   els.sessionDetailHead.append(back);
 
   if (request.loading) {
-    els.sessionDetail.append(detailNote('Loading…'));
+    els.sessionDetail.append(detailNote(t('common.loading')));
     return;
   }
   if (request.error || request.detail?.found === false) {
-    els.sessionDetail.append(detailNote('Session detail not found on this machine.'));
+    els.sessionDetail.append(detailNote(t('session.notFound')));
     return;
   }
   const rows = exchangeRows(request.detail, { now: new Date(), sortBy: state.detailSort });
   if (!rows.length) {
-    els.sessionDetail.append(detailNote('No activity in this period.'));
+    els.sessionDetail.append(detailNote(t('session.noActivity')));
     return;
   }
   const sort = document.createElement('button');
   sort.type = 'button';
   sort.className = 'detail-sort';
-  sort.textContent = state.detailSort === 'tokens' ? '↕ Most tokens' : '↕ Newest';
+  sort.textContent = state.detailSort === 'tokens' ? t('session.mostTokens') : t('session.newest');
   sort.addEventListener('click', toggleSessionDetailSort);
   els.sessionDetailHead.append(sort);
   const max = Math.max(1, ...rows.map((row) => row.value));
@@ -946,7 +1038,7 @@ function renderBreakdown() {
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = state.view === 'session' ? 'No session usage' : 'No usage';
+    empty.textContent = state.view === 'session' ? t('session.noSessionUsage') : t('common.noUsage');
     els.breakdown.replaceChildren(empty);
     return;
   }
@@ -963,9 +1055,9 @@ function limitWindowNode(window, row) {
   const text = document.createElement('div');
   text.className = 'limit-window-text';
   const label = document.createElement('span');
-  label.textContent = quotaWindowLabel(window);
+  label.textContent = localizedQuotaWindowLabel(window);
   const value = document.createElement('span');
-  value.textContent = window.remainingPercent == null ? '—' : `${formatPercent(window.remainingPercent)} left`;
+  value.textContent = quotaWindowValue(window, { detail: true });
   text.append(label, value);
   item.append(text);
   if (window.remainingPercent != null) {
@@ -979,7 +1071,7 @@ function limitWindowNode(window, row) {
     meter.append(fill);
     item.append(meter);
   }
-  const resetText = formatResetTime(window.resetsAt);
+  const resetText = localizedResetTime(window.resetsAt);
   if (resetText || creditsDetail) {
     const reset = document.createElement('div');
     reset.className = 'limit-reset';
@@ -989,7 +1081,7 @@ function limitWindowNode(window, row) {
       resetLabel.textContent = resetText;
       const detail = document.createElement('span');
       detail.className = 'limit-detail';
-      detail.textContent = `${creditsDetail} credits`;
+      detail.textContent = t('quota.credits', { value: creditsDetail });
       reset.append(resetLabel, detail);
     } else {
       reset.textContent = resetText;
@@ -1013,7 +1105,7 @@ function renderLimits() {
     name.append(title);
     const plan = document.createElement('span');
     plan.className = 'limit-plan';
-    plan.textContent = row.plan || (row.status === 'ok' ? '' : 'Unavailable');
+    plan.textContent = row.plan || (row.status === 'ok' ? '' : t('common.unavailable'));
     head.append(name, plan);
     const windows = document.createElement('div');
     windows.className = 'limit-windows';
@@ -1021,13 +1113,13 @@ function renderLimits() {
     if (!row.windows.length) {
       const empty = document.createElement('div');
       empty.className = 'home-module-empty';
-      empty.textContent = row.status === 'ok' ? 'No quota windows' : 'Unavailable';
+      empty.textContent = row.status === 'ok' ? t('common.noQuotaWindows') : t('common.unavailable');
       windows.append(empty);
     }
     if (row.providerId === 'codex' && row.resetCredits?.availableCount > 0) {
       const credits = document.createElement('div');
       credits.className = 'limit-window limit-window-note limit-window-wide';
-      credits.innerHTML = `<div class="limit-window-text"><span>Rate-limit reset</span><span>${formatNumber(row.resetCredits.availableCount)} available</span></div>`;
+      credits.innerHTML = `<div class="limit-window-text"><span>${t('quota.rateReset')}</span><span>${t('quota.available', { count: formatNumber(row.resetCredits.availableCount) })}</span></div>`;
       windows.append(credits);
     }
     item.append(head, windows);
@@ -1046,7 +1138,7 @@ function setView(view) {
 }
 
 function statsRequestOptions(force = false, period = state.period) {
-  const derived = derivedRequest(period, { locale: navigator.language });
+  const derived = derivedRequest(period, { locale: currentLocale() });
   return {
     force,
     includeSessionMetadata: state.view === 'session',
@@ -1062,7 +1154,7 @@ function setPeriod(period) {
   if (MONTH_PERIODS.includes(period)) state.monthMode = period;
   setPeriodMenuOpen(false);
   render();
-  if (derivedRequest(period, { locale: navigator.language })) void refresh();
+  if (derivedRequest(period, { locale: currentLocale() })) void refresh();
   return changed;
 }
 
@@ -1077,7 +1169,7 @@ function renderViewSwitcher() {
   icon.className = `view-switcher-icon ${meta.icon}`;
   const label = document.createElement('span');
   label.className = 'view-switcher-label';
-  label.textContent = meta.label;
+  label.textContent = t(meta.labelKey);
   current.append(icon, label);
   current.addEventListener('click', () => {
     const index = VIEW_ORDER.indexOf(state.view);
@@ -1086,7 +1178,7 @@ function renderViewSwitcher() {
   const disclosure = document.createElement('button');
   disclosure.type = 'button';
   disclosure.className = 'view-switcher-disclosure';
-  disclosure.setAttribute('aria-label', 'Choose view');
+  disclosure.setAttribute('aria-label', t('view.choose'));
   disclosure.setAttribute('aria-expanded', String(state.viewMenuOpen));
   disclosure.addEventListener('click', () => {
     state.viewMenuOpen = !state.viewMenuOpen;
@@ -1102,7 +1194,7 @@ function renderViewSwitcher() {
     itemIcon.className = `view-switcher-icon ${VIEW_META[view].icon}`;
     const itemLabel = document.createElement('span');
     itemLabel.className = 'view-switcher-menu-label';
-    itemLabel.textContent = VIEW_META[view].label;
+    itemLabel.textContent = t(VIEW_META[view].labelKey);
     item.append(itemIcon, itemLabel);
     item.addEventListener('click', () => setView(view));
     menu.append(item);
@@ -1168,7 +1260,7 @@ async function refresh({ force = false } = {}) {
   state.refreshing = true;
   const requestPeriod = state.period;
   els.refreshButton.classList.add('is-refreshing');
-  setStatus('Refreshing…');
+  setStatus(t('common.refreshing'));
   try {
     state.stats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
     if (force) state.historyLoadedAt = 0;
@@ -1185,7 +1277,7 @@ async function refresh({ force = false } = {}) {
     setTimeout(() => els.liveDot.classList.remove('pulse'), 1200);
   } catch (error) {
     console.error(error);
-    setStatus(error?.message || 'Failed to refresh usage', true);
+    setStatus(error?.message || t('common.failedRefresh'), true);
   } finally {
     state.refreshing = false;
     els.refreshButton.classList.remove('is-refreshing');
@@ -1208,6 +1300,10 @@ els.settingsButton.addEventListener('click', () => {
   state.viewMenuOpen = false;
   setPeriodMenuOpen(false);
   renderSurface();
+});
+
+els.languageInput.addEventListener('change', () => {
+  void saveSettings({ language: normalizeLanguage(els.languageInput.value) });
 });
 
 els.showTrayIconInput.addEventListener('change', () => {
@@ -1387,7 +1483,7 @@ els.pinButton.addEventListener('click', async () => {
   try {
     await appWindow.setAlwaysOnTop(state.alwaysOnTop);
     els.pinButton.classList.toggle('active', state.alwaysOnTop);
-    els.pinButton.title = state.alwaysOnTop ? 'Floating above apps' : 'Normal window';
+    els.pinButton.title = state.alwaysOnTop ? t('window.floating') : t('window.normal');
   } catch (error) {
     console.error(error);
   }
@@ -1483,7 +1579,7 @@ async function bootstrapShell() {
     applyFloatingBubbleState(bubble);
   } catch (error) {
     console.error(error);
-    setStatus(error?.message || 'Failed to load settings', true);
+    setStatus(error?.message || t('common.failedSettings'), true);
   }
 
   await refresh();

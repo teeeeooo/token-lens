@@ -26,9 +26,9 @@ Preserve the established product behavior and visual design, including:
 - floating-bubble behavior;
 - dashboard window behavior.
 
-Port renderer assets selectively; remove code paths for features excluded from v2 rather than recreating their backend APIs.
+Port renderer assets selectively; remove code paths for features excluded from v2 rather than recreating their backend APIs. Home Limits keeps v1 compact behavior by hiding providers with no usable quota window; unavailable providers remain visible only in the dedicated Limits view. Period controls and window actions must use separate titlebar regions rather than the v1 overlapping hover target.
 
-Appearance is a deliberate subset rather than full v1 settings parity. Retain built-in theme presets, zoom, compact total-token display, OS-driven reduced-motion behavior, always-on live/tool indicators, and a Windows-only `Off` / `Acrylic` backdrop with Acrylic default-on. Do not port custom interface/vendor colors, font customization, localized compact-token unit selection, Theme Code sharing, Settings/Refresh placement swapping, opacity/blur sliders, or the experimental Accent Blur implementation.
+Appearance is a deliberate subset rather than full v1 settings parity. Retain built-in theme presets, zoom, compact total-token display, OS-driven reduced-motion behavior, always-on live/tool indicators, the fixed system UI font stack, `Auto (system)` interface language with the retained v1 locales, and a Windows-only `Off` / `Acrylic` backdrop with Acrylic default-on. Do not port custom interface/vendor colors, font customization UI, localized compact-token unit selection, Theme Code sharing, Settings/Refresh placement swapping, opacity/blur sliders, or the experimental Accent Blur implementation.
 
 ### Floating bubble
 
@@ -56,7 +56,7 @@ Do not port unrelated session implementations for excluded providers.
 
 ### Codex Business monthly credit
 
-Retain only the proven Business `individualLimit` enrichment semantics:
+Retain the proven read-only App Server quota semantics needed when tokScale has a Windows parity gap: missing canonical primary/secondary windows may be filled without replacing healthy tokScale data, and Business `individualLimit` enrichment preserves:
 
 - base quota remains authoritative from tokScale/provider OAuth data;
 - Codex App Server `account/rateLimits/read` supplements only the missing Business monthly credit window;
@@ -65,13 +65,17 @@ Retain only the proven Business `individualLimit` enrichment semantics:
 
 Relevant v1 history includes `a920202`, `9e6074d`, and their follow-up tests/merges.
 
+### Claude quota parity
+
+Retain only the provider-owned read-only quota behavior missing from tokScale 4.15.1 on the tested Enterprise Windows path: reuse an already-present Claude Code access token, call `/api/oauth/usage`, fill missing 5-hour/weekly windows, and parse `spend` / `extra_usage` into the `Usage credits` monetary window. Preserve provider plan labels verbatim. Do not restore OAuth refresh/write/login or the general v1 account-management framework.
+
 ### Gemini CLI
 
 Gemini CLI is now a first-class v2 provider even though the hardened v1 downstream allowlist excluded it. Retain upstream/tokScale semantics selectively:
 
 - actual usage comes from tokScale's `gemini` client;
 - quota follows Gemini CLI's Google Code Assist read path (`loadCodeAssist` then `retrieveUserQuota`) without copying OAuth refresh/onboarding/account-management behavior;
-- credentials remain owned by Gemini CLI and are read-only from Token Lens;
+- credentials remain owned by Gemini CLI and are read-only from Token Lens; current secure keychain storage (`gemini-cli-oauth/main-account`) and the older `oauth_creds.json` source are compatibility inputs, not Token Lens credential stores;
 - session identification may use provider-owned project metadata, but no Gemini transcript content is promoted into renderer metadata.
 
 ### Antigravity quota

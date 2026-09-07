@@ -41,6 +41,7 @@ pub struct AppSettings {
     pub zoom_factor: f64,
     pub show_compact_total_tokens: bool,
     pub windows_backdrop: WindowsBackdrop,
+    pub language: String,
 }
 
 impl Default for AppSettings {
@@ -54,6 +55,7 @@ impl Default for AppSettings {
             zoom_factor: 1.0,
             show_compact_total_tokens: false,
             windows_backdrop: WindowsBackdrop::Acrylic,
+            language: "auto".to_owned(),
         }
     }
 }
@@ -69,6 +71,7 @@ pub struct SettingsPatch {
     pub zoom_factor: Option<f64>,
     pub show_compact_total_tokens: Option<bool>,
     pub windows_backdrop: Option<WindowsBackdrop>,
+    pub language: Option<String>,
 }
 
 pub struct SettingsStore {
@@ -123,6 +126,9 @@ impl SettingsStore {
         if let Some(backdrop) = patch.windows_backdrop {
             value.windows_backdrop = backdrop;
         }
+        if let Some(language) = patch.language {
+            value.language = language;
+        }
         *value = normalize_settings(value.clone());
         write_settings(&self.path, &value)?;
         Ok(value.clone())
@@ -145,6 +151,10 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
         value.zoom_factor = 1.0;
     }
     value.zoom_factor = (value.zoom_factor.clamp(0.7, 1.6) * 10.0).round() / 10.0;
+    const LANGUAGES: [&str; 6] = ["auto", "en", "ko", "ja", "zh-CN", "zh-TW"];
+    if !LANGUAGES.contains(&value.language.as_str()) {
+        value.language = "auto".to_owned();
+    }
     value
 }
 fn read_settings(path: &Path) -> Option<AppSettings> {
@@ -179,6 +189,7 @@ mod tests {
         assert_eq!(settings.zoom_factor, 1.0);
         assert!(!settings.show_compact_total_tokens);
         assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
+        assert_eq!(settings.language, "auto");
     }
 
     #[test]
@@ -219,6 +230,21 @@ mod tests {
         assert_eq!(settings.zoom_factor, 1.0);
         assert!(!settings.show_compact_total_tokens);
         assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
+        assert_eq!(settings.language, "auto");
+    }
+
+    #[test]
+    fn language_is_allowlisted_and_defaults_to_system_auto() {
+        let korean = normalize_settings(AppSettings {
+            language: "ko".to_owned(),
+            ..AppSettings::default()
+        });
+        assert_eq!(korean.language, "ko");
+        let invalid = normalize_settings(AppSettings {
+            language: "xx-test".to_owned(),
+            ..AppSettings::default()
+        });
+        assert_eq!(invalid.language, "auto");
     }
 
     #[test]

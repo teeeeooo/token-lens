@@ -156,6 +156,7 @@ impl TokscaleAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        crate::background_process::configure_tokio(&mut command);
 
         let child = command.spawn().map_err(|error| {
             format!(

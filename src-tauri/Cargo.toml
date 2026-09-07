@@ -23,3 +23,6 @@ minreq = { version = "=2.14.1", default-features = false, features = ["https-rus
 rustls = { version = "=0.21.12", features = ["dangerous_configuration"] }
 tauri = { version = "2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

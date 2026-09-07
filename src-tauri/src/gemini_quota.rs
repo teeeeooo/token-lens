@@ -16,6 +16,21 @@ struct StoredGeminiCredential {
     expiry_date: Option<u64>,
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredGeminiKeychainCredential {
+    token: Option<StoredGeminiKeychainToken>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredGeminiKeychainToken {
+    access_token: Option<String>,
+    expires_at: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 struct StoredGeminiAccounts {
     active: Option<String>,
@@ -94,17 +109,64 @@ struct ValidCredential {
 }
 
 fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
+    #[cfg(target_os = "windows")]
+    if let Some(credential) = read_windows_keychain_credential() {
+        return Some(credential);
+    }
+
     let path = gemini_home(home).join("oauth_creds.json");
-    let raw = serde_json::from_slice::<StoredGeminiCredential>(&fs::read(path).ok()?).ok()?;
-    let access_token = raw.access_token?.trim().to_owned();
+    let bytes = fs::read(path).ok()?;
+    let raw = serde_json::from_slice::<StoredGeminiCredential>(&bytes).ok()?;
+    valid_credential(raw.access_token, raw.expiry_date)
+}
+
+fn valid_credential(access_token: Option<String>, expiry: Option<u64>) -> Option<ValidCredential> {
+    let access_token = access_token?.trim().to_owned();
     if access_token.is_empty() {
         return None;
     }
-    let expiry = raw.expiry_date?;
+    let expiry = expiry?;
     if expiry <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS) {
         return None;
     }
     Some(ValidCredential { access_token })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_keychain_credential(bytes: &[u8]) -> Option<ValidCredential> {
+    let raw = serde_json::from_slice::<StoredGeminiKeychainCredential>(bytes).ok()?;
+    let token = raw.token?;
+    valid_credential(token.access_token, token.expires_at)
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_keychain_credential() -> Option<ValidCredential> {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+
+    // Current Gemini CLI (OAuthCredentialStorage + keytar) stores the main
+    // account as service/account => `gemini-cli-oauth/main-account`. Read only:
+    // Token Lens never asks Gemini CLI or Google to refresh the credential.
+    let target = OsStr::new("gemini-cli-oauth/main-account")
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    let mut credential: *mut CREDENTIALW = ptr::null_mut();
+    let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } != 0;
+    if !ok || credential.is_null() {
+        return None;
+    }
+    let bytes = unsafe {
+        let item = &*credential;
+        std::slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize).to_vec()
+    };
+    unsafe { CredFree(credential.cast()) };
+    parse_keychain_credential(&bytes)
 }
 
 fn read_active_account(home: &Path) -> Option<String> {
@@ -295,6 +357,24 @@ mod tests {
         );
         assert!(!windows.is_empty(), "expected live Gemini quota buckets");
         assert!(windows.iter().all(|window| window.source == SOURCE));
+    }
+
+    #[test]
+    fn current_gemini_keychain_shape_reads_only_access_token_and_expiry() {
+        let future = now_ms() + 60_000;
+        let fixture = serde_json::json!({
+            "serverName": "main-account",
+            "token": {
+                "accessToken": "keychain-access",
+                "refreshToken": "DO_NOT_READ_OR_USE",
+                "tokenType": "Bearer",
+                "expiresAt": future
+            },
+            "updatedAt": now_ms()
+        });
+        let bytes = serde_json::to_vec(&fixture).expect("keychain fixture");
+        let parsed = parse_keychain_credential(&bytes).expect("valid current credential");
+        assert_eq!(parsed.access_token, "keychain-access");
     }
 
     #[test]

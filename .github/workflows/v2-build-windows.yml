@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - 'feat/v2-*'
     tags:
       - 'token-lens-v2-*'

@@ -6,7 +6,7 @@ This file controls reuse from the Electron-based Token Lens v1 codebase. It prev
 
 Reference lineage at v2 bootstrap:
 
-- v1 branch: `main`
+- v1 branch: `v1-legacy`
 - v1 reference commit: `493d4a5687a767af079fb30ee3786ebff745ce1a`
 - original upstream project: `Javis603/token-monitor`
 

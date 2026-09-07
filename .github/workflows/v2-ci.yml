@@ -3,12 +3,12 @@ name: Token Lens v2 CI
 on:
   push:
     branches:
-      - v2
+      - main
       - 'feat/v2-*'
       - 'fix/v2-*'
   pull_request:
     branches:
-      - v2
+      - main
   workflow_dispatch:
 
 permissions:

@@ -2,6 +2,7 @@ mod antigravity_local;
 mod antigravity_quota;
 mod appearance;
 mod background_process;
+mod claude_cli;
 mod claude_quota;
 mod codex_business;
 mod commands;
@@ -11,6 +12,7 @@ mod gemini_quota;
 mod google_code_assist;
 mod http_diagnostic;
 mod portable_sidecar;
+mod provider_error_log;
 mod session_detail;
 mod session_metadata;
 mod settings;
@@ -37,6 +39,9 @@ pub fn run() {
             let config_dir = app.path().app_config_dir().map_err(|error| {
                 format!("failed to resolve Token Lens config directory: {error}")
             })?;
+            if let Ok(log_dir) = app.path().app_log_dir() {
+                provider_error_log::initialize(log_dir);
+            }
             let settings_store = SettingsStore::load(config_dir)?;
             let initial_settings = settings_store.get()?;
             app.manage(settings_store);
@@ -74,6 +79,7 @@ pub fn run() {
             commands::get_session_metadata,
             commands::get_settings,
             commands::update_settings,
+            commands::open_provider_error_log_directory,
             commands::update_tray_summary,
             commands::get_floating_bubble_state,
             commands::collapse_floating_bubble_if_idle,

@@ -87,6 +87,19 @@ test('quota diagnostics make empty provider failures actionable without changing
   assert.equal(limits.providers[1].diagnostic, '');
 });
 
+test('stale quota keeps last-good windows visible with an explicit stale status', () => {
+  const limits = quotaReportToCompatLimits({
+    generatedAtMs: 1_700_000_000_000,
+    providers: [{
+      provider: 'claude',
+      diagnostic: 'Stale Claude quota · Claude usage rate limited',
+      windows: [{ kind: 'session', metric: 'quota', label: '5h', remainingPercent: 62 }],
+    }],
+  });
+  assert.equal(limits.providers[0].status, 'stale');
+  assert.equal(limits.providers[0].windows[0].remainingPercent, 62);
+});
+
 test('getStats compatibility loader keeps tokScale scans serial and exposes v1 period keys', async () => {
   const calls = [];
   const usage = async (period, grouping) => {

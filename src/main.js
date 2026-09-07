@@ -206,6 +206,16 @@ root.innerHTML = `
           </div>
         </div>
       </div>
+      <div class="settings-group settings-collapsible-group v2-settings-card">
+        <div class="settings-group-header"><span data-i18n="settings.troubleshooting">Troubleshooting</span></div>
+        <div class="settings-item">
+          <span class="settings-item-text">
+            <span class="settings-item-title" data-i18n="settings.errorLogs">Error logs</span>
+            <span class="settings-note settings-item-desc" data-i18n="settings.errorLogsDesc">Only provider error incidents are kept for up to 3 days.</span>
+          </span>
+          <div class="settings-actions"><button id="openErrorLogsButton" type="button" data-i18n="settings.openErrorLogs">Open error log folder</button></div>
+        </div>
+      </div>
     </section>
     <section class="total-panel">
       <div class="label-row"><span data-i18n="dashboard.totalTokens">TOTAL TOKENS</span></div>
@@ -246,6 +256,7 @@ const els = {
   limitsPanel: document.querySelector('#limitsPanel'),
   settingsPanel: document.querySelector('#settingsPanel'),
   settingsButton: document.querySelector('#settingsButton'),
+  openErrorLogsButton: document.querySelector('#openErrorLogsButton'),
   languageInput: document.querySelector('#languageInput'),
   showTrayIconInput: document.querySelector('#showTrayIconInput'),
   floatingBubbleInput: document.querySelector('#floatingBubbleInput'),
@@ -655,7 +666,8 @@ function renderHomeLimits() {
     mark.classList.add('home-list-mark');
     const name = document.createElement('span');
     name.className = 'home-list-name';
-    name.textContent = row.plan ? `${row.name} · ${row.plan}` : row.name;
+    name.textContent = [row.name, row.plan, row.status === 'stale' ? t('common.stale') : '']
+      .filter(Boolean).join(' · ');
     head.append(mark, name);
     const windows = document.createElement('div');
     windows.className = 'home-limit-windows';
@@ -1132,7 +1144,10 @@ function renderLimits() {
     name.append(title);
     const plan = document.createElement('span');
     plan.className = 'limit-plan';
-    plan.textContent = row.plan || (row.status === 'ok' ? '' : t('common.unavailable'));
+    plan.textContent = [
+      row.plan,
+      row.status === 'stale' ? t('common.stale') : row.status === 'unavailable' ? t('common.unavailable') : '',
+    ].filter(Boolean).join(' · ');
     head.append(name, plan);
     const windows = document.createElement('div');
     windows.className = 'limit-windows';
@@ -1328,6 +1343,18 @@ els.settingsButton.addEventListener('click', () => {
   state.viewMenuOpen = false;
   setPeriodMenuOpen(false);
   renderSurface();
+});
+
+els.openErrorLogsButton.addEventListener('click', async () => {
+  els.openErrorLogsButton.disabled = true;
+  try {
+    await window.tokenMonitor.openProviderErrorLogDirectory();
+  } catch (error) {
+    console.error(error);
+    setStatus(t('settings.errorLogsOpenFailed'), true);
+  } finally {
+    els.openErrorLogsButton.disabled = false;
+  }
 });
 
 els.languageInput.addEventListener('change', () => {

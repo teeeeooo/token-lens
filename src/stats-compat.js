@@ -207,25 +207,32 @@ export function quotaReportToCompatLimits(report) {
   return {
     updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
     refreshMs: DEFAULT_LIMIT_REFRESH_MS,
-    providers: (report?.providers || []).map((provider) => ({
-      provider: provider.provider,
-      accountKey: '',
-      accountLabel: '',
-      planLabel: String(provider.plan || ''),
-      accountName: '',
-      accountEmail: String(provider.accountEmail || ''),
-      workspaceKind: '',
-      status: provider.diagnostic && !(provider.windows || []).length ? 'unavailable' : 'ok',
-      diagnostic: String(provider.diagnostic || ''),
-      source: 'api',
-      sourceDetail: '',
-      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
-      windows: (provider.windows || []).map(compatibilityWindow),
-      balanceUsd: null,
-      balance: null,
-      resetCredits: provider.resetCredits || null,
-      region: '',
-    })),
+    providers: (report?.providers || []).map((provider) => {
+      const diagnostic = String(provider.diagnostic || '');
+      const windows = provider.windows || [];
+      const status = diagnostic.startsWith('Stale ') && windows.length
+        ? 'stale'
+        : diagnostic && !windows.length ? 'unavailable' : 'ok';
+      return {
+        provider: provider.provider,
+        accountKey: '',
+        accountLabel: '',
+        planLabel: String(provider.plan || ''),
+        accountName: '',
+        accountEmail: String(provider.accountEmail || ''),
+        workspaceKind: '',
+        status,
+        diagnostic,
+        source: 'api',
+        sourceDetail: '',
+        updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
+        windows: (provider.windows || []).map(compatibilityWindow),
+        balanceUsd: null,
+        balance: null,
+        resetCredits: provider.resetCredits || null,
+        region: '',
+      };
+    }),
   };
 }
 

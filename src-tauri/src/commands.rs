@@ -15,6 +15,9 @@ use crate::session_metadata;
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
 use crate::tokscale::TokscaleAdapter;
 use crate::tray::{self, TraySummary};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 #[tauri::command]
@@ -126,6 +129,32 @@ pub fn update_settings(
     let bubble_collapsed = floating_bubble::current_state(&settings, &bubble)?.collapsed;
     appearance::apply_to_window(&window, &updated, bubble_collapsed)?;
     Ok(updated)
+}
+
+#[tauri::command]
+pub fn open_provider_error_log_directory(app: AppHandle) -> Result<(), String> {
+    let directory = app
+        .path()
+        .app_log_dir()
+        .map_err(|_| "failed to resolve Token Lens error log directory".to_owned())?;
+    fs::create_dir_all(&directory)
+        .map_err(|_| "failed to prepare Token Lens error log directory".to_owned())?;
+    open_directory_in_shell(&directory)
+}
+
+fn open_directory_in_shell(directory: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+
+    command
+        .arg(directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "failed to open Token Lens error log directory".to_owned())
 }
 
 #[tauri::command]

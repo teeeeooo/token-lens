@@ -14,6 +14,7 @@ test('installs only the retained compatibility methods implemented so far', () =
     'getTokscaleStatus',
     'getSettings',
     'updateSettings',
+    'openProviderErrorLogDirectory',
     'updateTraySummary',
     'getFloatingBubbleState',
     'collapseFloatingBubbleIfIdle',
@@ -27,6 +28,7 @@ test('installs only the retained compatibility methods implemented so far', () =
   assert.equal(typeof facade.getSessionDetail, 'function');
   assert.equal(typeof facade.getTokscaleStatus, 'function');
   assert.equal(typeof facade.getSettings, 'function');
+  assert.equal(typeof facade.openProviderErrorLogDirectory, 'function');
   assert.equal(typeof facade.updateTraySummary, 'function');
   assert.equal(typeof facade.expandFloatingBubble, 'function');
   assert.equal(typeof facade.moveFloatingBubble, 'function');

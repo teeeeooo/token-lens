@@ -38,6 +38,10 @@ export function updateSettings(patch) {
   return invoke('update_settings', { patch });
 }
 
+export function openProviderErrorLogDirectory() {
+  return invoke('open_provider_error_log_directory');
+}
+
 export function getFloatingBubbleState() {
   return invoke('get_floating_bubble_state');
 }

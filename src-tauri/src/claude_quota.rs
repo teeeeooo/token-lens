@@ -317,7 +317,49 @@ fn claude_credential_paths(home: &Path) -> Vec<PathBuf> {
     {
         return vec![root.join(".credentials.json")];
     }
-    vec![home.join(".claude/.credentials.json")]
+
+    let native = home.join(".claude/.credentials.json");
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![native]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut candidates = vec![native];
+        candidates.extend(wsl_claude_credential_paths());
+        candidates.sort_by_key(|path| {
+            std::cmp::Reverse(
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok(),
+            )
+        });
+        candidates
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wsl_claude_credential_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let root = PathBuf::from(r"\\wsl$");
+    let Ok(distros) = fs::read_dir(root) else {
+        return paths;
+    };
+    for distro in distros.flatten() {
+        let name = distro.file_name();
+        let name = name.to_string_lossy();
+        if name.is_empty() || name.starts_with('.') || name.contains('$') {
+            continue;
+        }
+        let home = distro.path().join("home");
+        let Ok(users) = fs::read_dir(home) else {
+            continue;
+        };
+        for user in users.flatten() {
+            paths.push(user.path().join(".claude/.credentials.json"));
+        }
+    }
+    paths
 }
 
 fn read_token_json(bytes: &[u8]) -> Option<String> {
@@ -403,6 +445,15 @@ fn decode_credential_blob(bytes: &[u8]) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "requires a local Claude OAuth access token and live usage endpoint"]
+    fn live_claude_oauth_usage_smoke() {
+        let home = env::var_os("HOME").map(PathBuf::from).expect("HOME");
+        let token = read_access_token(&home).expect("local Claude access token");
+        let usage = fetch_usage(&token).expect("read live Claude usage");
+        assert!(!windows_from_usage(&usage).is_empty());
+    }
 
     #[test]
     fn parses_usage_credits_from_self_describing_spend_shape() {

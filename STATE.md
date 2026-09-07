@@ -2,7 +2,7 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation remain complete on `feat/v2-tokscale-vertical-slice`, including the floating monitor, CSP hardening, and retired-subsystem CSS cleanup. Real Windows QA after `e81291a` exposed two follow-up areas: Codex/Claude/Gemini usage aggregation works but provider quota still does not, and the inherited 340x650 first-launch window is too cramped for the separated titlebar plus full Home/Trend surface. The window-shell follow-up is now implemented locally with a 380x720 first-launch default, persisted normal expanded bounds, a symmetric centered period selector, and clipped period indicator; local automated validation is green. Fresh native Windows CI/package validation is still required for this window-shell change, while live provider-quota parity remains a separate unresolved runtime item.
+v2 feature implementation and Windows package-shape automation remain complete on `feat/v2-tokscale-vertical-slice`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, and the roomier persisted window shell. Real Windows QA after `e81291a` exposed a remaining provider-quota parity gap even though Codex/Claude/Gemini usage aggregation worked. The missing read-only credential/provider paths are now restored locally: Codex falls back to its provider OAuth usage endpoint before App Server, Claude rediscovers provider-owned WSL credentials on Windows, and Gemini reads both Windows Credential Manager and the current encrypted file-keychain fallback. Local automated validation is green; fresh native Windows CI/package validation and a real Windows live-provider retest remain the release gate.
 
 ## Accepted baseline
 
@@ -10,7 +10,7 @@ v2 feature implementation and Windows package-shape automation remain complete o
 - desktop runtime: Tauri 2.
 - current supported provider set: Codex, Claude, Gemini CLI, Antigravity; future providers require an explicit adapter/security/data-contract review rather than a core redesign.
 - tokScale is the primary actual-usage and supported-quota engine.
-- Token Lens owns only confirmed tokScale/provider gaps: Codex missing-base/App Server quota plus Business `individualLimit`, read-only Claude OAuth usage/spend enrichment, Gemini CLI quota, and AGY quota.
+- Token Lens owns only confirmed tokScale/provider gaps: Codex read-only OAuth/App Server quota plus Business `individualLimit`, read-only Claude OAuth usage/spend enrichment, Gemini CLI quota, and AGY quota.
 - established Token Lens UI/UX is preserved rather than redesigned.
 - model and session usage remain core product features; Codex/Claude session usage/metadata detail remains in scope, while raw prompt/response content remains outside the renderer contract.
 - raw tokScale/provider schemas stay behind a stable normalization boundary; provider-owned session titles are approved metadata, but transcript-derived title fallbacks are prohibited.
@@ -22,7 +22,7 @@ v2 feature implementation and Windows package-shape automation remain complete o
 - the Rust tokScale adapter collects today/week/month/all-time usage with model or session grouping;
 - quota normalization admits only Codex, Claude, Gemini CLI, and Antigravity and keeps canonical/additional lanes distinct;
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
-- Codex App Server remains a narrow read-only supplement: it may fill missing canonical primary/secondary quota only when tokScale has no usable base window, and it supplies structured Business `individualLimit` only when tokScale does not already expose an absolute credits window; healthy tokScale windows are never replaced;
+- Codex base-quota enrichment now follows `tokScale → existing Codex OAuth usage endpoint → App Server`: healthy tokScale canonical windows always win, OAuth may fill missing base windows without refreshing/writing `auth.json`, and App Server may fill any lane still missing plus structured Business/Team/Enterprise `individualLimit`;
 - Tauri commands expose normalized reports; raw tokScale JSON is not a renderer contract;
 - `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
@@ -48,7 +48,7 @@ v2 feature implementation and Windows package-shape automation remain complete o
 - Windows background subprocesses owned by Token Lens (tokScale, Codex App Server, and AGY/PowerShell discovery helpers) use `CREATE_NO_WINDOW`, preventing periodic refresh from flashing CMD/PowerShell windows;
 - macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
-- the current window-shell follow-up local gate is green: `npm run check` (57/57 frontend tests; 64 Rust tests passed with 7 live tests ignored), Clippy with `-D warnings`, rustfmt, native macOS Tauri debug build, `npm audit` with 0 vulnerabilities, and `git diff --check`;
+- the current local gate is green for the window-shell and quota-parity follow-ups: `npm run check` (57/57 frontend tests; 68 Rust tests passed with 9 live tests ignored), Clippy with `-D warnings`, rustfmt, native macOS Tauri debug build, `npm audit` with 0 vulnerabilities, and `git diff --check` all pass; Codex OAuth live smoke succeeds on the current Mac account; fresh Windows CI/package validation and target-Windows live-provider validation remain before packaging is considered current;
 - commit `e81291a` is green in `Token Lens v2 CI` run `34070657729` on both macOS and Windows, and `Build Token Lens v2 Windows` run `34070657719` completed packaging-helper checks, unsigned installer/single-EXE build, and artifact upload successfully;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
 - window controls now use explicit v2 semantics: minimize collapses to Floating Bubble when enabled, otherwise hides to the tray when available and finally falls back to OS minimize; close always quits, and ordinary focus loss no longer collapses the window;
@@ -64,12 +64,12 @@ v2 feature implementation and Windows package-shape automation remain complete o
 - Codex App Server enrichment is a best-effort supplement to healthy tokScale quota data: Token Lens captures the selected local Codex workspace before the tokScale read, requires that workspace to remain unchanged across the RPC probe, compares account email when both sides expose one, and discards the enrichment on any mismatch or App Server failure;
 - the App Server probe runs `codex -s read-only -a untrusted app-server`, calls only `account/read` with `refreshToken: false` plus `account/rateLimits/read`, fills missing canonical primary/secondary quota only when tokScale has no usable base window, and materializes Business Monthly `CREDITS` only when tokScale has no structured absolute credit window;
 - Claude quota parity now uses an isolated read-only `/api/oauth/usage` adapter only when tokScale is missing required data; it may fill missing 5-hour/weekly windows and the monetary `Usage credits` spend/extra-usage lane, while preserving existing tokScale windows and provider plan labels such as `Enterprise zero` verbatim;
-- Claude credential access reuses only an already-present access token from provider-owned env/file/Windows Credential Manager state; Token Lens does not refresh, rotate, persist, or log in to Claude;
+- Claude credential access reuses only an already-present access token from provider-owned env/native-file state; on Windows it also rediscovers provider-owned WSL `~/.claude/.credentials.json` files through `\\wsl$` and may read Windows Credential Manager; Token Lens does not refresh, rotate, persist, or log in to Claude;
 - the retained Limits renderer preserves capability-based absolute quota metadata and displays Business monthly credits plus Claude monetary usage without provider-specific presentation hacks;
-- local live smoke confirms the installed Codex App Server transport/schema path; an actual Business account is still required to validate live `individualLimit` values end to end, and fresh Claude credentials remain an external quota validation gate;
+- local live smoke confirms both the installed Codex App Server transport/schema path and the restored Codex OAuth `/wham/usage` fallback; an actual Business account is still required to validate live `individualLimit` values end to end, and fresh Claude credentials remain an external quota validation gate;
 - Gemini CLI actual usage is now admitted directly from tokScale as a first-class `gemini` client/provider; the renderer keeps Gemini CLI distinct from Antigravity while Google/Gemini model rows use the Gemini visual identity;
 - Gemini session metadata uses only the local session header `sessionId`, its provider-owned `tmp/<project-key>` location, and `projects.json` path-to-key mapping, exposing only the project basename and never deriving a title from conversation content;
-- Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter only when an existing Gemini OAuth access token is still valid; on Windows it reads the current Gemini CLI secure-storage target `gemini-cli-oauth/main-account`, with the older `~/.gemini/oauth_creds.json` source retained as a fallback, and Token Lens never refreshes or persists Google credentials or calls onboarding/project-creation APIs;
+- Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter from provider-owned access tokens; on Windows it reads `gemini-cli-oauth/main-account` from Credential Manager and the current Gemini CLI encrypted `~/.gemini/gemini-credentials.json` file-keychain fallback, with older `~/.gemini/oauth_creds.json` retained for migration compatibility; unknown local expiry may be tested only by the read-only provider call, and Token Lens never refreshes/persists Google credentials or calls onboarding/project-creation APIs;
 - Gemini model quota windows remain allowlist-free and Limits shows all returned model buckets, while Home selects the two lowest remaining percentages;
 - AGY quota now uses an isolated local-language-server adapter: it detects running Antigravity app, `agy`/CLI, and IDE processes in that order, probes only `127.0.0.1`, prefers grouped `RetrieveUserQuotaSummary`, and falls back to `GetUserStatus` / `GetCommandModelConfigs` without reintroducing the v1 quota framework;
 - AGY grouped local quota preserves Gemini and Claude/GPT 5-hour/weekly lanes; legacy local or remote model-only payloads remain conservative family windows and do not invent cadence;
@@ -81,16 +81,11 @@ v2 feature implementation and Windows package-shape automation remain complete o
 
 ## Next action
 
-No additional implementation or automated packaging gate remains before packaged Windows runtime/visual validation. Commit `e81291a` is green in `Token Lens v2 CI` run `34070657729` on both macOS and Windows, and in `Build Token Lens v2 Windows` run `34070657719`. The downloaded Windows artifact independently passes `SHA256SUMS.txt` verification and unsigned-GUI-PE verification for both executables.
+Finish the quota-parity gate on the current branch, then validate the resulting fresh Windows package rather than reusing the older `e81291a` artifact.
 
-1. install/run the NSIS artifact and confirm it resolves the adjacent bundled tokScale 4.15.1 at runtime;
-2. run the single-file portable artifact and confirm it resolves the extracted `embedded-portable` tokScale 4.15.1 source and cleans its temp sidecar directory correctly;
-3. validate Acrylic, the six Bubble display modes, minimize/quit behavior, 100/125/150% DPI, multi-monitor movement, taskbar/restore behavior, `Auto (system)` Korean UI/system font, Home Limits filtering, titlebar control hit areas, absence of console flashes, and live Codex/Claude/Gemini quota on the target Windows environment.
-
-Current `e81291a` Windows artifact checksums:
-
-- `Token-Lens-Setup-2.0.0-alpha.0.exe`: `3c826405a44c4987fa7eb60ca28e5f33374ee5660f51e795d37c47181f6ac5e6`;
-- `Token-Lens-2.0.0-alpha.0.exe`: `f371a79fafd33073700cb61e8d1c89e72e92dd63a4bf88fab9478ee7aaf1b062`.
+1. run Clippy with `-D warnings`, native macOS Tauri debug build, `npm audit`, and `git diff --check`;
+2. commit/push the quota-parity changes and require fresh `windows-latest` CI plus the single-EXE/NSIS packaging workflow to pass;
+3. install/run that fresh Windows artifact and validate bundled/embedded tokScale resolution, no console flashes, the retained Acrylic/Bubble/window behavior, and live Codex/Claude/Gemini quota against the target machine's provider-owned credentials.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. The v1 token/cost text modes and custom tray/bubble composer remain intentionally excluded; only the six accepted compact quota modes are retained.
 

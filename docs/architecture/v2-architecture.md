@@ -136,11 +136,12 @@ Do not duplicate tokScale parsing or provider logic merely to preserve v1 intern
 
 ### Codex
 
-- tokScale is authoritative for normal quota windows and actual usage.
+- tokScale is authoritative for actual usage and wins whenever it returns healthy normal quota windows.
 - tokScale also supplies reset-credit information and ordinary credit/spend-control status when available.
-- Codex App Server is a supplement for confirmed gaps: it may fill missing canonical primary/secondary quota windows when tokScale identifies the account but returns no usable base quota, and it may supply Business/Team/Enterprise monthly `individualLimit` data that tokScale 4.15.1 does not expose as a structured quota window.
-- App Server enrichment must never replace healthy tokScale/OAuth base quota data; existing canonical windows win and only missing lanes are added.
-- Workspace/account mismatch protection from v1 remains a required semantic when enriching Business quota.
+- When tokScale identifies the account but returns no usable canonical base quota, Token Lens may reuse the already-present Codex `auth.json` access token read-only and query the provider usage endpoint used by v1 (`/wham/usage` for the default `backend-api` base, otherwise `/api/codex/usage`). The local `chatgpt_base_url`, workspace/account id, and FedRAMP claim semantics are preserved; Token Lens never refreshes or writes Codex credentials.
+- Codex App Server remains the next read-only supplement: it may fill any canonical primary/secondary lane still missing after tokScale/OAuth and may supply Business/Team/Enterprise monthly `individualLimit` data that tokScale 4.15.1 does not expose as a structured quota window.
+- OAuth/App Server enrichment must never replace healthy tokScale base quota data; existing canonical windows win and only missing lanes are added.
+- Workspace/account mismatch protection from v1 remains a required semantic when enriching quota.
 
 The Business monthly credit window preserves:
 
@@ -153,7 +154,7 @@ The Business monthly credit window preserves:
 
 - tokScale remains authoritative for Claude actual usage and for any healthy quota windows it reports.
 - A narrow read-only Claude OAuth usage enrichment may fill missing 5-hour/weekly windows and the `spend` / `extra_usage` monthly monetary `Usage credits` lane confirmed by Windows/v1 parity testing. Existing tokScale windows are never replaced.
-- The enrichment reads only an already-present Claude Code access token from provider-owned storage (including Windows Credential Manager when applicable), calls the official usage endpoint, and never refreshes, rotates, writes, logs in, or owns Claude credentials.
+- The enrichment reads only an already-present Claude Code access token from provider-owned storage. On Windows that includes the native credential file, provider-owned WSL `~/.claude/.credentials.json` files discovered through `\\wsl$`, and Windows Credential Manager when applicable. It calls the official usage endpoint and never refreshes, rotates, writes, logs in, or owns Claude credentials.
 - Provider plan text is preserved as reported; Token Lens does not reinterpret provider-internal tier labels merely for presentation.
 - do not create a separate Claude account-management framework.
 
@@ -161,7 +162,7 @@ The Business monthly credit window preserves:
 
 - tokScale is authoritative for Gemini CLI actual usage, including model/session aggregation and token/cost data.
 - Gemini CLI quota is a narrow read-only Google Code Assist enrichment because tokScale 4.15.1 does not expose Gemini quota through `tokscale usage --json`.
-- reuse only an already-valid Gemini CLI-owned access token. Support the current Gemini CLI secure-storage contract (`gemini-cli-oauth` / `main-account` on the native keychain, including Windows Credential Manager) plus the older `~/.gemini/oauth_creds.json` migration source; Token Lens must not refresh OAuth, write credentials, call `onboardUser`, or create/attach a Google Cloud project.
+- reuse only an already-present Gemini CLI-owned access token. Support the current Gemini CLI secure-storage contract (`gemini-cli-oauth` / `main-account`), including Windows Credential Manager and Gemini CLI's encrypted `~/.gemini/gemini-credentials.json` file fallback, plus the older `~/.gemini/oauth_creds.json` migration source. An access token with unknown local expiry may be tried read-only and accepted only if the provider API accepts it. Token Lens must not refresh OAuth, write credentials, call `onboardUser`, or create/attach a Google Cloud project.
 - follow Gemini CLI's `loadCodeAssist` → `retrieveUserQuota` flow and keep model identifiers allowlist-free behind the normalized quota contract.
 - Gemini session identification may use the provider-owned `tmp/<project-key>` location plus `projects.json` path-to-key mapping to expose only a project basename; prompt/response-derived title fallbacks remain prohibited.
 

@@ -1,5 +1,13 @@
 use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, SupportedProvider};
 use crate::google_code_assist::{self, LoadSnapshot, QuotaBucket};
+#[cfg(any(target_os = "windows", test))]
+use aes_gcm::{
+    aead::{consts::U16, AeadInPlace, KeyInit},
+    aes::Aes256,
+    AesGcm, Nonce, Tag,
+};
+#[cfg(any(target_os = "windows", test))]
+use scrypt::{scrypt, Params as ScryptParams};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
@@ -110,8 +118,13 @@ struct ValidCredential {
 
 fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
     #[cfg(target_os = "windows")]
-    if let Some(credential) = read_windows_keychain_credential() {
-        return Some(credential);
+    {
+        if let Some(credential) = read_windows_keychain_credential() {
+            return Some(credential);
+        }
+        if let Some(credential) = read_windows_file_keychain_credential(home) {
+            return Some(credential);
+        }
     }
 
     let path = gemini_home(home).join("oauth_creds.json");
@@ -125,8 +138,7 @@ fn valid_credential(access_token: Option<String>, expiry: Option<u64>) -> Option
     if access_token.is_empty() {
         return None;
     }
-    let expiry = expiry?;
-    if expiry <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS) {
+    if expiry.is_some_and(|value| value <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS)) {
         return None;
     }
     Some(ValidCredential { access_token })
@@ -167,6 +179,84 @@ fn read_windows_keychain_credential() -> Option<ValidCredential> {
     };
     unsafe { CredFree(credential.cast()) };
     parse_keychain_credential(&bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_file_keychain_credential(home: &Path) -> Option<ValidCredential> {
+    let hostname = env::var("COMPUTERNAME").ok()?;
+    let username = env::var("USERNAME")
+        .ok()
+        .or_else(|| env::var("USER").ok())?;
+    let text = fs::read_to_string(gemini_home(home).join("gemini-credentials.json")).ok()?;
+    parse_file_keychain_credential(&text, &hostname, &username)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_file_keychain_credential(
+    encrypted: &str,
+    hostname: &str,
+    username: &str,
+) -> Option<ValidCredential> {
+    let plaintext = decrypt_file_keychain(encrypted, hostname, username)?;
+    let store = serde_json::from_slice::<serde_json::Value>(&plaintext).ok()?;
+    let secret = store
+        .get("gemini-cli-oauth")?
+        .get("main-account")?
+        .as_str()?;
+    parse_keychain_credential(secret.as_bytes())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decrypt_file_keychain(encrypted: &str, hostname: &str, username: &str) -> Option<Vec<u8>> {
+    type Aes256Gcm16 = AesGcm<Aes256, U16>;
+    let mut parts = encrypted.trim().split(':');
+    let iv = decode_hex(parts.next()?)?;
+    let tag = decode_hex(parts.next()?)?;
+    let mut ciphertext = decode_hex(parts.next()?)?;
+    if parts.next().is_some() || iv.len() != 16 || tag.len() != 16 {
+        return None;
+    }
+
+    let salt = format!("{hostname}-{username}-gemini-cli");
+    let params = ScryptParams::new(14, 8, 1, 32).ok()?;
+    let mut key = [0u8; 32];
+    scrypt(b"gemini-cli-oauth", salt.as_bytes(), &params, &mut key).ok()?;
+    let cipher = Aes256Gcm16::new_from_slice(&key).ok()?;
+    cipher
+        .decrypt_in_place_detached(
+            Nonce::<U16>::from_slice(&iv),
+            b"",
+            &mut ciphertext,
+            Tag::from_slice(&tag),
+        )
+        .ok()?;
+    Some(ciphertext)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_digit(pair[0])?;
+            let low = hex_digit(pair[1])?;
+            Some((high << 4) | low)
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn read_active_account(home: &Path) -> Option<String> {
@@ -375,6 +465,21 @@ mod tests {
         let bytes = serde_json::to_vec(&fixture).expect("keychain fixture");
         let parsed = parse_keychain_credential(&bytes).expect("valid current credential");
         assert_eq!(parsed.access_token, "keychain-access");
+    }
+
+    #[test]
+    fn encrypted_file_keychain_matches_gemini_cli_node_crypto_format() {
+        let fixture = "000102030405060708090a0b0c0d0e0f:4cce9d5c5d3fdf79b6d3b1034e119489:434b76d776b0e43555058fd747d6d635c228ccf9a0744385826972d4160076ee21c3c84fe1dca16614c0e5efb7e20428329a400d289b7e679483a07452ff96c1b16825655477f940a77b40b3177ae6424b45c25314706bc8288c19da4ac5ff53bc421b36ac7562458482d9a83520908139c74a87e54d2b2edc6b800de14dd863ea8dc4749232cfb7b818d25eabe3774350719b6d573412ec1ae06cc54817920e";
+        let parsed = parse_file_keychain_credential(fixture, "TEST-HOST", "tester")
+            .expect("Gemini CLI encrypted file credential should decrypt");
+        assert_eq!(parsed.access_token, "test-access-token");
+    }
+
+    #[test]
+    fn credential_without_expiry_can_be_validated_by_the_read_only_api_call() {
+        let parsed = valid_credential(Some("existing-access-token".into()), None)
+            .expect("unknown expiry should not discard an existing access token");
+        assert_eq!(parsed.access_token, "existing-access-token");
     }
 
     #[test]

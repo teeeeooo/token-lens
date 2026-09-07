@@ -8,12 +8,15 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{sleep, timeout};
 
 const CODEX_APP_SERVER_SOURCE: &str = "codex-app-server";
+const CODEX_OAUTH_SOURCE: &str = "codex-oauth";
+const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const CODEX_HTTP_TIMEOUT_SECONDS: u64 = 12;
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const EMPTY_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(300);
 const MAX_RPC_LINE_BYTES: usize = 2 * 1024 * 1024;
@@ -106,14 +109,29 @@ struct AppServerSnapshot {
 #[derive(Debug, Default, Deserialize)]
 struct StoredCodexAuth {
     tokens: Option<StoredCodexTokens>,
+    #[serde(alias = "accessToken")]
+    access_token: Option<String>,
+    #[serde(alias = "idToken")]
+    id_token: Option<String>,
     #[serde(alias = "accountId")]
     account_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct StoredCodexTokens {
+    #[serde(alias = "accessToken")]
+    access_token: Option<String>,
+    #[serde(alias = "idToken")]
+    id_token: Option<String>,
     #[serde(alias = "accountId")]
     account_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CodexOauthContext {
+    access_token: String,
+    account_id: Option<String>,
+    fedramp: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +178,24 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
+    if provider_needs_base_quota(&report.providers[index]) {
+        let oauth_home = home.to_path_buf();
+        if let Ok(Ok(snapshot)) =
+            tokio::task::spawn_blocking(move || read_oauth_usage_snapshot(&oauth_home)).await
+        {
+            if selected_workspace_id(home) == expected_workspace_id {
+                apply_base_rate_limits(&mut report.providers[index], &snapshot, CODEX_OAUTH_SOURCE);
+                if report.providers[index].plan.is_none() {
+                    report.providers[index].plan = snapshot.rate_plan;
+                }
+            }
+        }
+    }
+
+    if !provider_needs_enrichment(&report.providers[index]) {
+        return report;
+    }
+
     let expected_email = report.providers[index].account_email.clone();
     let snapshot = match read_app_server_snapshot().await {
         Ok(snapshot) => snapshot,
@@ -177,7 +213,11 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
-    apply_base_rate_limits(&mut report.providers[index], &snapshot);
+    apply_base_rate_limits(
+        &mut report.providers[index],
+        &snapshot,
+        CODEX_APP_SERVER_SOURCE,
+    );
 
     let business_plan = report.providers[index]
         .plan
@@ -243,7 +283,11 @@ fn enrichment_context_matches(
     !matches!((expected_email, rpc_email), (Some(left), Some(right)) if left != right)
 }
 
-fn apply_base_rate_limits(provider: &mut QuotaProvider, snapshot: &AppServerSnapshot) -> usize {
+fn apply_base_rate_limits(
+    provider: &mut QuotaProvider,
+    snapshot: &AppServerSnapshot,
+    source: &'static str,
+) -> usize {
     let mut added = 0;
     for (slot, raw) in [
         ("primary", snapshot.primary.as_ref()),
@@ -276,7 +320,7 @@ fn apply_base_rate_limits(provider: &mut QuotaProvider, snapshot: &AppServerSnap
             resets_at: raw.resets_at.as_ref().and_then(rpc_reset_to_rfc3339),
             currency: None,
             show_meter: true,
-            source: CODEX_APP_SERVER_SOURCE,
+            source,
         };
         let insert_at = provider
             .windows
@@ -386,6 +430,241 @@ fn clean_identity(value: Option<String>) -> Option<String> {
 fn normalize_identity(value: Option<&str>) -> Option<String> {
     let value = value?.trim().to_ascii_lowercase();
     (!value.is_empty()).then_some(value)
+}
+
+fn read_oauth_usage_snapshot(home: &Path) -> Result<AppServerSnapshot, String> {
+    let codex_dir = codex_home(home);
+    let auth = read_oauth_context(&codex_dir.join("auth.json"))?;
+    let base_url = read_chatgpt_base_url(&codex_dir.join("config.toml"));
+    let endpoint = codex_usage_endpoint(&base_url);
+    let mut request = minreq::get(endpoint)
+        .with_header("accept", "application/json")
+        .with_header("authorization", format!("Bearer {}", auth.access_token))
+        .with_header("user-agent", "Token-Lens/2")
+        .with_timeout(CODEX_HTTP_TIMEOUT_SECONDS)
+        .with_follow_redirects(false);
+    if let Some(account_id) = auth.account_id.as_deref() {
+        request = request.with_header("chatgpt-account-id", account_id);
+    }
+    if auth.fedramp {
+        request = request.with_header("x-openai-fedramp", "true");
+    }
+    let response = request
+        .send()
+        .map_err(|_| "Codex OAuth usage request failed".to_owned())?;
+    if !(200..300).contains(&response.status_code) {
+        return Err(format!(
+            "Codex OAuth usage returned HTTP {}",
+            response.status_code
+        ));
+    }
+    let payload = response
+        .json::<Value>()
+        .map_err(|_| "Codex OAuth usage returned an invalid payload".to_owned())?;
+    oauth_snapshot_from_payload(&payload)
+}
+
+fn read_oauth_context(path: &Path) -> Result<CodexOauthContext, String> {
+    let auth = serde_json::from_slice::<StoredCodexAuth>(
+        &fs::read(path).map_err(|_| "Codex auth.json is unavailable".to_owned())?,
+    )
+    .map_err(|_| "Codex auth.json has an unexpected shape".to_owned())?;
+    let tokens = auth.tokens.as_ref();
+    let access_token = tokens
+        .and_then(|value| value.access_token.clone())
+        .or(auth.access_token)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Codex access token is unavailable".to_owned())?;
+    let id_token = tokens
+        .and_then(|value| value.id_token.as_deref())
+        .or(auth.id_token.as_deref());
+    let claims = id_token.and_then(jwt_payload);
+    let (claimed_account, claimed_fedramp) = claims
+        .as_ref()
+        .map(codex_claim_identity)
+        .unwrap_or((None, None));
+    let stored_account = tokens
+        .and_then(|value| value.account_id.clone())
+        .or(auth.account_id)
+        .and_then(|value| clean_identity(Some(value)));
+    let account_id = stored_account.or(claimed_account.clone());
+    let fedramp =
+        account_id.is_some() && account_id == claimed_account && claimed_fedramp == Some(true);
+    Ok(CodexOauthContext {
+        access_token,
+        account_id,
+        fedramp,
+    })
+}
+
+fn codex_claim_identity(claims: &Value) -> (Option<String>, Option<bool>) {
+    let nested = claims
+        .get("https://api.openai.com/auth")
+        .or_else(|| claims.get("https://api.openai.com/profile"));
+    let account_id = claims
+        .get("chatgpt_account_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            nested
+                .and_then(|value| value.get("chatgpt_account_id"))
+                .and_then(Value::as_str)
+        })
+        .and_then(|value| normalize_identity(Some(value)));
+    let fedramp = nested
+        .and_then(|value| value.get("chatgpt_account_is_fedramp"))
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            claims
+                .get("chatgpt_account_is_fedramp")
+                .and_then(Value::as_bool)
+        });
+    (account_id, fedramp)
+}
+
+fn read_chatgpt_base_url(path: &Path) -> String {
+    let Ok(text) = fs::read_to_string(path) else {
+        return DEFAULT_CODEX_BASE_URL.to_owned();
+    };
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "chatgpt_base_url" {
+            continue;
+        }
+        let value = value.trim().trim_matches(['\'', '"']);
+        if value.starts_with("https://") {
+            return normalize_chatgpt_base_url(value);
+        }
+    }
+    DEFAULT_CODEX_BASE_URL.to_owned()
+}
+
+fn normalize_chatgpt_base_url(value: &str) -> String {
+    let mut base = value.trim().trim_end_matches('/').to_owned();
+    if matches!(
+        base.to_ascii_lowercase().as_str(),
+        "https://chatgpt.openai.com" | "https://chat.openai.com" | "https://chatgpt.com"
+    ) {
+        base.push_str("/backend-api");
+    }
+    base
+}
+
+fn codex_usage_endpoint(base_url: &str) -> String {
+    let base = normalize_chatgpt_base_url(base_url);
+    if base.to_ascii_lowercase().contains("/backend-api") {
+        format!("{base}/wham/usage")
+    } else {
+        format!("{base}/api/codex/usage")
+    }
+}
+
+fn oauth_snapshot_from_payload(payload: &Value) -> Result<AppServerSnapshot, String> {
+    let rate_limit = payload
+        .get("rateLimit")
+        .or_else(|| payload.get("rate_limit"))
+        .ok_or_else(|| "Codex OAuth usage did not include rate limits".to_owned())?;
+    let primary = rate_limit
+        .get("primaryWindow")
+        .or_else(|| rate_limit.get("primary_window"))
+        .and_then(oauth_rate_window);
+    let secondary = rate_limit
+        .get("secondaryWindow")
+        .or_else(|| rate_limit.get("secondary_window"))
+        .and_then(oauth_rate_window);
+    if primary.is_none() && secondary.is_none() {
+        return Err("Codex OAuth usage did not include usable quota windows".to_owned());
+    }
+    Ok(AppServerSnapshot {
+        rate_plan: string_alias(payload, &["planType", "plan_type"]),
+        primary,
+        secondary,
+        ..AppServerSnapshot::default()
+    })
+}
+
+fn oauth_rate_window(raw: &Value) -> Option<RateLimitWindow> {
+    let used_percent = number_alias(raw, &["usedPercent", "used_percent"])?;
+    let minutes = number_alias(raw, &["limitWindowSeconds", "limit_window_seconds"])
+        .filter(|value| *value >= 0.0)
+        .map(|seconds| (seconds / 60.0).round() as u64);
+    let resets_at = raw
+        .get("resetsAt")
+        .or_else(|| raw.get("resetAt"))
+        .or_else(|| raw.get("reset_at"))
+        .cloned()
+        .or_else(|| reset_after_value(raw));
+    Some(RateLimitWindow {
+        used_percent: Some(used_percent),
+        resets_at,
+        window_duration_mins: minutes,
+    })
+}
+
+fn string_alias(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn number_alias(value: &Value, keys: &[&str]) -> Option<f64> {
+    let value = keys.iter().find_map(|key| value.get(*key))?;
+    match value {
+        Value::Number(value) => value.as_f64().filter(|value| value.is_finite()),
+        Value::String(value) => value.parse::<f64>().ok().filter(|value| value.is_finite()),
+        _ => None,
+    }
+}
+
+fn reset_after_value(raw: &Value) -> Option<Value> {
+    let seconds = number_alias(raw, &["resetAfterSeconds", "reset_after_seconds"])?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs_f64();
+    Some(Value::from((now + seconds).round() as i64))
+}
+
+fn jwt_payload(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = decode_base64url(payload)?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn decode_base64url(value: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(value.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    for byte in value.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let digit = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        } as u32;
+        buffer = (buffer << 6) | digit;
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1u32 << bits).saturating_sub(1);
+        }
+    }
+    Some(out)
 }
 
 async fn read_app_server_snapshot() -> Result<AppServerSnapshot, String> {
@@ -827,7 +1106,10 @@ mod tests {
             }),
             ..AppServerSnapshot::default()
         };
-        assert_eq!(apply_base_rate_limits(&mut empty, &snapshot), 2);
+        assert_eq!(
+            apply_base_rate_limits(&mut empty, &snapshot, CODEX_APP_SERVER_SOURCE),
+            2
+        );
         assert_eq!(empty.windows[0].kind, QuotaWindowKind::Session);
         assert_eq!(empty.windows[0].remaining_percent, Some(80.0));
         assert_eq!(empty.windows[0].source, CODEX_APP_SERVER_SOURCE);
@@ -836,7 +1118,10 @@ mod tests {
         assert!(empty.windows[1].resets_at.is_some());
 
         let mut existing = provider("Business");
-        assert_eq!(apply_base_rate_limits(&mut existing, &snapshot), 1);
+        assert_eq!(
+            apply_base_rate_limits(&mut existing, &snapshot, CODEX_APP_SERVER_SOURCE),
+            1
+        );
         assert_eq!(
             existing
                 .windows
@@ -845,6 +1130,85 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn oauth_claim_context_accepts_v1_top_level_and_profile_shapes() {
+        let top_level = json!({
+            "chatgpt_account_id": "Workspace-A",
+            "chatgpt_account_is_fedramp": true
+        });
+        assert_eq!(
+            codex_claim_identity(&top_level),
+            (Some("workspace-a".to_owned()), Some(true))
+        );
+
+        let profile = json!({
+            "https://api.openai.com/profile": {
+                "chatgpt_account_id": "Workspace-B",
+                "chatgpt_account_is_fedramp": false
+            }
+        });
+        assert_eq!(
+            codex_claim_identity(&profile),
+            (Some("workspace-b".to_owned()), Some(false))
+        );
+    }
+
+    #[test]
+    fn oauth_usage_shape_restores_v1_primary_and_secondary_windows() {
+        let payload = json!({
+            "plan_type": "Business",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 23,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1_789_171_200_i64
+                },
+                "secondary_window": {
+                    "used_percent": 41,
+                    "limit_window_seconds": 604800,
+                    "reset_at": "2026-09-12T00:00:00Z"
+                }
+            }
+        });
+        let snapshot = oauth_snapshot_from_payload(&payload).expect("OAuth usage snapshot");
+        assert_eq!(snapshot.rate_plan.as_deref(), Some("Business"));
+        let mut target = provider("Business");
+        target.windows.clear();
+        assert_eq!(
+            apply_base_rate_limits(&mut target, &snapshot, CODEX_OAUTH_SOURCE),
+            2
+        );
+        assert_eq!(target.windows[0].kind, QuotaWindowKind::Session);
+        assert_eq!(target.windows[0].remaining_percent, Some(77.0));
+        assert_eq!(target.windows[0].source, CODEX_OAUTH_SOURCE);
+        assert_eq!(target.windows[1].kind, QuotaWindowKind::Weekly);
+        assert_eq!(target.windows[1].remaining_percent, Some(59.0));
+        assert_eq!(
+            codex_usage_endpoint(DEFAULT_CODEX_BASE_URL),
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
+        assert_eq!(
+            codex_usage_endpoint("https://chatgpt.com"),
+            "https://chatgpt.com/backend-api/wham/usage"
+        );
+        assert_eq!(
+            codex_usage_endpoint("https://chat.openai.com/"),
+            "https://chat.openai.com/backend-api/wham/usage"
+        );
+        assert_eq!(
+            codex_usage_endpoint("https://example.test/custom"),
+            "https://example.test/custom/api/codex/usage"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a local Codex OAuth credential and live usage endpoint"]
+    fn live_codex_oauth_usage_smoke() {
+        let home = env::var_os("HOME").map(PathBuf::from).expect("HOME");
+        let snapshot = read_oauth_usage_snapshot(&home).expect("read live Codex OAuth usage");
+        assert!(snapshot.primary.is_some() || snapshot.secondary.is_some());
     }
 
     #[test]

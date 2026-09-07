@@ -5,6 +5,7 @@ import {
   configuredBubbleSelections,
   floatingBubbleModel,
   normalizeBubbleContent,
+  normalizeBubbleScale,
 } from '../src/floating-bubble-model.js';
 
 function limits(providers) {
@@ -19,6 +20,13 @@ function provider(provider, windows) {
     windows: windows.map((window) => ({ showMeter: true, ...window })),
   };
 }
+
+test('bubble scale stays within the persisted 70 to 150 percent range', () => {
+  assert.equal(normalizeBubbleScale(0.2), 0.7);
+  assert.equal(normalizeBubbleScale(1.24), 1.2);
+  assert.equal(normalizeBubbleScale(2), 1.5);
+  assert.equal(normalizeBubbleScale('bad'), 1);
+});
 
 test('provider limits use fixed v2 provider order and primary quota semantics', () => {
   const value = limits([

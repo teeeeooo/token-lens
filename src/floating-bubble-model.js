@@ -13,6 +13,12 @@ export function normalizeBubbleContent(value) {
   return BUBBLE_CONTENT_MODES.includes(value) ? value : 'limitsAllSessions';
 }
 
+export function normalizeBubbleScale(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.round(Math.max(0.7, Math.min(1.5, number)) * 10) / 10;
+}
+
 export function bubblePercentLabel(value) {
   if (value === null || value === undefined || value === '') return '';
   const number = Number(value);

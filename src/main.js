@@ -33,6 +33,7 @@ import {
   bubblePercentLabel,
   floatingBubbleModel,
   normalizeBubbleContent,
+  normalizeBubbleScale,
 } from './floating-bubble-model.js';
 import { THEME_PRESETS, applyThemePreset, normalizeThemePreset, normalizeZoomFactor } from './appearance-model.js';
 import { applyTranslations, normalizeLanguage, resolveLanguage, translate } from './i18n.js';
@@ -77,6 +78,7 @@ const state = {
     floatingBubbleEnabled: true,
     floatingBubbleTrigger: 'click',
     floatingBubbleContent: 'limitsAllSessions',
+    floatingBubbleScale: 1,
     themePreset: 'default',
     zoomFactor: 1,
     showCompactTotalTokens: false,
@@ -162,6 +164,11 @@ root.innerHTML = `
               <option value="bars" data-i18n="settings.bubble.lowestRemaining">Lowest remaining</option>
             </select>
           </label>
+          <div class="settings-item settings-slider-item">
+            <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.bubbleSize">Bubble size</span></span>
+            <input id="floatingBubbleScaleInput" type="range" min="70" max="150" step="10" value="100" aria-label="Bubble size percentage" />
+            <span id="floatingBubbleScaleValue" class="slider-value">100%</span>
+          </div>
         </div>
       </div>
       <div class="settings-group settings-collapsible-group v2-settings-card">
@@ -245,6 +252,8 @@ const els = {
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
   floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')),
   floatingBubbleContentInput: document.querySelector('#floatingBubbleContentInput'),
+  floatingBubbleScaleInput: document.querySelector('#floatingBubbleScaleInput'),
+  floatingBubbleScaleValue: document.querySelector('#floatingBubbleScaleValue'),
   floatingBubbleContent: document.querySelector('#floatingBubbleContent'),
   themePresetChips: document.querySelector('#themePresetChips'),
   zoomInput: document.querySelector('#zoomInput'),
@@ -292,6 +301,7 @@ function applySettings(settings = {}) {
     floatingBubbleEnabled: settings.floatingBubbleEnabled !== false,
     floatingBubbleTrigger: settings.floatingBubbleTrigger === 'hover' ? 'hover' : 'click',
     floatingBubbleContent: normalizeBubbleContent(settings.floatingBubbleContent ?? state.settings.floatingBubbleContent),
+    floatingBubbleScale: normalizeBubbleScale(settings.floatingBubbleScale ?? state.settings.floatingBubbleScale),
     themePreset: normalizeThemePreset(settings.themePreset ?? state.settings.themePreset),
     zoomFactor: normalizeZoomFactor(settings.zoomFactor ?? state.settings.zoomFactor),
     showCompactTotalTokens: settings.showCompactTotalTokens === true,
@@ -303,6 +313,7 @@ function applySettings(settings = {}) {
     ? (navigator.languages?.[0] || navigator.language || activeLanguage)
     : activeLanguage;
   document.documentElement.lang = activeLanguage;
+  document.documentElement.style.setProperty('--bubble-scale', String(state.settings.floatingBubbleScale));
   applyTranslations(document, activeLanguage);
   applyThemePreset(document.documentElement, state.settings.themePreset);
   els.showTrayIconInput.checked = state.settings.showTrayIcon;
@@ -310,6 +321,8 @@ function applySettings(settings = {}) {
   els.floatingBubbleInput.checked = state.settings.floatingBubbleEnabled;
   els.floatingBubbleOptions.classList.toggle('hidden', !state.settings.floatingBubbleEnabled);
   els.floatingBubbleContentInput.value = state.settings.floatingBubbleContent;
+  els.floatingBubbleScaleInput.value = String(Math.round(state.settings.floatingBubbleScale * 100));
+  els.floatingBubbleScaleValue.textContent = `${els.floatingBubbleScaleInput.value}%`;
   els.minButton.title = state.settings.floatingBubbleEnabled
     ? t('window.minimizeBubble')
     : state.settings.showTrayIcon ? t('window.minimizeTray') : t('window.minimize');
@@ -391,7 +404,10 @@ function measureFloatingBubbleWidth() {
   document.body.append(probe);
   const width = Math.ceil(probe.getBoundingClientRect().width);
   probe.remove();
-  return Math.max(BUBBLE_LOGICAL_HEIGHT, Math.min(BUBBLE_MAX_WIDTH, width || BUBBLE_LOGICAL_HEIGHT));
+  const scale = state.settings.floatingBubbleScale;
+  const minWidth = BUBBLE_LOGICAL_HEIGHT * scale;
+  const maxWidth = BUBBLE_MAX_WIDTH * scale;
+  return Math.max(minWidth, Math.min(maxWidth, width || minWidth));
 }
 
 async function syncFloatingBubbleWidth({ applyState = true } = {}) {
@@ -457,11 +473,11 @@ function quotaMoney(value, currency = 'USD') {
     return new Intl.NumberFormat(currentLocale(), {
       style: 'currency',
       currency: code,
-      minimumFractionDigits: Number.isInteger(number) ? 0 : 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: Number.isInteger(number) ? 0 : 1,
+      maximumFractionDigits: 1,
     }).format(number);
   } catch (_) {
-    return `${code} ${number.toLocaleString(currentLocale(), { maximumFractionDigits: 2 })}`;
+    return `${code} ${number.toLocaleString(currentLocale(), { maximumFractionDigits: 1 })}`;
   }
 }
 
@@ -475,7 +491,8 @@ function quotaWindowValue(window, { detail = false } = {}) {
   }
   if (window?.metric === 'credits' && window?.currency === 'CREDITS') {
     const count = formatQuotaCount(window);
-    if (count) return percent ? `${detail ? t('quota.left', { value: percent }) : percent} · ${count} cr` : `${count} cr`;
+    const credits = count ? t('quota.credits', { value: count }) : '';
+    if (credits) return percent ? `${detail ? t('quota.left', { value: percent }) : percent} · ${credits}` : credits;
   }
   if (!percent) return '—';
   return detail ? t('quota.left', { value: percent }) : percent;
@@ -652,6 +669,7 @@ function renderHomeLimits() {
     for (const window of compactWindows) {
       const item = document.createElement('div');
       item.className = 'home-limit-window';
+      if (window.metric === 'credits' || window.metric === 'spend') item.classList.add('home-limit-window-wide');
       const line = document.createElement('div');
       line.className = 'home-limit-window-line';
       const label = document.createElement('span');
@@ -1331,6 +1349,12 @@ for (const input of els.floatingBubbleTriggerInputs) {
 }
 els.floatingBubbleContentInput.addEventListener('change', () => {
   void saveSettings({ floatingBubbleContent: normalizeBubbleContent(els.floatingBubbleContentInput.value) });
+});
+els.floatingBubbleScaleInput.addEventListener('input', () => {
+  els.floatingBubbleScaleValue.textContent = `${els.floatingBubbleScaleInput.value}%`;
+});
+els.floatingBubbleScaleInput.addEventListener('change', () => {
+  void saveSettings({ floatingBubbleScale: normalizeBubbleScale(Number(els.floatingBubbleScaleInput.value) / 100) });
 });
 els.zoomInput.addEventListener('input', () => {
   els.zoomValue.textContent = `${els.zoomInput.value}%`;

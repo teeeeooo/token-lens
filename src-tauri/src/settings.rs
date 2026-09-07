@@ -47,6 +47,7 @@ pub struct AppSettings {
     pub floating_bubble_enabled: bool,
     pub floating_bubble_trigger: FloatingBubbleTrigger,
     pub floating_bubble_content: String,
+    pub floating_bubble_scale: f64,
     pub theme_preset: ThemePreset,
     pub zoom_factor: f64,
     pub show_compact_total_tokens: bool,
@@ -62,6 +63,7 @@ impl Default for AppSettings {
             floating_bubble_enabled: true,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
             floating_bubble_content: "limitsAllSessions".to_owned(),
+            floating_bubble_scale: 1.0,
             theme_preset: ThemePreset::Default,
             zoom_factor: 1.0,
             show_compact_total_tokens: false,
@@ -78,6 +80,7 @@ pub struct SettingsPatch {
     pub floating_bubble_enabled: Option<bool>,
     pub floating_bubble_trigger: Option<FloatingBubbleTrigger>,
     pub floating_bubble_content: Option<String>,
+    pub floating_bubble_scale: Option<f64>,
     pub theme_preset: Option<ThemePreset>,
     pub zoom_factor: Option<f64>,
     pub show_compact_total_tokens: Option<bool>,
@@ -137,6 +140,9 @@ impl SettingsStore {
         if let Some(content) = patch.floating_bubble_content {
             value.floating_bubble_content = content;
         }
+        if let Some(scale) = patch.floating_bubble_scale {
+            value.floating_bubble_scale = scale;
+        }
         if let Some(theme) = patch.theme_preset {
             value.theme_preset = theme;
         }
@@ -170,6 +176,11 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
     if !BUBBLE_CONTENT_VALUES.contains(&value.floating_bubble_content.as_str()) {
         value.floating_bubble_content = "limitsAllSessions".to_owned();
     }
+    if !value.floating_bubble_scale.is_finite() {
+        value.floating_bubble_scale = 1.0;
+    }
+    value.floating_bubble_scale =
+        (value.floating_bubble_scale.clamp(0.7, 1.5) * 10.0).round() / 10.0;
     if !value.zoom_factor.is_finite() {
         value.zoom_factor = 1.0;
     }
@@ -209,6 +220,7 @@ mod tests {
             FloatingBubbleTrigger::Click
         );
         assert_eq!(settings.floating_bubble_content, "limitsAllSessions");
+        assert_eq!(settings.floating_bubble_scale, 1.0);
         assert_eq!(settings.theme_preset, ThemePreset::Default);
         assert_eq!(settings.zoom_factor, 1.0);
         assert!(!settings.show_compact_total_tokens);
@@ -231,6 +243,20 @@ mod tests {
     }
 
     #[test]
+    fn bubble_scale_is_clamped_to_user_range_and_step() {
+        let high = normalize_settings(AppSettings {
+            floating_bubble_scale: 4.0,
+            ..AppSettings::default()
+        });
+        let stepped = normalize_settings(AppSettings {
+            floating_bubble_scale: 1.24,
+            ..AppSettings::default()
+        });
+        assert_eq!(high.floating_bubble_scale, 1.5);
+        assert_eq!(stepped.floating_bubble_scale, 1.2);
+    }
+
+    #[test]
     fn zoom_is_clamped_to_retained_v1_range_and_step() {
         let high = normalize_settings(AppSettings {
             zoom_factor: 4.0,
@@ -250,6 +276,7 @@ mod tests {
             r#"{"showTrayIcon":false,"floatingBubbleEnabled":true,"floatingBubbleTrigger":"hover","floatingBubbleContent":"icon"}"#,
         )
         .expect("older v2 settings should deserialize");
+        assert_eq!(settings.floating_bubble_scale, 1.0);
         assert_eq!(settings.theme_preset, ThemePreset::Default);
         assert_eq!(settings.zoom_factor, 1.0);
         assert!(!settings.show_compact_total_tokens);
@@ -291,6 +318,7 @@ mod tests {
         store
             .update(SettingsPatch {
                 floating_bubble_trigger: Some(FloatingBubbleTrigger::Hover),
+                floating_bubble_scale: Some(1.3),
                 ..SettingsPatch::default()
             })
             .expect("second settings update should replace the same file");
@@ -306,6 +334,7 @@ mod tests {
         let value = reloaded.get().expect("settings should be readable");
         assert!(value.floating_bubble_enabled);
         assert_eq!(value.floating_bubble_trigger, FloatingBubbleTrigger::Hover);
+        assert_eq!(value.floating_bubble_scale, 1.3);
         assert_eq!(
             value.window_bounds,
             Some(WindowBounds {

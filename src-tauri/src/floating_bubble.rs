@@ -150,17 +150,27 @@ fn physical_length(logical: f64, scale: f64) -> u32 {
     (logical * scale).round().max(1.0) as u32
 }
 
-fn normalized_logical_width(width: f64) -> f64 {
+fn normalized_logical_width(width: f64, bubble_scale: f64) -> f64 {
+    let bubble_scale = if bubble_scale.is_finite() {
+        bubble_scale.clamp(0.7, 1.5)
+    } else {
+        1.0
+    };
+    let min_width = BUBBLE_LOGICAL_MIN_WIDTH * bubble_scale;
+    let max_width = BUBBLE_LOGICAL_MAX_WIDTH * bubble_scale;
     if !width.is_finite() {
-        return BUBBLE_LOGICAL_MIN_WIDTH;
+        return min_width;
     }
-    width.clamp(BUBBLE_LOGICAL_MIN_WIDTH, BUBBLE_LOGICAL_MAX_WIDTH)
+    width.clamp(min_width, max_width)
 }
 
-fn physical_bubble_size(logical_width: f64, scale: f64) -> (u32, u32) {
+fn physical_bubble_size(logical_width: f64, bubble_scale: f64, monitor_scale: f64) -> (u32, u32) {
     (
-        physical_length(normalized_logical_width(logical_width), scale),
-        physical_length(BUBBLE_LOGICAL_HEIGHT, scale),
+        physical_length(
+            normalized_logical_width(logical_width, bubble_scale),
+            monitor_scale,
+        ),
+        physical_length(BUBBLE_LOGICAL_HEIGHT * bubble_scale, monitor_scale),
     )
 }
 
@@ -234,15 +244,17 @@ fn resized_collapsed_bounds(
     side: FloatingBubbleSide,
     y_margin: i32,
 ) -> Bounds {
+    let min_x = area.x as i64;
+    let max_x = area.x as i64 + area.width as i64 - bubble_width as i64;
     let min_y = area.y as i64 + y_margin as i64;
     let max_y = area.y as i64 + area.height as i64 - bubble_height as i64 - y_margin as i64;
     let center_y = current.y as i64 + current.height as i64 / 2;
-    let x = match side {
-        FloatingBubbleSide::Left => area.x,
-        FloatingBubbleSide::Right => area.x + area.width as i32 - bubble_width as i32,
+    let desired_x = match side {
+        FloatingBubbleSide::Left => current.x as i64,
+        FloatingBubbleSide::Right => current.x as i64 + current.width as i64 - bubble_width as i64,
     };
     Bounds {
-        x,
+        x: clamp_i32(desired_x, min_x, max_x),
         y: clamp_i32(center_y - bubble_height as i64 / 2, min_y, max_y),
         width: bubble_width,
         height: bubble_height,
@@ -314,9 +326,11 @@ fn collapse_impl(
         .map_err(window_error)?
         .ok_or_else(|| "no monitor is available for the floating bubble".to_owned())?;
     let scale = monitor.scale_factor();
+    let bubble_scale = settings.get()?.floating_bubble_scale;
     let policy = PlatformPolicy::current();
     let area = collapsed_area(&monitor, policy);
-    let (bubble_width, bubble_height) = physical_bubble_size(state.collapsed_logical_width, scale);
+    let (bubble_width, bubble_height) =
+        physical_bubble_size(state.collapsed_logical_width, bubble_scale, scale);
     let target = collapsed_bounds(
         current,
         area,
@@ -455,11 +469,12 @@ pub fn set_collapsed_width(
     controller: &FloatingBubbleController,
     width: f64,
 ) -> Result<FloatingBubblePayload, String> {
+    let bubble_scale = settings.get()?.floating_bubble_scale;
     let mut state = controller
         .state
         .lock()
         .map_err(|_| "floating bubble state lock was poisoned".to_owned())?;
-    state.collapsed_logical_width = normalized_logical_width(width);
+    state.collapsed_logical_width = normalized_logical_width(width, bubble_scale);
     if !state.collapsed {
         return payload(settings, &state);
     }
@@ -473,8 +488,11 @@ pub fn set_collapsed_width(
         .ok_or_else(|| "no monitor is available while resizing the floating bubble".to_owned())?;
     let policy = PlatformPolicy::current();
     let area = collapsed_area(&monitor, policy);
-    let (bubble_width, bubble_height) =
-        physical_bubble_size(state.collapsed_logical_width, monitor.scale_factor());
+    let (bubble_width, bubble_height) = physical_bubble_size(
+        state.collapsed_logical_width,
+        bubble_scale,
+        monitor.scale_factor(),
+    );
     let side = state.side.unwrap_or_else(|| side_for(current, area));
     let target = resized_collapsed_bounds(
         current,
@@ -495,6 +513,7 @@ pub fn move_to_cursor(
     controller: &FloatingBubbleController,
     offset: BubbleDragOffset,
 ) -> Result<FloatingBubblePayload, String> {
+    let bubble_scale = settings.get()?.floating_bubble_scale;
     let mut state = controller
         .state
         .lock()
@@ -510,8 +529,11 @@ pub fn move_to_cursor(
         .ok_or_else(|| "no monitor is available while moving the floating bubble".to_owned())?;
     let policy = PlatformPolicy::current();
     let area = collapsed_area(&monitor, policy);
-    let (bubble_width, bubble_height) =
-        physical_bubble_size(state.collapsed_logical_width, monitor.scale_factor());
+    let (bubble_width, bubble_height) = physical_bubble_size(
+        state.collapsed_logical_width,
+        bubble_scale,
+        monitor.scale_factor(),
+    );
     let target = dragged_bounds(
         (cursor.x, cursor.y),
         area,
@@ -635,10 +657,10 @@ mod tests {
     }
 
     #[test]
-    fn bubble_size_tracks_fractional_windows_scale_factors() {
-        assert_eq!(physical_bubble_size(34.0, 1.0), (34, 34));
-        assert_eq!(physical_bubble_size(96.0, 1.25), (120, 43));
-        assert_eq!(physical_bubble_size(96.0, 1.5), (144, 51));
+    fn bubble_size_tracks_user_scale_and_fractional_monitor_dpi() {
+        assert_eq!(physical_bubble_size(34.0, 1.0, 1.0), (34, 34));
+        assert_eq!(physical_bubble_size(96.0, 1.0, 1.25), (120, 43));
+        assert_eq!(physical_bubble_size(115.2, 1.2, 1.25), (144, 51));
     }
 
     #[test]
@@ -649,7 +671,7 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        let (bubble_width, bubble_height) = physical_bubble_size(96.0, 1.5);
+        let (bubble_width, bubble_height) = physical_bubble_size(96.0, 1.0, 1.5);
         let result = dragged_bounds(
             (3350.0, 1000.0),
             full,
@@ -665,11 +687,13 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_width_is_clamped_and_keeps_the_docked_edge_when_resized() {
-        assert_eq!(normalized_logical_width(10.0), 34.0);
-        assert_eq!(normalized_logical_width(500.0), 240.0);
+    fn collapsed_resize_preserves_the_users_edge_gap() {
+        assert_eq!(normalized_logical_width(10.0, 1.0), 34.0);
+        assert_eq!(normalized_logical_width(500.0, 1.0), 240.0);
+        assert_eq!(normalized_logical_width(10.0, 1.5), 51.0);
+        assert_eq!(normalized_logical_width(500.0, 1.5), 360.0);
         let current = Bounds {
-            x: 1406,
+            x: 1386,
             y: 508,
             width: 34,
             height: 34,
@@ -682,10 +706,11 @@ mod tests {
             FloatingBubbleSide::Right,
             COLLAPSED_Y_MARGIN,
         );
-        assert_eq!(resized.x, 1320);
+        assert_eq!(resized.x, 1300);
         assert_eq!(resized.y, 508);
         assert_eq!(resized.width, 120);
         assert_eq!(resized.height, 34);
+        assert_eq!(1440 - (resized.x + resized.width as i32), 20);
     }
 
     #[test]

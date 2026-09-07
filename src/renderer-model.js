@@ -205,7 +205,7 @@ export function formatQuotaCount(window, showUsed = false) {
   const used = optionalFinite(window?.used);
   const limit = optionalFinite(window?.limit);
   if (used === null || limit === null || limit <= 0) return '';
-  const trim = (value) => Number(Math.max(0, value).toFixed(2)).toString();
+  const trim = (value) => Number(Math.max(0, value).toFixed(1)).toString();
   return `${trim(showUsed ? used : limit - used)}/${trim(limit)}`;
 }
 

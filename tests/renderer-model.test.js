@@ -76,7 +76,7 @@ test('quota rows keep the supported-provider product surface and additional lane
   assert.equal(rows[0].windows[3].currency, 'CREDITS');
   assert.equal(rows[0].windows[3].used, 432.762320022503);
   assert.equal(rows[0].windows[3].source, 'codex-app-server');
-  assert.equal(formatQuotaCount(rows[0].windows[3]), '317.24/750');
+  assert.equal(formatQuotaCount(rows[0].windows[3]), '317.2/750');
   assert.equal(rows[0].resetCredits.availableCount, 1);
   assert.equal(rows[1].status, 'unavailable');
   assert.equal(rows[2].status, 'unavailable');

@@ -30,6 +30,20 @@ test('period tabs stay truly centered and clipped away from window controls', ()
   assert.match(v2Css, /\.window-control-region:hover \.window-actions/);
 });
 
+test('bubble size is a persisted 70 to 150 percent control with scaled bubble CSS', () => {
+  assert.match(main, /id="floatingBubbleScaleInput" type="range" min="70" max="150" step="10"/);
+  assert.match(main, /floatingBubbleScale:\s*normalizeBubbleScale/);
+  assert.match(main, /--bubble-scale/);
+  assert.match(v2Css, /calc\(34px \* var\(--bubble-scale, 1\)\)/);
+});
+
+test('home quota balances use full credit labels and one-decimal money formatting', () => {
+  assert.match(main, /t\('quota\.credits', \{ value: count \}\)/);
+  assert.doesNotMatch(main, /\$\{count\} cr/);
+  assert.match(main, /maximumFractionDigits:\s*1/);
+  assert.match(main, /home-limit-window-wide/);
+});
+
 test('fresh expanded window is large enough for the complete home surface', () => {
   const mainWindow = tauriConfig.app.windows.find((window) => window.label === 'main');
   assert.equal(mainWindow.width, 380);

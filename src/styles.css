@@ -25,8 +25,47 @@ html, body, #app {
   gap: 5px;
 }
 
-.limit-window-wide {
+.limit-window-wide,
+.home-limit-window-wide {
   grid-column: 1 / -1;
+}
+
+.floating-bubble-content {
+  gap: calc(6px * var(--bubble-scale, 1));
+  min-width: calc(34px * var(--bubble-scale, 1));
+  padding: 0 calc(8px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-sigma {
+  font-size: calc(13px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-provider-icon {
+  width: calc(15px * var(--bubble-scale, 1));
+  height: calc(15px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-limit-entry {
+  gap: calc(4px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-limit-text,
+.floating-bubble-content .bubble-separator {
+  font-size: calc(11px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-bars-stack {
+  gap: calc(4px * var(--bubble-scale, 1));
+  width: calc(34px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content .bubble-bar-track {
+  width: calc(34px * var(--bubble-scale, 1));
+  height: calc(4px * var(--bubble-scale, 1));
+}
+
+.floating-bubble-content.floating-bubble-measure {
+  height: calc(34px * var(--bubble-scale, 1));
 }
 
 .icon-button.active {

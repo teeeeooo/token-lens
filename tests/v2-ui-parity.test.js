@@ -44,6 +44,11 @@ test('home quota balances use full credit labels and one-decimal money formattin
   assert.match(main, /home-limit-window-wide/);
 });
 
+test('home quota warning color is provider-neutral yellow', () => {
+  assert.match(baseCss, /\.home-limit-value-low\s*\{[^}]*color:\s*var\(--yellow\);/s);
+  assert.doesNotMatch(main, /--home-limit-accent/);
+});
+
 test('fresh expanded window is large enough for the complete home surface', () => {
   const mainWindow = tauriConfig.app.windows.find((window) => window.label === 'main');
   assert.equal(mainWindow.width, 380);

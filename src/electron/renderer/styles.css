@@ -2949,7 +2949,7 @@ html.is-windows .settings-panel select option {
   line-height: 1.1;
 }
 .home-limit-value-low {
-  color: var(--home-limit-accent, var(--yellow));
+  color: var(--yellow);
 }
 .home-limit-value-critical {
   position: relative;

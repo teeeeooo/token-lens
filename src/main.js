@@ -681,7 +681,6 @@ function renderHomeLimits() {
       if (window.remainingPercent != null && window.remainingPercent < 20) value.classList.add('home-limit-value-critical');
       else if (window.remainingPercent != null && window.remainingPercent < 50) {
         value.classList.add('home-limit-value-low');
-        value.style.setProperty('--home-limit-accent', row.color);
       }
       line.append(label, value);
       item.append(line);

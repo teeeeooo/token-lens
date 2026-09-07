@@ -352,7 +352,7 @@ fn capture_usage_inner(binary: &Path, probe: &Path, session_id: &str) -> Result<
         let clean = String::from_utf8_lossy(&strip_ansi_escapes::strip(&output)).into_owned();
         let normalized = normalized_scan(&clean);
         for (needle, keys) in prompt_responses() {
-            if normalized.contains(needle) && !sent_prompts.iter().any(|sent| *sent == needle) {
+            if normalized.contains(needle) && !sent_prompts.contains(&needle) {
                 let _ = writer.write_all(keys.as_bytes());
                 let _ = writer.flush();
                 sent_prompts.push(needle);

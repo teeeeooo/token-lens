@@ -97,12 +97,11 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
                     record_incident(
                         RecoveryTrigger::Unauthorized,
                         "recovered_credential_reread",
-                        true,
-                        direct.credential_changed,
-                        false,
-                        None,
-                        None,
-                        false,
+                        IncidentRecovery {
+                            credential_reread: true,
+                            credential_changed: direct.credential_changed,
+                            ..IncidentRecovery::default()
+                        },
                     );
                 }
                 return report;
@@ -138,12 +137,13 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             record_incident(
                 RecoveryTrigger::RateLimited,
                 presentation.result_label(),
-                direct.credential_reread,
-                direct.credential_changed,
-                false,
-                None,
-                Some(retry_after_ms),
-                presentation.last_good_used(),
+                IncidentRecovery {
+                    credential_reread: direct.credential_reread,
+                    credential_changed: direct.credential_changed,
+                    retry_after_ms: Some(retry_after_ms),
+                    last_good_used: presentation.last_good_used(),
+                    ..IncidentRecovery::default()
+                },
             );
             report
         }
@@ -302,12 +302,12 @@ fn recover_with_cli(
                             record_incident(
                                 trigger,
                                 "recovered_api_after_cli",
-                                credential_reread,
-                                credential_changed,
-                                true,
-                                None,
-                                None,
-                                false,
+                                IncidentRecovery {
+                                    credential_reread,
+                                    credential_changed,
+                                    cli_fallback: true,
+                                    ..IncidentRecovery::default()
+                                },
                             );
                             return report;
                         }
@@ -321,12 +321,14 @@ fn recover_with_cli(
                                 record_incident(
                                     RecoveryTrigger::RateLimited,
                                     "recovered_cli",
-                                    true,
-                                    Some(true),
-                                    true,
-                                    Some("POST_CLI_RATE_LIMITED"),
-                                    Some(retry_after_ms),
-                                    false,
+                                    IncidentRecovery {
+                                        credential_reread: true,
+                                        credential_changed: Some(true),
+                                        cli_fallback: true,
+                                        recovery_code: Some("POST_CLI_RATE_LIMITED"),
+                                        retry_after_ms: Some(retry_after_ms),
+                                        ..IncidentRecovery::default()
+                                    },
                                 );
                                 return report;
                             }
@@ -343,12 +345,14 @@ fn recover_with_cli(
                         record_incident(
                             RecoveryTrigger::RateLimited,
                             presentation.result_label(),
-                            true,
-                            Some(true),
-                            true,
-                            recovery_code,
-                            Some(retry_after_ms),
-                            presentation.last_good_used(),
+                            IncidentRecovery {
+                                credential_reread: true,
+                                credential_changed: Some(true),
+                                cli_fallback: true,
+                                recovery_code,
+                                retry_after_ms: Some(retry_after_ms),
+                                last_good_used: presentation.last_good_used(),
+                            },
                         );
                         return report;
                     }
@@ -364,12 +368,12 @@ fn recover_with_cli(
             record_incident(
                 trigger,
                 "recovered_cli",
-                credential_reread,
-                credential_changed,
-                true,
-                None,
-                None,
-                false,
+                IncidentRecovery {
+                    credential_reread,
+                    credential_changed,
+                    cli_fallback: true,
+                    ..IncidentRecovery::default()
+                },
             );
         }
         Ok(_) => {
@@ -377,12 +381,14 @@ fn recover_with_cli(
             record_incident(
                 trigger,
                 presentation.result_label(),
-                credential_reread,
-                credential_changed,
-                true,
-                Some("CLI_NO_QUOTA_WINDOWS"),
-                None,
-                presentation.last_good_used(),
+                IncidentRecovery {
+                    credential_reread,
+                    credential_changed,
+                    cli_fallback: true,
+                    recovery_code: Some("CLI_NO_QUOTA_WINDOWS"),
+                    last_good_used: presentation.last_good_used(),
+                    ..IncidentRecovery::default()
+                },
             );
         }
         Err(error) => {
@@ -395,12 +401,14 @@ fn recover_with_cli(
             record_incident(
                 trigger,
                 presentation.result_label(),
-                credential_reread,
-                credential_changed,
-                true,
-                Some(code),
-                None,
-                presentation.last_good_used(),
+                IncidentRecovery {
+                    credential_reread,
+                    credential_changed,
+                    cli_fallback: true,
+                    recovery_code: Some(code),
+                    last_good_used: presentation.last_good_used(),
+                    ..IncidentRecovery::default()
+                },
             );
         }
     }
@@ -636,16 +644,17 @@ fn window_not_expired(window: &QuotaWindow, now: u64) -> bool {
         .unwrap_or(true)
 }
 
-fn record_incident(
-    trigger: RecoveryTrigger,
-    result: &'static str,
+#[derive(Debug, Default)]
+struct IncidentRecovery {
     credential_reread: bool,
     credential_changed: Option<bool>,
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
     retry_after_ms: Option<u64>,
     last_good_used: bool,
-) {
+}
+
+fn record_incident(trigger: RecoveryTrigger, result: &'static str, recovery: IncidentRecovery) {
     let (category, code, stage) = trigger.log_fields();
     provider_error_log::record(ProviderIncident {
         provider: "claude",
@@ -653,13 +662,13 @@ fn record_incident(
         code,
         stage,
         result,
-        credential_reread: credential_reread.then_some(true),
-        credential_changed,
-        cli_fallback: cli_fallback.then_some(true),
-        recovery_code,
-        retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
-        cooldown_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
-        last_good_used: last_good_used.then_some(true),
+        credential_reread: recovery.credential_reread.then_some(true),
+        credential_changed: recovery.credential_changed,
+        cli_fallback: recovery.cli_fallback.then_some(true),
+        recovery_code: recovery.recovery_code,
+        retry_after_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
+        cooldown_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
+        last_good_used: recovery.last_good_used.then_some(true),
     });
 }
 

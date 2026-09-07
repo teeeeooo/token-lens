@@ -30,9 +30,19 @@ pub enum WindowsBackdrop {
     Acrylic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: f64,
+    pub height: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
+    pub window_bounds: Option<WindowBounds>,
     pub show_tray_icon: bool,
     pub floating_bubble_enabled: bool,
     pub floating_bubble_trigger: FloatingBubbleTrigger,
@@ -47,6 +57,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            window_bounds: None,
             show_tray_icon: true,
             floating_bubble_enabled: true,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
@@ -95,6 +106,18 @@ impl SettingsStore {
             .lock()
             .map(|value| value.clone())
             .map_err(|_| "settings state lock was poisoned".to_owned())
+    }
+
+    pub fn update_window_bounds(&self, bounds: WindowBounds) -> Result<(), String> {
+        let mut value = self
+            .value
+            .lock()
+            .map_err(|_| "settings state lock was poisoned".to_owned())?;
+        if value.window_bounds == Some(bounds) {
+            return Ok(());
+        }
+        value.window_bounds = Some(bounds);
+        write_settings(&self.path, &value)
     }
 
     pub fn update(&self, patch: SettingsPatch) -> Result<AppSettings, String> {
@@ -178,6 +201,7 @@ mod tests {
     #[test]
     fn defaults_keep_retained_shell_and_appearance_policy() {
         let settings = AppSettings::default();
+        assert_eq!(settings.window_bounds, None);
         assert!(settings.show_tray_icon);
         assert!(settings.floating_bubble_enabled);
         assert_eq!(
@@ -270,10 +294,27 @@ mod tests {
                 ..SettingsPatch::default()
             })
             .expect("second settings update should replace the same file");
+        store
+            .update_window_bounds(WindowBounds {
+                x: 120,
+                y: 80,
+                width: 420.0,
+                height: 760.0,
+            })
+            .expect("window bounds should persist alongside user settings");
         let reloaded = SettingsStore::load(dir.clone()).expect("settings should reload");
         let value = reloaded.get().expect("settings should be readable");
         assert!(value.floating_bubble_enabled);
         assert_eq!(value.floating_bubble_trigger, FloatingBubbleTrigger::Hover);
+        assert_eq!(
+            value.window_bounds,
+            Some(WindowBounds {
+                x: 120,
+                y: 80,
+                width: 420.0,
+                height: 760.0,
+            })
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

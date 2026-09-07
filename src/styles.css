@@ -45,10 +45,10 @@ html, body, #app {
   padding: 0 2px 2px;
 }
 
-/* v2 titlebar: period controls and window actions own separate columns. */
+/* v2 titlebar: equal side columns keep the period selector truly centered. */
 .titlebar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 126px 92px;
+  grid-template-columns: minmax(0, 1fr) 126px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 42px;
@@ -67,6 +67,7 @@ html, body, #app {
   inset: 0;
   width: 100%;
   height: 30px;
+  overflow: hidden;
 }
 
 .period-controls .period-menu {
@@ -106,16 +107,19 @@ html, body, #app {
   transition-delay: 0ms;
 }
 
-@media (max-width: 280px) {
+@media (max-width: 360px) {
   .titlebar {
-    grid-template-columns: minmax(0, 1fr) 104px 80px;
+    grid-template-columns: minmax(0, 1fr) 112px minmax(0, 1fr);
     gap: 6px;
   }
-  .period-controls { width: 104px; }
+  .period-controls { width: 112px; }
   .window-control-region,
-  .window-control-region .window-actions { width: 80px; }
+  .window-control-region .window-actions { width: 74px; }
   .window-control-region .window-actions { gap: 4px; }
-  .window-control-region .window-actions .icon-button { width: 24px; flex-basis: 24px; }
+  .window-control-region .window-actions .icon-button { width: 22px; flex-basis: 22px; }
+}
+
+@media (max-width: 320px) {
   .app-title-text { display: none; }
   .app-title-mark { display: inline; }
 }

@@ -1,5 +1,6 @@
 use crate::appearance;
 use crate::settings::SettingsStore;
+use crate::window_state;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
@@ -7,8 +8,6 @@ use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow}
 const BUBBLE_LOGICAL_HEIGHT: f64 = 34.0;
 const BUBBLE_LOGICAL_MIN_WIDTH: f64 = 34.0;
 const BUBBLE_LOGICAL_MAX_WIDTH: f64 = 240.0;
-const EXPANDED_MIN_WIDTH: f64 = 240.0;
-const EXPANDED_MIN_HEIGHT: f64 = 140.0;
 const EXPANDED_MARGIN: i32 = 8;
 const COLLAPSED_Y_MARGIN: i32 = 8;
 
@@ -373,17 +372,7 @@ fn apply_collapsed_window(window: &WebviewWindow, target: Bounds) -> Result<(), 
 }
 
 fn restore_size_constraints(window: &WebviewWindow) -> Result<(), String> {
-    window
-        .set_min_size(Some(LogicalSize::new(
-            EXPANDED_MIN_WIDTH,
-            EXPANDED_MIN_HEIGHT,
-        )))
-        .map_err(window_error)?;
-    window
-        .set_max_size::<PhysicalSize<u32>>(None)
-        .map_err(window_error)?;
-    window.set_resizable(true).map_err(window_error)?;
-    Ok(())
+    window_state::restore_expanded_constraints(window)
 }
 pub fn expand(
     window: &WebviewWindow,

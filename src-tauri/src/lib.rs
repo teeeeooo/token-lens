@@ -15,6 +15,7 @@ mod session_metadata;
 mod settings;
 mod tokscale;
 mod tray;
+mod window_state;
 
 use floating_bubble::FloatingBubbleController;
 use settings::SettingsStore;
@@ -37,18 +38,29 @@ pub fn run() {
             })?;
             let settings_store = SettingsStore::load(config_dir)?;
             let initial_settings = settings_store.get()?;
+            app.manage(settings_store);
+            app.manage(window_state::WindowBoundsController::default());
+            app.manage(FloatingBubbleController::default());
             if let Some(window) = app.get_webview_window("main") {
+                window_state::restore_initial(&window, &initial_settings)?;
                 appearance::apply_to_window(&window, &initial_settings, false)?;
             }
-            app.manage(settings_store);
-            app.manage(FloatingBubbleController::default());
             tray::initialize(app.handle(), &initial_settings)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    window_state::schedule_persist(webview);
+                }
+            }
+            tauri::WindowEvent::CloseRequested { .. } => {
+                if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
+                    let _ = window_state::persist_now(&webview);
+                }
                 window.app_handle().exit(0);
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_contract_version,

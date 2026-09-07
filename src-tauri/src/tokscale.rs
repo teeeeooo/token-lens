@@ -605,6 +605,7 @@ fn normalize_quota_provider(raw: RawQuotaProvider) -> Option<QuotaProvider> {
         provider,
         plan: raw.plan,
         account_email: raw.email,
+        diagnostic: None,
         windows,
         reset_credits: raw.reset_credits.map(normalize_reset_credits),
         credit_status: raw.credit_status.map(normalize_credit_status),

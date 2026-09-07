@@ -174,6 +174,7 @@ export function quotaRows(limits) {
       plan: String(provider?.planLabel || ''),
       accountEmail: String(provider?.accountEmail || '').trim(),
       status: provider?.status || 'unavailable',
+      diagnostic: String(provider?.diagnostic || '').trim(),
       color: clientColor(id),
       iconClass: iconClassForClient(id),
       windows: (provider?.windows || []).map((window) => ({

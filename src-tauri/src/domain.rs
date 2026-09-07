@@ -230,6 +230,8 @@ pub struct QuotaProvider {
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
     pub windows: Vec<QuotaWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_credits: Option<ResetCredits>,

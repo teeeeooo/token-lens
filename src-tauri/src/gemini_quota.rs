@@ -63,6 +63,10 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     }
 
     let Some(credential) = read_valid_credential(home) else {
+        set_diagnostic(
+            &mut report,
+            "Gemini credential: no readable non-expired access token",
+        );
         return report;
     };
     let requested_project = configured_project();
@@ -71,19 +75,36 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         requested_project.as_deref(),
     ) {
         Ok(load) => load,
-        Err(_) => return report,
+        Err(error) => {
+            set_diagnostic(
+                &mut report,
+                format!("Gemini loadCodeAssist failed: {error}"),
+            );
+            return report;
+        }
     };
     let Some(project_id) = load.project_id.as_deref() else {
         // Token Lens is a monitor. Never call onboardUser to create/attach a project.
+        set_diagnostic(&mut report, "Gemini loadCodeAssist returned no project");
         return report;
     };
     let buckets =
         match google_code_assist::retrieve_user_quota(&credential.access_token, project_id) {
             Ok(buckets) => buckets,
-            Err(_) => return report,
+            Err(error) => {
+                set_diagnostic(
+                    &mut report,
+                    format!("Gemini retrieveUserQuota failed: {error}"),
+                );
+                return report;
+            }
         };
     let windows = normalize_buckets(buckets);
     if windows.is_empty() {
+        set_diagnostic(
+            &mut report,
+            "Gemini retrieveUserQuota returned no model buckets",
+        );
         return report;
     }
 
@@ -91,6 +112,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         provider: SupportedProvider::Gemini,
         plan: normalize_plan(load),
         account_email: read_active_account(home),
+        diagnostic: None,
         windows,
         reset_credits: None,
         credit_status: None,
@@ -110,6 +132,28 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
 
 fn provider_has_usable_quota(provider: &QuotaProvider) -> bool {
     !provider.windows.is_empty()
+}
+
+fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
+    let detail = detail.into();
+    if let Some(provider) = report
+        .providers
+        .iter_mut()
+        .find(|provider| provider.provider == SupportedProvider::Gemini)
+    {
+        provider.diagnostic = Some(detail);
+        return;
+    }
+    report.providers.push(QuotaProvider {
+        provider: SupportedProvider::Gemini,
+        plan: None,
+        account_email: None,
+        diagnostic: Some(detail),
+        windows: Vec::new(),
+        reset_credits: None,
+        credit_status: None,
+        spend_control: None,
+    });
 }
 
 struct ValidCredential {
@@ -403,6 +447,7 @@ mod tests {
             provider: SupportedProvider::Gemini,
             plan: Some("Future".into()),
             account_email: None,
+            diagnostic: None,
             windows: vec![QuotaWindow {
                 kind: QuotaWindowKind::Daily,
                 label: "Daily".into(),

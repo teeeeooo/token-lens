@@ -26,13 +26,19 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         return report;
     }
     let Some(access_token) = read_access_token(home) else {
+        set_diagnostic(&mut report, "Claude credential: no readable access token");
         return report;
     };
-    let Ok(usage) = fetch_usage(&access_token) else {
-        return report;
+    let usage = match fetch_usage(&access_token) {
+        Ok(usage) => usage,
+        Err(error) => {
+            set_diagnostic(&mut report, error);
+            return report;
+        }
     };
     let windows = windows_from_usage(&usage);
     if windows.is_empty() {
+        set_diagnostic(&mut report, "Claude usage API: no supported quota windows");
         return report;
     }
 
@@ -42,11 +48,13 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         .find(|provider| provider.provider == SupportedProvider::Claude)
     {
         merge_windows(provider, windows);
+        provider.diagnostic = None;
     } else {
         report.providers.push(QuotaProvider {
             provider: SupportedProvider::Claude,
             plan: None,
             account_email: None,
+            diagnostic: None,
             windows,
             reset_credits: None,
             credit_status: None,
@@ -54,6 +62,28 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         });
     }
     report
+}
+
+fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
+    let detail = detail.into();
+    if let Some(provider) = report
+        .providers
+        .iter_mut()
+        .find(|provider| provider.provider == SupportedProvider::Claude)
+    {
+        provider.diagnostic = Some(detail);
+        return;
+    }
+    report.providers.push(QuotaProvider {
+        provider: SupportedProvider::Claude,
+        plan: None,
+        account_email: None,
+        diagnostic: Some(detail),
+        windows: Vec::new(),
+        reset_credits: None,
+        credit_status: None,
+        spend_control: None,
+    });
 }
 
 fn provider_needs_enrichment(provider: &QuotaProvider) -> bool {
@@ -117,7 +147,12 @@ fn fetch_usage(access_token: &str) -> Result<Value, String> {
         .with_timeout(HTTP_TIMEOUT_SECONDS)
         .with_follow_redirects(false)
         .send()
-        .map_err(|_| "Claude usage request failed".to_owned())?;
+        .map_err(|error| {
+            format!(
+                "Claude usage request failed ({})",
+                crate::http_diagnostic::transport_category(&error)
+            )
+        })?;
     if !(200..300).contains(&response.status_code) {
         return Err(format!(
             "Claude usage returned HTTP {}",

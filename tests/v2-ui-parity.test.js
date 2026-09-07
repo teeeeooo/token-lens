@@ -23,6 +23,10 @@ test('period tabs stay truly centered and clipped away from window controls', ()
   assert.doesNotMatch(main, /class="actions-hotspot"/);
   assert.match(v2Css, /grid-template-columns:\s*minmax\(0, 1fr\) 126px minmax\(0, 1fr\)/);
   assert.match(v2Css, /\.period-controls \.tabs \{[^}]*overflow:\s*hidden;/s);
+  assert.match(v2Css, /\.period-controls \.tab-indicator \{[^}]*left:\s*var\(--period-indicator-left\);[^}]*width:\s*var\(--period-indicator-width\);[^}]*transform:\s*none;/s);
+  assert.match(main, /activeTab\.offsetLeft \+ inset/);
+  assert.match(main, /activeTab\.offsetWidth - inset \* 2/);
+  assert.match(main, /window\.addEventListener\('resize', syncPeriodIndicator\)/);
   assert.match(v2Css, /\.window-control-region:hover \.window-actions/);
 });
 

@@ -9,19 +9,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::time::{sleep, timeout};
 
 const CODEX_APP_SERVER_SOURCE: &str = "codex-app-server";
 const CODEX_OAUTH_SOURCE: &str = "codex-oauth";
 const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
-const CODEX_HTTP_TIMEOUT_SECONDS: u64 = 12;
+const CODEX_HTTP_TIMEOUT_SECONDS: u64 = 30;
 const RPC_TIMEOUT: Duration = Duration::from_secs(20);
 const EMPTY_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(300);
 const MAX_RPC_LINE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_APP_SERVER_STDERR_BYTES: usize = 16 * 1024;
+const CODEX_APP_SERVER_ARGS: [&str; 5] = ["-s", "read-only", "-a", "never", "app-server"];
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimitWindow {
     #[serde(alias = "used_percent")]
@@ -54,18 +56,18 @@ struct RateLimitResponse {
     rate_limits_by_limit_id: Option<HashMap<String, RateLimitSnapshot>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IndividualLimit {
     limit: NumberLike,
     used: NumberLike,
-    #[serde(alias = "remaining_percent")]
-    remaining_percent: f64,
-    #[serde(alias = "resets_at")]
-    resets_at: i64,
+    #[serde(default, alias = "remaining_percent")]
+    remaining_percent: Option<NumberLike>,
+    #[serde(default, alias = "resets_at")]
+    resets_at: Option<Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 enum NumberLike {
     Text(String),
@@ -178,28 +180,42 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
+    let mut diagnostics = Vec::new();
     if provider_needs_base_quota(&report.providers[index]) {
         let oauth_home = home.to_path_buf();
-        if let Ok(Ok(snapshot)) =
-            tokio::task::spawn_blocking(move || read_oauth_usage_snapshot(&oauth_home)).await
-        {
-            if selected_workspace_id(home) == expected_workspace_id {
-                apply_base_rate_limits(&mut report.providers[index], &snapshot, CODEX_OAUTH_SOURCE);
-                if report.providers[index].plan.is_none() {
-                    report.providers[index].plan = snapshot.rate_plan;
+        match tokio::task::spawn_blocking(move || read_oauth_usage_snapshot(&oauth_home)).await {
+            Ok(Ok(snapshot)) => {
+                if selected_workspace_id(home) == expected_workspace_id {
+                    apply_base_rate_limits(
+                        &mut report.providers[index],
+                        &snapshot,
+                        CODEX_OAUTH_SOURCE,
+                    );
+                    if report.providers[index].plan.is_none() {
+                        report.providers[index].plan = snapshot.rate_plan;
+                    }
+                } else {
+                    diagnostics.push("Codex OAuth: workspace changed during refresh".to_owned());
                 }
             }
+            Ok(Err(error)) => diagnostics.push(error),
+            Err(_) => diagnostics.push("Codex OAuth quota task failed".to_owned()),
         }
     }
 
     if !provider_needs_enrichment(&report.providers[index]) {
+        report.providers[index].diagnostic = None;
         return report;
     }
 
     let expected_email = report.providers[index].account_email.clone();
     let snapshot = match read_app_server_snapshot().await {
         Ok(snapshot) => snapshot,
-        Err(_) => return report,
+        Err(error) => {
+            diagnostics.push(error);
+            report.providers[index].diagnostic = Some(diagnostics.join(" · "));
+            return report;
+        }
     };
 
     let after_workspace = selected_workspace_id(home);
@@ -210,6 +226,8 @@ pub(crate) async fn enrich_quota_report(
         expected_email.as_deref(),
         snapshot.account_email.as_deref(),
     ) {
+        diagnostics.push("Codex App Server: account/workspace mismatch".to_owned());
+        report.providers[index].diagnostic = Some(diagnostics.join(" · "));
         return report;
     }
 
@@ -227,9 +245,19 @@ pub(crate) async fn enrich_quota_report(
         .is_some_and(business_like_plan);
     if business_plan {
         if let Some(individual_limit) = snapshot.individual_limit.as_ref() {
-            apply_individual_limit(&mut report.providers[index], individual_limit);
+            if !apply_individual_limit(&mut report.providers[index], individual_limit) {
+                diagnostics
+                    .push("Codex App Server: Business monthly limit was unusable".to_owned());
+            }
+        } else if provider_needs_individual_limit(&report.providers[index]) {
+            diagnostics.push("Codex App Server: Business monthly limit was absent".to_owned());
         }
     }
+    report.providers[index].diagnostic = if diagnostics.is_empty() {
+        None
+    } else {
+        Some(diagnostics.join(" · "))
+    };
     report
 }
 
@@ -360,6 +388,8 @@ fn rpc_reset_to_rfc3339(value: &Value) -> Option<String> {
             let value = value.trim();
             if value.is_empty() {
                 None
+            } else if let Ok(epoch) = value.parse::<i64>() {
+                epoch_seconds_to_rfc3339(epoch)
             } else {
                 Some(value.to_owned())
             }
@@ -380,7 +410,12 @@ fn apply_individual_limit(provider: &mut QuotaProvider, raw: &IndividualLimit) -
         return false;
     }
 
-    let remaining_percent = raw.remaining_percent.clamp(0.0, 100.0);
+    let remaining_percent = raw
+        .remaining_percent
+        .as_ref()
+        .and_then(NumberLike::as_f64)
+        .unwrap_or_else(|| ((limit - used).max(0.0) / limit * 100.0).clamp(0.0, 100.0))
+        .clamp(0.0, 100.0);
     let used_percent = (100.0 - remaining_percent).clamp(0.0, 100.0);
     let window = QuotaWindow {
         kind: QuotaWindowKind::Billing,
@@ -393,7 +428,7 @@ fn apply_individual_limit(provider: &mut QuotaProvider, raw: &IndividualLimit) -
         used_percent: Some(used_percent),
         remaining_percent: Some(remaining_percent),
         remaining_label: None,
-        resets_at: epoch_seconds_to_rfc3339(raw.resets_at),
+        resets_at: raw.resets_at.as_ref().and_then(rpc_reset_to_rfc3339),
         currency: Some("CREDITS".to_owned()),
         show_meter: true,
         source: CODEX_APP_SERVER_SOURCE,
@@ -449,9 +484,12 @@ fn read_oauth_usage_snapshot(home: &Path) -> Result<AppServerSnapshot, String> {
     if auth.fedramp {
         request = request.with_header("x-openai-fedramp", "true");
     }
-    let response = request
-        .send()
-        .map_err(|_| "Codex OAuth usage request failed".to_owned())?;
+    let response = request.send().map_err(|error| {
+        format!(
+            "Codex OAuth usage request failed ({})",
+            crate::http_diagnostic::transport_category(&error)
+        )
+    })?;
     if !(200..300).contains(&response.status_code) {
         return Err(format!(
             "Codex OAuth usage returned HTTP {}",
@@ -681,6 +719,10 @@ async fn read_app_server_snapshot() -> Result<AppServerSnapshot, String> {
 
 async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapshot, String> {
     let mut child = spawn_app_server(command)?;
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_app_server_stderr_hint(stderr)));
     let mut stdin = child
         .stdin
         .take()
@@ -708,10 +750,21 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
         .await?;
         rpc_notify(&mut stdin, "initialized", Some(json!({}))).await?;
 
-        let account = rpc_call::<AccountReadResponse>(
+        // Preserve the proven v1 order: quota first, account identity second. The
+        // Business monthly limit can be available before account/read settles.
+        let mut rates = rpc_call::<RateLimitResponse>(
             &mut stdin,
             &mut reader,
             2,
+            "account/rateLimits/read",
+            None,
+        )
+        .await?;
+
+        let account = rpc_call::<AccountReadResponse>(
+            &mut stdin,
+            &mut reader,
+            3,
             "account/read",
             Some(json!({ "refreshToken": false })),
         )
@@ -719,16 +772,7 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
         .ok()
         .and_then(|response| response.account);
 
-        let mut rates = rpc_call::<RateLimitResponse>(
-            &mut stdin,
-            &mut reader,
-            3,
-            "account/rateLimits/read",
-            None,
-        )
-        .await?;
-
-        let mut selected = canonical_rate_snapshot(&rates).cloned().unwrap_or_default();
+        let mut selected = canonical_rate_snapshot(&rates).unwrap_or_default();
         let plan_hint = selected.plan_type.as_deref().or(account
             .as_ref()
             .and_then(|value| value.plan_type.as_deref()));
@@ -747,7 +791,7 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
             .await
             {
                 rates = retry;
-                selected = canonical_rate_snapshot(&rates).cloned().unwrap_or_default();
+                selected = canonical_rate_snapshot(&rates).unwrap_or_default();
             }
         }
 
@@ -765,41 +809,178 @@ async fn read_app_server_with_command(command: &Path) -> Result<AppServerSnapsho
     drop(stdin);
     drop(reader);
     terminate_child(&mut child).await;
-    result
+    let hint = match stderr_task {
+        Some(task) => task.await.ok().flatten(),
+        None => None,
+    };
+    match result {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => Err(match hint {
+            Some(hint) => format!("{error} · {hint}"),
+            None => error,
+        }),
+    }
 }
 
-fn canonical_rate_snapshot(response: &RateLimitResponse) -> Option<&RateLimitSnapshot> {
-    response
-        .rate_limits_by_limit_id
-        .as_ref()
-        .and_then(|by_id| {
-            by_id.get("codex").or_else(|| {
-                by_id.values().find(|snapshot| {
-                    snapshot
-                        .limit_id
-                        .as_deref()
-                        .is_some_and(|value| value.eq_ignore_ascii_case("codex"))
-                })
+async fn read_app_server_stderr_hint(mut stderr: ChildStderr) -> Option<&'static str> {
+    let mut sample = Vec::with_capacity(MAX_APP_SERVER_STDERR_BYTES);
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let bytes = stderr.read(&mut buffer).await.ok()?;
+        if bytes == 0 {
+            break;
+        }
+        if sample.len() < MAX_APP_SERVER_STDERR_BYTES {
+            let remaining = MAX_APP_SERVER_STDERR_BYTES - sample.len();
+            sample.extend_from_slice(&buffer[..bytes.min(remaining)]);
+        }
+    }
+    classify_app_server_stderr(&String::from_utf8_lossy(&sample))
+}
+
+fn classify_app_server_stderr(stderr: &str) -> Option<&'static str> {
+    let stderr = stderr.to_ascii_lowercase();
+    if stderr.contains("--ask-for-approval")
+        && (stderr.contains("invalid value") || stderr.contains("possible values"))
+    {
+        return Some("Codex App Server launch policy was rejected by the installed Codex CLI");
+    }
+    if stderr.contains("unknown argument")
+        || stderr.contains("unexpected argument")
+        || stderr.contains("unrecognized option")
+    {
+        return Some("Codex App Server launch arguments were rejected by the installed Codex CLI");
+    }
+    None
+}
+
+fn canonical_rate_snapshot(response: &RateLimitResponse) -> Option<RateLimitSnapshot> {
+    if let Some(by_id) = response.rate_limits_by_limit_id.as_ref() {
+        if let Some(codex) = by_id.get("codex").or_else(|| {
+            by_id.values().find(|snapshot| {
+                snapshot
+                    .limit_id
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("codex"))
             })
+        }) {
+            // An explicit canonical bucket is authoritative even when empty.
+            return Some(codex.clone());
+        }
+    }
+
+    if rate_snapshot_has_quota_data(&response.rate_limits) {
+        return Some(response.rate_limits.clone());
+    }
+
+    alternate_rate_snapshot_consensus(response).or_else(|| Some(response.rate_limits.clone()))
+}
+
+fn rate_snapshot_has_quota_data(snapshot: &RateLimitSnapshot) -> bool {
+    snapshot.primary.is_some()
+        || snapshot.secondary.is_some()
+        || snapshot.individual_limit.is_some()
+}
+
+fn normalized_plan(value: Option<&str>) -> Option<String> {
+    let value = value?.trim().to_ascii_lowercase();
+    (!value.is_empty()).then_some(value)
+}
+
+fn alternate_rate_snapshot_consensus(response: &RateLimitResponse) -> Option<RateLimitSnapshot> {
+    let by_id = response.rate_limits_by_limit_id.as_ref()?;
+    let candidates = by_id
+        .iter()
+        .filter(|(id, snapshot)| {
+            !id.eq_ignore_ascii_case("codex")
+                && !snapshot
+                    .limit_id
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("codex"))
+                && (snapshot.primary.is_some() || snapshot.secondary.is_some())
         })
-        .or(Some(&response.rate_limits))
+        .map(|(_, snapshot)| snapshot)
+        .collect::<Vec<_>>();
+    let first = *candidates.first()?;
+    if !candidates
+        .iter()
+        .all(|snapshot| snapshot.primary == first.primary && snapshot.secondary == first.secondary)
+    {
+        return None;
+    }
+
+    let plan_type = candidates
+        .iter()
+        .all(|snapshot| {
+            normalized_plan(snapshot.plan_type.as_deref())
+                == normalized_plan(first.plan_type.as_deref())
+        })
+        .then(|| first.plan_type.clone())
+        .flatten();
+    let individual_limit = candidates
+        .iter()
+        .all(|snapshot| snapshot.individual_limit == first.individual_limit)
+        .then(|| first.individual_limit.clone())
+        .flatten();
+    Some(RateLimitSnapshot {
+        limit_id: None,
+        plan_type,
+        primary: first.primary.clone(),
+        secondary: first.secondary.clone(),
+        individual_limit,
+    })
 }
 
 fn spawn_app_server(command: &Path) -> Result<Child, String> {
-    let mut process = Command::new(command);
+    let mut process = app_server_command(command);
     process
-        .args(["-s", "read-only", "-a", "untrusted", "app-server"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     crate::background_process::configure_tokio(&mut process);
-    process.spawn().map_err(|error| {
-        format!(
-            "failed to start Codex App Server from {}: {error}",
-            command.display()
-        )
-    })
+    process
+        .spawn()
+        .map_err(|error| format!("Codex App Server launch failed: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn app_server_command(command: &Path) -> Command {
+    let mut process = Command::new(command);
+    process.args(CODEX_APP_SERVER_ARGS);
+    process
+}
+
+#[cfg(target_os = "windows")]
+fn app_server_command(command: &Path) -> Command {
+    let is_script = command
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat")
+        });
+    if !is_script {
+        let mut process = Command::new(command);
+        process.args(CODEX_APP_SERVER_ARGS);
+        return process;
+    }
+
+    let command = quote_windows_cmd_arg(&command.to_string_lossy());
+    let command_line = format!("{command} {}", CODEX_APP_SERVER_ARGS.join(" "));
+    let mut process = Command::new("cmd.exe");
+    process.args(["/d", "/s", "/c"]).arg(command_line);
+    process
+}
+
+#[cfg(target_os = "windows")]
+fn quote_windows_cmd_arg(value: &str) -> String {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"_./:=\\-".contains(&byte))
+    {
+        return value.to_owned();
+    }
+    format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 async fn terminate_child(child: &mut Child) {
@@ -901,7 +1082,11 @@ fn codex_command_candidates() -> Vec<PathBuf> {
     }
 
     #[cfg(target_os = "windows")]
-    add_windows_candidates(&mut candidates);
+    {
+        add_windows_candidates(&mut candidates);
+        push_candidate(&mut candidates, PathBuf::from("codex.cmd"));
+        push_candidate(&mut candidates, PathBuf::from("codex.exe"));
+    }
 
     push_candidate(&mut candidates, PathBuf::from("codex"));
     candidates
@@ -921,6 +1106,7 @@ fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
 fn add_windows_candidates(candidates: &mut Vec<PathBuf>) {
     if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         push_candidate(candidates, local.join("Programs/Codex/resources/codex.exe"));
+        push_candidate(candidates, local.join("Programs/Codex/Codex.exe"));
         let bin = local.join("OpenAI/Codex/bin");
         add_codex_bin_candidates(candidates, &bin);
         let packages = local.join("Packages");
@@ -940,7 +1126,10 @@ fn add_windows_candidates(candidates: &mut Vec<PathBuf>) {
         push_candidate(candidates, local.join("Microsoft/WindowsApps/codex.exe"));
         push_candidate(candidates, local.join("Microsoft/WindowsApps/Codex.exe"));
     }
-    for root in ["ProgramFiles", "ProgramW6432"] {
+    if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+        push_candidate(candidates, app_data.join("npm/codex.cmd"));
+    }
+    for root in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
         if let Some(program_files) = env::var_os(root).map(PathBuf::from) {
             push_candidate(candidates, program_files.join("Codex/resources/codex.exe"));
             let windows_apps = program_files.join("WindowsApps");
@@ -982,6 +1171,7 @@ mod tests {
             provider: SupportedProvider::Codex,
             plan: Some(plan.to_owned()),
             account_email: Some("user@example.test".to_owned()),
+            diagnostic: None,
             windows: vec![
                 QuotaWindow {
                     kind: QuotaWindowKind::Session,
@@ -1046,9 +1236,32 @@ mod tests {
         IndividualLimit {
             limit: NumberLike::Text("750".to_owned()),
             used: NumberLike::Text("432.762320022503".to_owned()),
-            remaining_percent: 42.0,
-            resets_at: 1_790_812_800,
+            remaining_percent: Some(NumberLike::Text("42".to_owned())),
+            resets_at: Some(json!("1790812800")),
         }
+    }
+
+    #[test]
+    fn app_server_launch_uses_supported_noninteractive_approval_policy() {
+        assert_eq!(
+            CODEX_APP_SERVER_ARGS,
+            ["-s", "read-only", "-a", "never", "app-server"]
+        );
+        assert!(!CODEX_APP_SERVER_ARGS.contains(&"untrusted"));
+    }
+
+    #[test]
+    fn app_server_stderr_is_classified_without_echoing_raw_content() {
+        let retired_policy =
+            "error: invalid value 'untrusted' for '--ask-for-approval <APPROVAL_POLICY>'";
+        assert_eq!(
+            classify_app_server_stderr(retired_policy),
+            Some("Codex App Server launch policy was rejected by the installed Codex CLI")
+        );
+        assert_eq!(
+            classify_app_server_stderr("Authorization: Bearer secret-value"),
+            None
+        );
     }
 
     #[test]
@@ -1079,6 +1292,28 @@ mod tests {
         assert_eq!(monthly.resets_at.as_deref(), Some("2026-10-01T00:00:00Z"));
         assert_eq!(monthly.source, CODEX_APP_SERVER_SOURCE);
         assert!(provider.windows[2].additional);
+    }
+
+    #[test]
+    fn individual_limit_without_remaining_percent_keeps_absolute_business_credits() {
+        let mut provider = provider("Business");
+        let raw = IndividualLimit {
+            limit: NumberLike::Text("1000".to_owned()),
+            used: NumberLike::Text("250".to_owned()),
+            remaining_percent: None,
+            resets_at: Some(json!(1_790_812_800_i64)),
+        };
+        assert!(apply_individual_limit(&mut provider, &raw));
+        let monthly = provider
+            .windows
+            .iter()
+            .find(|window| window.metric == "credits")
+            .expect("monthly credit window");
+        assert_eq!(monthly.used, Some(250.0));
+        assert_eq!(monthly.limit, Some(1000.0));
+        assert_eq!(monthly.remaining, Some(750.0));
+        assert_eq!(monthly.remaining_percent, Some(75.0));
+        assert_eq!(monthly.used_percent, Some(25.0));
     }
 
     #[test]
@@ -1272,8 +1507,63 @@ mod tests {
         }))
         .expect("snake-case compatibility fixture");
         assert!(canonical_rate_snapshot(&snake)
-            .and_then(|snapshot| snapshot.individual_limit.as_ref())
+            .and_then(|snapshot| snapshot.individual_limit)
             .is_some());
+    }
+
+    #[test]
+    fn canonical_rate_limit_uses_only_unambiguous_alternate_window_consensus() {
+        let consensus: RateLimitResponse = serde_json::from_value(json!({
+            "rateLimits": { "planType": "business" },
+            "rateLimitsByLimitId": {
+                "feature-a": {
+                    "planType": "business",
+                    "primary": { "usedPercent": 20, "windowDurationMins": 300 },
+                    "secondary": { "usedPercent": 30, "windowDurationMins": 10080 }
+                },
+                "feature-b": {
+                    "planType": "business",
+                    "primary": { "usedPercent": 20, "windowDurationMins": 300 },
+                    "secondary": { "usedPercent": 30, "windowDurationMins": 10080 }
+                }
+            }
+        }))
+        .expect("alternate consensus fixture");
+        let selected = canonical_rate_snapshot(&consensus).expect("alternate consensus");
+        assert_eq!(
+            selected.primary.and_then(|window| window.used_percent),
+            Some(20.0)
+        );
+        assert_eq!(
+            selected.secondary.and_then(|window| window.used_percent),
+            Some(30.0)
+        );
+
+        let divergent: RateLimitResponse = serde_json::from_value(json!({
+            "rateLimits": { "planType": "business" },
+            "rateLimitsByLimitId": {
+                "feature-a": { "primary": { "usedPercent": 20, "windowDurationMins": 300 } },
+                "feature-b": { "primary": { "usedPercent": 21, "windowDurationMins": 300 } }
+            }
+        }))
+        .expect("divergent alternate fixture");
+        let selected = canonical_rate_snapshot(&divergent).expect("direct fallback");
+        assert!(selected.primary.is_none());
+        assert!(selected.secondary.is_none());
+    }
+
+    #[test]
+    fn explicit_empty_codex_bucket_is_not_replaced_by_alternate_limits() {
+        let response: RateLimitResponse = serde_json::from_value(json!({
+            "rateLimitsByLimitId": {
+                "codex": { "limitId": "codex", "planType": "business" },
+                "feature-a": { "primary": { "usedPercent": 20, "windowDurationMins": 300 } }
+            }
+        }))
+        .expect("explicit canonical fixture");
+        let selected = canonical_rate_snapshot(&response).expect("canonical bucket");
+        assert!(selected.primary.is_none());
+        assert_eq!(selected.plan_type.as_deref(), Some("business"));
     }
 
     #[tokio::test]

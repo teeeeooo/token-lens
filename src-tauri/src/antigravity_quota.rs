@@ -73,6 +73,7 @@ fn provider_from_local(snapshot: antigravity_local::Snapshot) -> QuotaProvider {
         provider: SupportedProvider::Antigravity,
         plan: snapshot.account_plan,
         account_email: snapshot.account_email,
+        diagnostic: None,
         windows: snapshot.windows,
         reset_credits: None,
         credit_status: None,
@@ -130,6 +131,7 @@ fn probe_external_oauth(_home: &Path) -> Option<QuotaProvider> {
         provider: SupportedProvider::Antigravity,
         plan: load.plan,
         account_email: credential.account_email,
+        diagnostic: None,
         windows,
         reset_credits: None,
         credit_status: None,
@@ -290,6 +292,7 @@ mod tests {
             provider: SupportedProvider::Antigravity,
             plan: None,
             account_email: None,
+            diagnostic: None,
             windows: vec![QuotaWindow {
                 kind: QuotaWindowKind::Weekly,
                 label: "Weekly".into(),

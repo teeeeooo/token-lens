@@ -521,11 +521,20 @@ function syncPeriodMenu() {
   }
 }
 
+function syncPeriodIndicator() {
+  const tabs = document.querySelector('.period-controls .tabs');
+  const activeTab = tabs?.querySelector('.tab.active');
+  if (!tabs || !activeTab) return;
+  const inset = 1;
+  const left = Math.max(0, activeTab.offsetLeft + inset);
+  const width = Math.max(0, activeTab.offsetWidth - inset * 2);
+  tabs.style.setProperty('--period-indicator-left', `${left}px`);
+  tabs.style.setProperty('--period-indicator-width', `${width}px`);
+}
+
 function syncPeriodTabs() {
   const activeSlot = slotForSelection(state.period);
   const tabs = Array.from(document.querySelectorAll('.tab'));
-  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.dataset.periodSlot === activeSlot));
-  document.querySelector('.tabs')?.style.setProperty('--period-index', String(activeIndex));
   for (const tab of tabs) {
     const active = tab.dataset.periodSlot === activeSlot;
     tab.classList.toggle('active', active);
@@ -533,6 +542,7 @@ function syncPeriodTabs() {
   }
   const mode = activeSlot === 'month' ? normalizeMonthMode(state.period) : normalizeMonthMode(state.monthMode);
   els.monthPeriodTab.textContent = periodDisplayLabel(mode);
+  syncPeriodIndicator();
   syncPeriodMenu();
 }
 
@@ -1113,7 +1123,8 @@ function renderLimits() {
     if (!row.windows.length) {
       const empty = document.createElement('div');
       empty.className = 'home-module-empty';
-      empty.textContent = row.status === 'ok' ? t('common.noQuotaWindows') : t('common.unavailable');
+      const stateLabel = row.status === 'ok' ? t('common.noQuotaWindows') : t('common.unavailable');
+      empty.textContent = row.diagnostic ? `${stateLabel} · ${row.diagnostic}` : stateLabel;
       windows.append(empty);
     }
     if (row.providerId === 'codex' && row.resetCredits?.availableCount > 0) {
@@ -1584,6 +1595,8 @@ async function bootstrapShell() {
 
   await refresh();
 }
+
+window.addEventListener('resize', syncPeriodIndicator);
 
 window.addEventListener('beforeunload', () => {
   clearInterval(autoRefreshTimer);

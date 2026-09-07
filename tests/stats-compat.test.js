@@ -73,6 +73,20 @@ test('quota compatibility retains canonical and additional lanes', () => {
   assert.equal(limits.providers[0].resetCredits.availableCount, 1);
 });
 
+test('quota diagnostics make empty provider failures actionable without changing healthy rows', () => {
+  const limits = quotaReportToCompatLimits({
+    generatedAtMs: 1_700_000_000_000,
+    providers: [
+      { provider: 'codex', diagnostic: 'Codex App Server: CLI not found', windows: [] },
+      { provider: 'claude', diagnostic: null, windows: [] },
+    ],
+  });
+  assert.equal(limits.providers[0].status, 'unavailable');
+  assert.equal(limits.providers[0].diagnostic, 'Codex App Server: CLI not found');
+  assert.equal(limits.providers[1].status, 'ok');
+  assert.equal(limits.providers[1].diagnostic, '');
+});
+
 test('getStats compatibility loader keeps tokScale scans serial and exposes v1 period keys', async () => {
   const calls = [];
   const usage = async (period, grouping) => {

@@ -9,6 +9,7 @@ mod domain;
 mod floating_bubble;
 mod gemini_quota;
 mod google_code_assist;
+mod http_diagnostic;
 mod portable_sidecar;
 mod session_detail;
 mod session_metadata;

@@ -125,9 +125,12 @@ where
         .with_follow_redirects(false)
         .with_json(body)
         .map_err(|_| format!("Google Code Assist {method} request could not be encoded"))?;
-    let response = request
-        .send()
-        .map_err(|_| format!("Google Code Assist {method} request failed"))?;
+    let response = request.send().map_err(|error| {
+        format!(
+            "Google Code Assist {method} request failed ({})",
+            crate::http_diagnostic::transport_category(&error)
+        )
+    })?;
     if !(200..300).contains(&response.status_code) {
         return Err(format!(
             "Google Code Assist {method} returned HTTP {}",

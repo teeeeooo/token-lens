@@ -2,11 +2,11 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation remain complete on `feat/v2-tokscale-vertical-slice`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, the roomier persisted window shell, and the read-only provider-quota parity follow-up. Real Windows QA after `e81291a` showed that Codex/Claude/Gemini usage aggregation worked while quota did not; commit `53315ae` restores the missing Codex OAuth, Claude Windows/WSL credential, and Gemini CLI current secure-storage paths without adding credential refresh/write behavior. Fresh macOS/Windows CI and Windows installer/single-EXE packaging are green; a real Windows live-provider retest is now the remaining quota release gate.
+Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is preserved on `v1-legacy` at `493d4a5`. The v2 implementation and Windows package-shape automation are complete through promotion commit `983b764`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, the roomier persisted window shell, and the read-only provider-quota parity follow-up. Real Windows QA after `e81291a` showed that Codex/Claude/Gemini usage aggregation worked while quota did not; commit `53315ae` restores the missing Codex OAuth, Claude Windows/WSL credential, and Gemini CLI current secure-storage paths without adding credential refresh/write behavior. Fresh macOS/Windows CI and Windows installer/single-EXE packaging are green on `main`; a real Windows live-provider retest remains the quota release gate.
 
 ## Accepted baseline
 
-- v2 is an orphan lineage with a clean codebase; v1 `main` is reference-only.
+- v2 is an orphan lineage with a clean codebase; the previous v1 line is preserved on `v1-legacy` for reference.
 - desktop runtime: Tauri 2.
 - current supported provider set: Codex, Claude, Gemini CLI, Antigravity; future providers require an explicit adapter/security/data-contract review rather than a core redesign.
 - tokScale is the primary actual-usage and supported-quota engine.

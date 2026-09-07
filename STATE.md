@@ -2,7 +2,7 @@
 
 ## Current phase
 
-v2 feature implementation and Windows package-shape automation remain complete on `feat/v2-tokscale-vertical-slice`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, and the roomier persisted window shell. Real Windows QA after `e81291a` exposed a remaining provider-quota parity gap even though Codex/Claude/Gemini usage aggregation worked. The missing read-only credential/provider paths are now restored locally: Codex falls back to its provider OAuth usage endpoint before App Server, Claude rediscovers provider-owned WSL credentials on Windows, and Gemini reads both Windows Credential Manager and the current encrypted file-keychain fallback. Local automated validation is green; fresh native Windows CI/package validation and a real Windows live-provider retest remain the release gate.
+v2 feature implementation and Windows package-shape automation remain complete on `feat/v2-tokscale-vertical-slice`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, the roomier persisted window shell, and the read-only provider-quota parity follow-up. Real Windows QA after `e81291a` showed that Codex/Claude/Gemini usage aggregation worked while quota did not; commit `53315ae` restores the missing Codex OAuth, Claude Windows/WSL credential, and Gemini CLI current secure-storage paths without adding credential refresh/write behavior. Fresh macOS/Windows CI and Windows installer/single-EXE packaging are green; a real Windows live-provider retest is now the remaining quota release gate.
 
 ## Accepted baseline
 
@@ -48,8 +48,8 @@ v2 feature implementation and Windows package-shape automation remain complete o
 - Windows background subprocesses owned by Token Lens (tokScale, Codex App Server, and AGY/PowerShell discovery helpers) use `CREATE_NO_WINDOW`, preventing periodic refresh from flashing CMD/PowerShell windows;
 - macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
-- the current local gate is green for the window-shell and quota-parity follow-ups: `npm run check` (57/57 frontend tests; 68 Rust tests passed with 9 live tests ignored), Clippy with `-D warnings`, rustfmt, native macOS Tauri debug build, `npm audit` with 0 vulnerabilities, and `git diff --check` all pass; Codex OAuth live smoke succeeds on the current Mac account; fresh Windows CI/package validation and target-Windows live-provider validation remain before packaging is considered current;
-- commit `e81291a` is green in `Token Lens v2 CI` run `34070657729` on both macOS and Windows, and `Build Token Lens v2 Windows` run `34070657719` completed packaging-helper checks, unsigned installer/single-EXE build, and artifact upload successfully;
+- the current local gate is green for the window-shell and quota-parity follow-ups: `npm run check` (57/57 frontend tests; 68 Rust tests passed with 9 live tests ignored), Clippy with `-D warnings`, rustfmt, native macOS Tauri debug build, `npm audit` with 0 vulnerabilities, and `git diff --check` all pass; Codex OAuth live smoke succeeds on the current Mac account;
+- commit `53315ae` is green in `Token Lens v2 CI` run `34078935973` on both macOS and Windows (Windows: 69 Rust tests passed with 9 live tests ignored), and `Build Token Lens v2 Windows` run `34078935933` completed packaging-helper checks, pinned tokScale 4.15.1 staging, unsigned NSIS/single-EXE build, and artifact upload successfully;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
 - window controls now use explicit v2 semantics: minimize collapses to Floating Bubble when enabled, otherwise hides to the tray when available and finally falls back to OS minimize; close always quits, and ordinary focus loss no longer collapses the window;
 - the renderer listens for narrow tray actions rather than reintroducing Electron IPC, and publishes only the small Today usage/cost summary needed by the native tray;
@@ -81,11 +81,18 @@ v2 feature implementation and Windows package-shape automation remain complete o
 
 ## Next action
 
-Finish the quota-parity gate on the current branch, then validate the resulting fresh Windows package rather than reusing the older `e81291a` artifact.
+Validate the fresh `53315ae` Windows package on the target Windows machine; automated implementation and packaging gates are green.
 
-1. run Clippy with `-D warnings`, native macOS Tauri debug build, `npm audit`, and `git diff --check`;
-2. commit/push the quota-parity changes and require fresh `windows-latest` CI plus the single-EXE/NSIS packaging workflow to pass;
-3. install/run that fresh Windows artifact and validate bundled/embedded tokScale resolution, no console flashes, the retained Acrylic/Bubble/window behavior, and live Codex/Claude/Gemini quota against the target machine's provider-owned credentials.
+1. install/run the NSIS artifact from `Build Token Lens v2 Windows` run `34078935933` and confirm adjacent bundled tokScale 4.15.1 resolution;
+2. run the single-file portable artifact from the same run and confirm embedded-portable tokScale resolution/temp cleanup plus absence of CMD/PowerShell flashes;
+3. validate live Codex Business quota/credits, Claude Enterprise monetary quota, Gemini CLI quota, and the retained Acrylic/Bubble/window/titlebar behavior.
+
+Current `53315ae` Windows artifact checksums:
+
+- `Token-Lens-Setup-2.0.0-alpha.0.exe`: `3930f3fa1be591a03be93d7184a3e25bc28f54d1d9040dd7d20237630ea09207`;
+- `Token-Lens-2.0.0-alpha.0.exe`: `95b2466d8496e0db83d388218e07d543e915139b019d1bc589452594991395c8`.
+
+The downloaded artifact independently matches `SHA256SUMS.txt`; both outer executables are unsigned Windows GUI PEs, and the portable footer/payload round-trip verifies `TLTS0001` with the expected 24,359,424-byte embedded tokScale payload.
 
 Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. The v1 token/cost text modes and custom tray/bubble composer remain intentionally excluded; only the six accepted compact quota modes are retained.
 

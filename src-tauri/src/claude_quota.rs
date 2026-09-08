@@ -281,6 +281,29 @@ fn recover_with_cli(
     retry_direct_after_cli_refresh: bool,
 ) -> QuotaReport {
     let now = now_ms();
+    if matches!(trigger, RecoveryTrigger::Unauthorized)
+        && credential_reread
+        && credential_changed == Some(false)
+        && matches!(claude_cli::auth_logged_in(home), Ok(false))
+    {
+        let presentation = apply_failure_with_cache(
+            &mut report,
+            "Claude CLI reports that authentication is unavailable",
+            now,
+        );
+        record_incident(
+            trigger,
+            presentation.result_label(),
+            IncidentRecovery {
+                credential_reread,
+                credential_changed,
+                recovery_code: Some("CLI_AUTH_UNAVAILABLE"),
+                last_good_used: presentation.last_good_used(),
+                ..IncidentRecovery::default()
+            },
+        );
+        return report;
+    }
     let token_before_cli = retry_direct_after_cli_refresh
         .then(|| read_access_token(home))
         .flatten();

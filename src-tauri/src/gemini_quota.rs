@@ -1,11 +1,13 @@
 use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, SupportedProvider};
-use crate::google_code_assist::{self, LoadSnapshot, QuotaBucket};
+use crate::google_code_assist::{self, CodeAssistError, LoadSnapshot, QuotaBucket};
+use crate::provider_error_log::{self, ProviderIncident};
 #[cfg(any(target_os = "windows", test))]
 use aes_gcm::{
     aead::{consts::U16, AeadInPlace, KeyInit},
     aes::Aes256,
     AesGcm, Nonce, Tag,
 };
+use chrono::DateTime;
 #[cfg(any(target_os = "windows", test))]
 use scrypt::{scrypt, Params as ScryptParams};
 use serde::Deserialize;
@@ -13,10 +15,14 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "gemini-code-assist";
 const TOKEN_EXPIRY_SAFETY_MS: u64 = 30_000;
+const MAX_RATE_LIMIT_COOLDOWN_MS: u64 = 60 * 60 * 1000;
+const LAST_GOOD_TTL_MS: u64 = 30 * 60 * 1000;
+const STALE_DIAGNOSTIC_PREFIX: &str = "Stale Gemini quota";
 
 #[derive(Debug, Deserialize)]
 struct StoredGeminiCredential {
@@ -44,6 +50,23 @@ struct StoredGeminiAccounts {
     active: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedGeminiProvider {
+    captured_at_ms: u64,
+    provider: QuotaProvider,
+}
+
+#[derive(Debug, Default)]
+struct GeminiRuntimeState {
+    cooldown_until_ms: u64,
+    last_good: Option<CachedGeminiProvider>,
+}
+
+fn runtime_state() -> &'static Mutex<GeminiRuntimeState> {
+    static STATE: OnceLock<Mutex<GeminiRuntimeState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(GeminiRuntimeState::default()))
+}
+
 pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> QuotaReport {
     let fallback = report.clone();
     let home = home.to_path_buf();
@@ -53,62 +76,265 @@ pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> Quo
 }
 
 fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport {
+    let now = now_ms();
     if report
         .providers
         .iter()
         .find(|provider| provider.provider == SupportedProvider::Gemini)
         .is_some_and(provider_has_usable_quota)
     {
+        cache_last_good(&report, now);
+        clear_cooldown();
         return report;
     }
 
-    let Some(credential) = read_valid_credential(home) else {
-        set_diagnostic(
+    if let Some(remaining_ms) = active_cooldown_remaining_ms(now) {
+        apply_failure_with_cache(
             &mut report,
-            "Gemini credential: no readable non-expired access token",
+            format!(
+                "Gemini quota rate-limit cooldown; retry in about {}s",
+                remaining_ms.div_ceil(1000)
+            ),
+            now,
         );
         return report;
-    };
-    let requested_project = configured_project();
-    let load = match google_code_assist::load_code_assist(
-        &credential.access_token,
-        requested_project.as_deref(),
-    ) {
-        Ok(load) => load,
-        Err(error) => {
-            set_diagnostic(
-                &mut report,
-                format!("Gemini loadCodeAssist failed: {error}"),
-            );
-            return report;
-        }
-    };
-    let Some(project_id) = load.project_id.as_deref() else {
-        // Token Lens is a monitor. Never call onboardUser to create/attach a project.
-        set_diagnostic(&mut report, "Gemini loadCodeAssist returned no project");
-        return report;
-    };
-    let buckets =
-        match google_code_assist::retrieve_user_quota(&credential.access_token, project_id) {
-            Ok(buckets) => buckets,
-            Err(error) => {
-                set_diagnostic(
-                    &mut report,
-                    format!("Gemini retrieveUserQuota failed: {error}"),
+    }
+
+    // Gemini CLI 0.58.0 does not expose `/stats model` as a reliable headless quota
+    // source: non-interactive slash-command handling can fall through to an LLM prompt,
+    // while the interactive model_stats UI is TUI-only. Recovery therefore remains
+    // read-only credential re-read + direct API retry; there is intentionally no CLI fallback.
+    let attempt = read_provider_with_reloaded_credential(home);
+    match attempt.result {
+        Ok(provider) => {
+            apply_success(&mut report, provider, now);
+            if let Some(trigger) = attempt.initial_unauthorized {
+                record_incident(
+                    trigger,
+                    "recovered_credential_reread",
+                    attempt.credential_reread,
+                    attempt.credential_changed,
+                    false,
                 );
-                return report;
             }
+        }
+        Err(DirectAttemptError::MissingCredential) => {
+            let presentation = apply_failure_with_cache(
+                &mut report,
+                "Gemini credential: no readable non-expired access token",
+                now,
+            );
+            record_incident(
+                GeminiFailure::MissingCredential,
+                presentation.result_label(),
+                false,
+                None,
+                presentation.last_good_used(),
+            );
+        }
+        Err(DirectAttemptError::Fetch(error)) => {
+            if let Some(retry_after_ms) = error.retry_after_ms() {
+                set_cooldown(now, retry_after_ms);
+            }
+            let presentation = apply_failure_with_cache(&mut report, error.diagnostic(), now);
+            record_incident(
+                error,
+                presentation.result_label(),
+                attempt.credential_reread,
+                attempt.credential_changed,
+                presentation.last_good_used(),
+            );
+        }
+    }
+    report
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GeminiFailure {
+    MissingCredential,
+    Unauthorized {
+        stage: &'static str,
+    },
+    Forbidden {
+        stage: &'static str,
+    },
+    RateLimited {
+        stage: &'static str,
+        retry_after_ms: u64,
+    },
+    Transport {
+        stage: &'static str,
+    },
+    Http {
+        stage: &'static str,
+        status: i32,
+    },
+    InvalidPayload {
+        stage: &'static str,
+    },
+    InvalidRequest {
+        stage: &'static str,
+    },
+    NoProject,
+    NoBuckets,
+}
+
+impl GeminiFailure {
+    fn from_code_assist(stage: &'static str, error: CodeAssistError) -> Self {
+        match error {
+            CodeAssistError::Unauthorized => Self::Unauthorized { stage },
+            CodeAssistError::Forbidden => Self::Forbidden { stage },
+            CodeAssistError::RateLimited { retry_after_ms } => Self::RateLimited {
+                stage,
+                retry_after_ms,
+            },
+            CodeAssistError::Transport => Self::Transport { stage },
+            CodeAssistError::Http(status) => Self::Http { stage, status },
+            CodeAssistError::InvalidPayload => Self::InvalidPayload { stage },
+            CodeAssistError::InvalidRequest => Self::InvalidRequest { stage },
+        }
+    }
+
+    fn is_unauthorized(&self) -> bool {
+        matches!(self, Self::Unauthorized { .. })
+    }
+
+    fn retry_after_ms(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited { retry_after_ms, .. } => Some(*retry_after_ms),
+            _ => None,
+        }
+    }
+
+    fn diagnostic(&self) -> String {
+        match self {
+            Self::MissingCredential => {
+                "Gemini credential: no readable non-expired access token".to_owned()
+            }
+            Self::Unauthorized { stage } => format!("Gemini {stage} returned HTTP 401"),
+            Self::Forbidden { stage } => format!("Gemini {stage} returned HTTP 403"),
+            Self::RateLimited {
+                stage,
+                retry_after_ms,
+            } => format!(
+                "Gemini {stage} rate limited (HTTP 429); retry in about {}s",
+                retry_after_ms.div_ceil(1000)
+            ),
+            Self::Transport { stage } => format!("Gemini {stage} request failed"),
+            Self::Http { stage, status } => format!("Gemini {stage} returned HTTP {status}"),
+            Self::InvalidPayload { stage } => {
+                format!("Gemini {stage} returned an invalid payload")
+            }
+            Self::InvalidRequest { stage } => {
+                format!("Gemini {stage} request could not be encoded")
+            }
+            Self::NoProject => "Gemini loadCodeAssist returned no project".to_owned(),
+            Self::NoBuckets => "Gemini retrieveUserQuota returned no model buckets".to_owned(),
+        }
+    }
+
+    fn log_fields(&self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::MissingCredential => ("auth", "CREDENTIAL_UNAVAILABLE", "credential_discovery"),
+            Self::Unauthorized { stage } => ("auth", "HTTP_401", stage),
+            Self::Forbidden { stage } => ("auth", "HTTP_403", stage),
+            Self::RateLimited { stage, .. } => ("rate_limit", "HTTP_429", stage),
+            Self::Transport { stage } => ("transport", "TRANSPORT_ERROR", stage),
+            Self::Http { stage, .. } => ("provider", "HTTP_ERROR", stage),
+            Self::InvalidPayload { stage } => ("payload", "INVALID_PAYLOAD", stage),
+            Self::InvalidRequest { stage } => ("request", "INVALID_REQUEST", stage),
+            Self::NoProject => ("provider", "NO_PROJECT", "loadCodeAssist"),
+            Self::NoBuckets => ("payload", "NO_QUOTA_WINDOWS", "retrieveUserQuota"),
+        }
+    }
+}
+
+struct DirectProviderAttempt {
+    result: Result<QuotaProvider, DirectAttemptError>,
+    credential_reread: bool,
+    credential_changed: Option<bool>,
+    initial_unauthorized: Option<GeminiFailure>,
+}
+
+enum DirectAttemptError {
+    MissingCredential,
+    Fetch(GeminiFailure),
+}
+
+fn read_provider_with_reloaded_credential(home: &Path) -> DirectProviderAttempt {
+    read_provider_with_reloaded_credential_with(home, read_valid_credential, |credential| {
+        fetch_provider(home, &credential.access_token)
+    })
+}
+
+fn read_provider_with_reloaded_credential_with<R, F>(
+    home: &Path,
+    mut read_credential: R,
+    mut fetch: F,
+) -> DirectProviderAttempt
+where
+    R: FnMut(&Path) -> Option<ValidCredential>,
+    F: FnMut(&ValidCredential) -> Result<QuotaProvider, GeminiFailure>,
+{
+    let Some(credential) = read_credential(home) else {
+        return DirectProviderAttempt {
+            result: Err(DirectAttemptError::MissingCredential),
+            credential_reread: false,
+            credential_changed: None,
+            initial_unauthorized: None,
         };
+    };
+    match fetch(&credential) {
+        Ok(provider) => DirectProviderAttempt {
+            result: Ok(provider),
+            credential_reread: false,
+            credential_changed: None,
+            initial_unauthorized: None,
+        },
+        Err(error) if error.is_unauthorized() => {
+            let initial_unauthorized = Some(error.clone());
+            let reloaded = read_credential(home);
+            let changed = reloaded
+                .as_ref()
+                .is_some_and(|next| next.access_token != credential.access_token);
+            let result = if changed {
+                fetch(reloaded.as_ref().expect("changed credential must exist"))
+                    .map_err(DirectAttemptError::Fetch)
+            } else {
+                Err(DirectAttemptError::Fetch(error))
+            };
+            DirectProviderAttempt {
+                result,
+                credential_reread: true,
+                credential_changed: Some(changed),
+                initial_unauthorized,
+            }
+        }
+        Err(error) => DirectProviderAttempt {
+            result: Err(DirectAttemptError::Fetch(error)),
+            credential_reread: false,
+            credential_changed: None,
+            initial_unauthorized: None,
+        },
+    }
+}
+
+fn fetch_provider(home: &Path, access_token: &str) -> Result<QuotaProvider, GeminiFailure> {
+    let requested_project = configured_project();
+    let load =
+        google_code_assist::load_code_assist_typed(access_token, requested_project.as_deref())
+            .map_err(|error| GeminiFailure::from_code_assist("loadCodeAssist", error))?;
+    let Some(project_id) = load.project_id.as_deref() else {
+        // Token Lens is a monitor. Never call onboardUser to create or attach a project.
+        return Err(GeminiFailure::NoProject);
+    };
+    let buckets = google_code_assist::retrieve_user_quota_typed(access_token, project_id)
+        .map_err(|error| GeminiFailure::from_code_assist("retrieveUserQuota", error))?;
     let windows = normalize_buckets(buckets);
     if windows.is_empty() {
-        set_diagnostic(
-            &mut report,
-            "Gemini retrieveUserQuota returned no model buckets",
-        );
-        return report;
+        return Err(GeminiFailure::NoBuckets);
     }
-
-    let provider = QuotaProvider {
+    Ok(QuotaProvider {
         provider: SupportedProvider::Gemini,
         plan: normalize_plan(load),
         account_email: read_active_account(home),
@@ -117,7 +343,10 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         reset_credits: None,
         credit_status: None,
         spend_control: None,
-    };
+    })
+}
+
+fn apply_success(report: &mut QuotaReport, provider: QuotaProvider, now: u64) {
     if let Some(existing) = report
         .providers
         .iter_mut()
@@ -127,11 +356,17 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     } else {
         report.providers.push(provider);
     }
-    report
+    clear_cooldown();
+    cache_last_good(report, now);
 }
 
 fn provider_has_usable_quota(provider: &QuotaProvider) -> bool {
-    !provider.windows.is_empty()
+    provider.windows.iter().any(|window| {
+        window.remaining_percent.is_some()
+            || window.used_percent.is_some()
+            || window.remaining.is_some()
+            || window.used.is_some()
+    })
 }
 
 fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
@@ -153,6 +388,138 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
         reset_credits: None,
         credit_status: None,
         spend_control: None,
+    });
+}
+
+fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
+    let Some(provider) = report.providers.iter().find(|provider| {
+        provider.provider == SupportedProvider::Gemini && provider_has_usable_quota(provider)
+    }) else {
+        return;
+    };
+    let mut provider = provider.clone();
+    provider.diagnostic = None;
+    let mut state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.last_good = Some(CachedGeminiProvider {
+        captured_at_ms,
+        provider,
+    });
+}
+
+fn active_cooldown_remaining_ms(now: u64) -> Option<u64> {
+    let state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (state.cooldown_until_ms > now).then_some(state.cooldown_until_ms - now)
+}
+
+fn set_cooldown(now: u64, retry_after_ms: u64) {
+    let retry_after_ms = retry_after_ms.clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS);
+    let mut state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.cooldown_until_ms = now.saturating_add(retry_after_ms);
+}
+
+fn clear_cooldown() {
+    let mut state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.cooldown_until_ms = 0;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailurePresentation {
+    Stale,
+    Unavailable,
+}
+
+impl FailurePresentation {
+    fn result_label(self) -> &'static str {
+        match self {
+            Self::Stale => "stale",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn last_good_used(self) -> bool {
+        self == Self::Stale
+    }
+}
+
+fn apply_failure_with_cache(
+    report: &mut QuotaReport,
+    detail: impl Into<String>,
+    now: u64,
+) -> FailurePresentation {
+    let detail = detail.into();
+    let cached = {
+        let state = runtime_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.last_good.clone()
+    };
+    let Some(mut cached) =
+        cached.filter(|cached| now.saturating_sub(cached.captured_at_ms) <= LAST_GOOD_TTL_MS)
+    else {
+        set_diagnostic(report, detail);
+        return FailurePresentation::Unavailable;
+    };
+    cached
+        .provider
+        .windows
+        .retain(|window| window_not_expired(window, now));
+    if !provider_has_usable_quota(&cached.provider) {
+        set_diagnostic(report, detail);
+        return FailurePresentation::Unavailable;
+    }
+    let stale = format!("{STALE_DIAGNOSTIC_PREFIX} · {detail}");
+    cached.provider.diagnostic = Some(stale);
+    if let Some(existing) = report
+        .providers
+        .iter_mut()
+        .find(|provider| provider.provider == SupportedProvider::Gemini)
+    {
+        *existing = cached.provider;
+    } else {
+        report.providers.push(cached.provider);
+    }
+    FailurePresentation::Stale
+}
+
+fn window_not_expired(window: &QuotaWindow, now: u64) -> bool {
+    let Some(reset) = window.resets_at.as_deref() else {
+        return true;
+    };
+    DateTime::parse_from_rfc3339(reset)
+        .map(|value| value.timestamp_millis().max(0) as u64 > now)
+        .unwrap_or(true)
+}
+
+fn record_incident(
+    failure: GeminiFailure,
+    result: &'static str,
+    credential_reread: bool,
+    credential_changed: Option<bool>,
+    last_good_used: bool,
+) {
+    let retry_after_ms = failure.retry_after_ms();
+    let (category, code, stage) = failure.log_fields();
+    provider_error_log::record(ProviderIncident {
+        provider: "gemini",
+        category,
+        code,
+        stage,
+        result,
+        credential_reread: credential_reread.then_some(true),
+        credential_changed,
+        cli_fallback: None,
+        recovery_code: None,
+        retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
+        cooldown_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
+        last_good_used: last_good_used.then_some(true),
     });
 }
 
@@ -408,6 +775,8 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     fn bucket(model: &str, fraction: f64, amount: Option<&str>) -> QuotaBucket {
         QuotaBucket {
             model_id: Some(model.into()),
@@ -439,6 +808,203 @@ mod tests {
         assert_eq!(window.limit, Some(1000.0));
         assert_eq!(window.used, Some(750.0));
         assert_eq!(window.currency, None);
+    }
+
+    fn provider_fixture(reset_time: &str) -> QuotaProvider {
+        QuotaProvider {
+            provider: SupportedProvider::Gemini,
+            plan: Some("Test".into()),
+            account_email: None,
+            diagnostic: None,
+            windows: vec![QuotaWindow {
+                kind: QuotaWindowKind::Other,
+                label: "gemini-test".into(),
+                metric: "quota",
+                additional: true,
+                used: None,
+                limit: None,
+                remaining: None,
+                used_percent: Some(25.0),
+                remaining_percent: Some(75.0),
+                remaining_label: None,
+                resets_at: Some(reset_time.into()),
+                currency: None,
+                show_meter: true,
+                source: SOURCE,
+            }],
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
+    #[test]
+    fn retries_401_once_when_provider_rotated_the_gemini_access_token() {
+        let mut credentials = vec![
+            ValidCredential {
+                access_token: "token-a".into(),
+            },
+            ValidCredential {
+                access_token: "token-b".into(),
+            },
+        ]
+        .into_iter();
+        let mut fetched = Vec::new();
+        let attempt = read_provider_with_reloaded_credential_with(
+            Path::new("/unused"),
+            |_| credentials.next(),
+            |credential| {
+                fetched.push(credential.access_token.clone());
+                if credential.access_token == "token-a" {
+                    Err(GeminiFailure::Unauthorized {
+                        stage: "retrieveUserQuota",
+                    })
+                } else {
+                    Ok(provider_fixture("2099-01-01T00:00:00Z"))
+                }
+            },
+        );
+        assert!(attempt.result.is_ok());
+        assert!(attempt.credential_reread);
+        assert_eq!(attempt.credential_changed, Some(true));
+        assert_eq!(fetched, vec!["token-a", "token-b"]);
+    }
+
+    #[test]
+    fn does_not_retry_401_when_gemini_credential_is_unchanged() {
+        let mut credentials = vec![
+            ValidCredential {
+                access_token: "token-a".into(),
+            },
+            ValidCredential {
+                access_token: "token-a".into(),
+            },
+        ]
+        .into_iter();
+        let mut fetch_count = 0;
+        let attempt = read_provider_with_reloaded_credential_with(
+            Path::new("/unused"),
+            |_| credentials.next(),
+            |_| {
+                fetch_count += 1;
+                Err(GeminiFailure::Unauthorized {
+                    stage: "loadCodeAssist",
+                })
+            },
+        );
+        assert!(matches!(
+            attempt.result,
+            Err(DirectAttemptError::Fetch(
+                GeminiFailure::Unauthorized { .. }
+            ))
+        ));
+        assert!(attempt.credential_reread);
+        assert_eq!(attempt.credential_changed, Some(false));
+        assert_eq!(fetch_count, 1);
+    }
+
+    #[test]
+    fn changed_gemini_token_is_retried_only_once_even_if_it_is_also_rejected() {
+        let mut credentials = vec![
+            ValidCredential {
+                access_token: "token-a".into(),
+            },
+            ValidCredential {
+                access_token: "token-b".into(),
+            },
+            ValidCredential {
+                access_token: "token-c".into(),
+            },
+        ]
+        .into_iter();
+        let mut fetch_count = 0;
+        let attempt = read_provider_with_reloaded_credential_with(
+            Path::new("/unused"),
+            |_| credentials.next(),
+            |_| {
+                fetch_count += 1;
+                Err(GeminiFailure::Unauthorized {
+                    stage: "retrieveUserQuota",
+                })
+            },
+        );
+        assert!(attempt.result.is_err());
+        assert_eq!(attempt.credential_changed, Some(true));
+        assert_eq!(fetch_count, 2);
+    }
+
+    #[test]
+    fn gemini_rate_limit_sets_bounded_provider_cooldown() {
+        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+        clear_cooldown();
+        set_cooldown(1_000, 120_000);
+        assert_eq!(active_cooldown_remaining_ms(2_000), Some(119_000));
+        clear_cooldown();
+    }
+
+    #[test]
+    fn gemini_last_good_is_stale_then_expires_and_reset_windows_are_filtered() {
+        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+        {
+            let mut state = runtime_state().lock().unwrap();
+            *state = GeminiRuntimeState {
+                cooldown_until_ms: 0,
+                last_good: Some(CachedGeminiProvider {
+                    captured_at_ms: 1_000,
+                    provider: provider_fixture("2099-01-01T00:00:00Z"),
+                }),
+            };
+        }
+        let mut report = QuotaReport {
+            generated_at_ms: 2_000,
+            providers: Vec::new(),
+            source: "test",
+        };
+        let presentation = apply_failure_with_cache(&mut report, "temporary failure", 2_000);
+        assert_eq!(presentation, FailurePresentation::Stale);
+        assert!(report.providers[0]
+            .diagnostic
+            .as_deref()
+            .is_some_and(|value| value.starts_with(STALE_DIAGNOSTIC_PREFIX)));
+
+        let mut expired = QuotaReport {
+            generated_at_ms: LAST_GOOD_TTL_MS + 2_000,
+            providers: Vec::new(),
+            source: "test",
+        };
+        let presentation =
+            apply_failure_with_cache(&mut expired, "temporary failure", LAST_GOOD_TTL_MS + 2_001);
+        assert_eq!(presentation, FailurePresentation::Unavailable);
+        assert!(!window_not_expired(
+            &provider_fixture("2000-01-01T00:00:00Z").windows[0],
+            now_ms()
+        ));
+        let mut state = runtime_state().lock().unwrap();
+        *state = GeminiRuntimeState::default();
+    }
+
+    #[test]
+    fn gemini_failure_codes_distinguish_401_403_and_429() {
+        assert_eq!(
+            GeminiFailure::from_code_assist("loadCodeAssist", CodeAssistError::Unauthorized)
+                .log_fields(),
+            ("auth", "HTTP_401", "loadCodeAssist")
+        );
+        assert_eq!(
+            GeminiFailure::from_code_assist("loadCodeAssist", CodeAssistError::Forbidden)
+                .log_fields(),
+            ("auth", "HTTP_403", "loadCodeAssist")
+        );
+        assert_eq!(
+            GeminiFailure::from_code_assist(
+                "retrieveUserQuota",
+                CodeAssistError::RateLimited {
+                    retry_after_ms: 60_000,
+                }
+            )
+            .log_fields(),
+            ("rate_limit", "HTTP_429", "retrieveUserQuota")
+        );
     }
 
     #[test]

@@ -4,13 +4,16 @@ use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "claude-cli";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
-const STARTUP_DELAY: Duration = Duration::from_millis(1800);
+const STARTUP_MIN_DELAY: Duration = Duration::from_millis(1800);
+const STARTUP_FALLBACK_DELAY: Duration = Duration::from_secs(8);
+const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const ENTER_INTERVAL: Duration = Duration::from_millis(800);
 const SETTLE_AFTER_RESULT: Duration = Duration::from_millis(1200);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -77,6 +80,73 @@ pub(crate) fn read_usage(home: &Path) -> Result<Vec<QuotaWindow>, String> {
     let output = capture_usage(&binary, home)?;
     parse_usage_output(&output)
 }
+
+pub(crate) fn auth_logged_in(home: &Path) -> Result<bool, String> {
+    let binary = discover_binary(home)
+        .ok_or_else(|| "Claude CLI is not installed or discoverable".to_owned())?;
+    let mut command = auth_status_command(&binary);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+    for key in env::vars_os().map(|(key, _)| key) {
+        if key.to_string_lossy().starts_with("ANTHROPIC_") {
+            command.env_remove(key);
+        }
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Claude CLI auth status could not start".to_owned())?;
+    let started = Instant::now();
+    loop {
+        if started.elapsed() >= AUTH_STATUS_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Claude CLI auth status timed out".to_owned());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| "Claude CLI auth status could not be read".to_owned())?;
+                if !output.status.success() {
+                    return Err("Claude CLI auth status failed".to_owned());
+                }
+                return parse_auth_status_output(&output.stdout);
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(_) => return Err("Claude CLI auth status failed".to_owned()),
+        }
+    }
+}
+
+fn parse_auth_status_output(output: &[u8]) -> Result<bool, String> {
+    let value = serde_json::from_slice::<serde_json::Value>(output)
+        .map_err(|_| "Claude CLI auth status returned invalid JSON".to_owned())?;
+    value
+        .get("loggedIn")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| "Claude CLI auth status omitted loggedIn".to_owned())
+}
+
+fn auth_status_command(binary: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    if binary
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat"))
+    {
+        let line = format!("\"{}\" auth status", binary.display());
+        let mut command = Command::new("cmd.exe");
+        command.args(["/d", "/s", "/c", &line]);
+        return command;
+    }
+    let mut command = Command::new(binary);
+    command.args(["auth", "status"]);
+    command
+}
+
 fn discover_binary(home: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os("TOKEN_LENS_CLAUDE_BIN") {
@@ -96,6 +166,9 @@ fn discover_binary(home: &Path) -> Option<PathBuf> {
         if let Some(appdata) = env::var_os("APPDATA").map(PathBuf::from) {
             push_candidate(&mut candidates, appdata.join("npm/claude.cmd"));
         }
+        if let Some(binary) = discover_windows_winget_binary() {
+            push_candidate(&mut candidates, binary);
+        }
         push_candidate(&mut candidates, PathBuf::from("claude.exe"));
         push_candidate(&mut candidates, PathBuf::from("claude.cmd"));
     }
@@ -104,6 +177,23 @@ fn discover_binary(home: &Path) -> Option<PathBuf> {
     candidates
         .into_iter()
         .find(|path| !path.is_absolute() || path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn discover_windows_winget_binary() -> Option<PathBuf> {
+    let root = env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)?
+        .join("Microsoft/WinGet/Packages");
+    let entries = fs::read_dir(root).ok()?;
+    entries.flatten().find_map(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("Anthropic.ClaudeCode_") {
+            return None;
+        }
+        let binary = entry.path().join("claude.exe");
+        binary.is_file().then_some(binary)
+    })
 }
 
 fn push_candidate(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
@@ -359,7 +449,11 @@ fn capture_usage_inner(binary: &Path, probe: &Path, session_id: &str) -> Result<
             }
         }
 
-        if !usage_sent && started.elapsed() >= STARTUP_DELAY {
+        if !usage_sent
+            && ((started.elapsed() >= STARTUP_MIN_DELAY
+                && capture_is_interactive_ready(&normalized))
+                || started.elapsed() >= STARTUP_FALLBACK_DELAY)
+        {
             if let Err(error) = writer.write_all(b"/usage\r").and_then(|_| writer.flush()) {
                 break Err(format!("Claude CLI PTY write failed: {error}"));
             }
@@ -412,9 +506,24 @@ fn normalized_scan(value: &str) -> String {
         .filter(|ch| !ch.is_whitespace())
         .collect()
 }
+
+fn capture_is_interactive_ready(normalized: &str) -> bool {
+    !normalized.contains("waitingforauthentication")
+        && !normalized.contains("refreshing")
+        && (normalized.contains("claudecode")
+            || normalized.contains("readytocodehere")
+            || normalized.contains("doyoutrustthefilesinthisfolder"))
+}
+
 fn capture_has_terminal_result(normalized: &str) -> bool {
     let has_session = normalized.contains("currentsession") && normalized.contains('%');
+    let has_usage_credits = normalized.contains("usagecredits")
+        && (normalized.contains("spent") || normalized.contains("%used"));
+    let has_cowork_credit = normalized.contains("claudecodeandcoworkcredit")
+        && (normalized.contains("%used") || normalized.contains("%remaining"));
     has_session
+        || has_usage_credits
+        || has_cowork_credit
         || normalized.contains("currentlyusingyoursubscription")
         || normalized.contains("failedtoloadusagedata")
         || normalized.contains("oauthsessionexpired")
@@ -451,6 +560,7 @@ fn parse_usage_output(raw: &str) -> Result<Vec<QuotaWindow>, String> {
     if let Some(remaining) = weekly {
         windows.push(cli_window(QuotaWindowKind::Weekly, "Weekly", remaining));
     }
+    windows.extend(parse_enterprise_credit_windows(&clean));
     if windows.is_empty() {
         if lower.contains("currently using your subscription")
             && lower.contains("claude code usage")
@@ -481,6 +591,124 @@ fn cli_window(kind: QuotaWindowKind, label: &str, remaining_percent: f64) -> Quo
         currency: None,
         show_meter: true,
         source: SOURCE,
+    }
+}
+
+fn parse_enterprise_credit_windows(clean: &str) -> Vec<QuotaWindow> {
+    let mut windows = Vec::new();
+    if let Some(section) = section_after_last_label(clean, "Claude Code and Cowork credit") {
+        if let Some(remaining_percent) = remaining_percent_in_text(&section) {
+            windows.push(QuotaWindow {
+                kind: QuotaWindowKind::Billing,
+                label: "Claude Code and Cowork credit".to_owned(),
+                metric: "quota",
+                additional: true,
+                used: None,
+                limit: None,
+                remaining: None,
+                used_percent: Some(100.0 - remaining_percent),
+                remaining_percent: Some(remaining_percent),
+                remaining_label: None,
+                // The CLI currently exposes an expiry date without a precise timestamp.
+                // Do not misrepresent `Expires` as a quota reset instant.
+                resets_at: None,
+                currency: None,
+                show_meter: true,
+                source: SOURCE,
+            });
+        }
+    }
+    if let Some(section) = section_after_last_label(clean, "Usage credits") {
+        if let Some((used, limit)) = dollar_spend_pair(&section) {
+            let remaining = (limit - used).max(0.0);
+            let used_percent = (limit > 0.0).then_some((used / limit * 100.0).clamp(0.0, 100.0));
+            windows.push(QuotaWindow {
+                kind: QuotaWindowKind::Billing,
+                label: "Usage credits".to_owned(),
+                metric: "spend",
+                additional: false,
+                used: Some(used),
+                limit: Some(limit),
+                remaining: Some(remaining),
+                used_percent,
+                remaining_percent: used_percent.map(|value| 100.0 - value),
+                remaining_label: None,
+                // `Resets Oct 1 (Asia/Seoul)` has no time-of-day. Keep the value
+                // truthful instead of inventing an RFC3339 reset instant.
+                resets_at: None,
+                currency: Some("USD".to_owned()),
+                show_meter: true,
+                source: SOURCE,
+            });
+        }
+    }
+    windows
+}
+
+fn section_after_last_label(text: &str, label: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let start = lower.rfind(&label.to_ascii_lowercase())?;
+    Some(text[start..].chars().take(600).collect())
+}
+
+fn remaining_percent_in_text(text: &str) -> Option<f64> {
+    let percent_index = text.find('%')?;
+    let prefix = text[..percent_index].trim_end();
+    let start = prefix
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_ascii_digit() || *ch == '.')
+        .last()
+        .map(|(index, _)| index)?;
+    let raw = prefix[start..].parse::<f64>().ok()?.clamp(0.0, 100.0);
+    let suffix = normalized_scan(
+        &text[percent_index + 1..]
+            .chars()
+            .take(80)
+            .collect::<String>(),
+    );
+    if suffix.contains("used") || suffix.contains("spent") || suffix.contains("consumed") {
+        Some(100.0 - raw)
+    } else if suffix.contains("left")
+        || suffix.contains("remaining")
+        || suffix.contains("available")
+    {
+        Some(raw)
+    } else {
+        None
+    }
+}
+
+fn dollar_spend_pair(text: &str) -> Option<(f64, f64)> {
+    let lower = text.to_ascii_lowercase();
+    let spent = lower.find("spent")?;
+    let prefix = &text[..spent];
+    let mut values = Vec::new();
+    let bytes = prefix.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() && values.len() < 2 {
+        if bytes[index] != b'$' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let start = index;
+        while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'.') {
+            index += 1;
+        }
+        if index > start {
+            if let Ok(value) = prefix[start..index].parse::<f64>() {
+                values.push(value);
+            }
+        }
+    }
+    match values.as_slice() {
+        [used, limit]
+            if used.is_finite() && limit.is_finite() && *used >= 0.0 && *limit >= *used =>
+        {
+            Some((*used, *limit))
+        }
+        _ => None,
     }
 }
 
@@ -610,6 +838,59 @@ mod tests {
         )
         .expect_err("subscription notice is not quota data");
         assert!(error.contains("does not expose numeric"));
+    }
+
+    #[test]
+    fn parses_enterprise_credit_usage_with_glued_tui_spacing() {
+        let output = "Claude Code and Cowork credit\n100%used\nExpires September 10\nUsage credits%0%used$0.01 / $38.00spent\nResets Oct 1 (Asia/Seoul)";
+        let windows = parse_usage_output(output).expect("enterprise credit usage");
+        assert_eq!(windows.len(), 2);
+        let cowork = windows
+            .iter()
+            .find(|window| window.label == "Claude Code and Cowork credit")
+            .expect("cowork credit");
+        assert_eq!(cowork.kind, QuotaWindowKind::Billing);
+        assert_eq!(cowork.remaining_percent, Some(0.0));
+        assert_eq!(cowork.resets_at, None);
+        let spend = windows
+            .iter()
+            .find(|window| window.label == "Usage credits")
+            .expect("usage credits");
+        assert_eq!(spend.metric, "spend");
+        assert_eq!(spend.used, Some(0.01));
+        assert_eq!(spend.limit, Some(38.0));
+        assert_eq!(spend.remaining, Some(37.99));
+        assert_eq!(spend.currency.as_deref(), Some("USD"));
+        assert_eq!(spend.resets_at, None);
+    }
+
+    #[test]
+    fn auth_status_json_reads_only_logged_in_state() {
+        assert!(
+            parse_auth_status_output(br#"{"loggedIn":true,"authMethod":"claude.ai"}"#)
+                .expect("auth status")
+        );
+        assert!(!parse_auth_status_output(br#"{"loggedIn":false}"#).expect("auth status"));
+    }
+
+    #[test]
+    fn enterprise_credit_render_is_a_terminal_result() {
+        assert!(capture_has_terminal_result(&normalized_scan(
+            "Usage credits%0%used$0.01/$38.00spent"
+        )));
+        assert!(capture_has_terminal_result(&normalized_scan(
+            "Claude Code and Cowork credit 100% used"
+        )));
+    }
+
+    #[test]
+    fn interactive_ready_detection_waits_out_authentication_spinner() {
+        assert!(!capture_is_interactive_ready(&normalized_scan(
+            "Claude Code Waiting for authentication..."
+        )));
+        assert!(capture_is_interactive_ready(&normalized_scan(
+            "Claude Code Ready to code here?"
+        )));
     }
 
     #[test]

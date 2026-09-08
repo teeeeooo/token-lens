@@ -1,9 +1,45 @@
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::SystemTime;
 
 const API_BASE: &str = "https://cloudcode-pa.googleapis.com/v1internal";
 const HTTP_TIMEOUT_SECONDS: u64 = 12;
 const USER_AGENT: &str = "Token-Lens/2";
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS: u64 = 60_000;
+const MAX_RATE_LIMIT_COOLDOWN_MS: u64 = 60 * 60 * 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodeAssistError {
+    Unauthorized,
+    Forbidden,
+    RateLimited { retry_after_ms: u64 },
+    Transport,
+    Http(i32),
+    InvalidPayload,
+    InvalidRequest,
+}
+
+impl CodeAssistError {
+    pub(crate) fn diagnostic(&self, method: &str) -> String {
+        match self {
+            Self::Unauthorized => format!("Google Code Assist {method} returned HTTP 401"),
+            Self::Forbidden => format!("Google Code Assist {method} returned HTTP 403"),
+            Self::RateLimited { retry_after_ms } => format!(
+                "Google Code Assist {method} returned HTTP 429; retry in about {}s",
+                retry_after_ms.div_ceil(1000)
+            ),
+            Self::Transport => format!("Google Code Assist {method} request failed"),
+            Self::Http(status) => format!("Google Code Assist {method} returned HTTP {status}"),
+            Self::InvalidPayload => {
+                format!("Google Code Assist {method} returned an invalid payload")
+            }
+            Self::InvalidRequest => {
+                format!("Google Code Assist {method} request could not be encoded")
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LoadSnapshot {
@@ -57,10 +93,19 @@ pub(crate) fn load_antigravity_code_assist(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn load_code_assist(
     access_token: &str,
     requested_project: Option<&str>,
 ) -> Result<LoadSnapshot, String> {
+    load_code_assist_typed(access_token, requested_project)
+        .map_err(|error| error.diagnostic("loadCodeAssist"))
+}
+
+pub(crate) fn load_code_assist_typed(
+    access_token: &str,
+    requested_project: Option<&str>,
+) -> Result<LoadSnapshot, CodeAssistError> {
     let mut metadata = json!({
         "ideType": "IDE_UNSPECIFIED",
         "platform": "PLATFORM_UNSPECIFIED",
@@ -73,7 +118,7 @@ pub(crate) fn load_code_assist(
     if let Some(project) = clean(requested_project) {
         body["cloudaicompanionProject"] = Value::String(project);
     }
-    let response: LoadResponse = post_json("loadCodeAssist", access_token, &body)?;
+    let response: LoadResponse = post_json_typed("loadCodeAssist", access_token, &body)?;
     Ok(LoadSnapshot {
         project_id: clean(requested_project)
             .or_else(|| project_from_value(response.cloudaicompanion_project.as_ref())),
@@ -98,9 +143,16 @@ pub(crate) fn retrieve_user_quota(
     access_token: &str,
     project_id: &str,
 ) -> Result<Vec<QuotaBucket>, String> {
-    let project =
-        clean(Some(project_id)).ok_or_else(|| "Code Assist project is unavailable".to_owned())?;
-    let response: QuotaResponse = post_json(
+    retrieve_user_quota_typed(access_token, project_id)
+        .map_err(|error| error.diagnostic("retrieveUserQuota"))
+}
+
+pub(crate) fn retrieve_user_quota_typed(
+    access_token: &str,
+    project_id: &str,
+) -> Result<Vec<QuotaBucket>, CodeAssistError> {
+    let project = clean(Some(project_id)).ok_or(CodeAssistError::InvalidRequest)?;
+    let response: QuotaResponse = post_json_typed(
         "retrieveUserQuota",
         access_token,
         &json!({ "project": project }),
@@ -112,9 +164,16 @@ fn post_json<T>(method: &str, access_token: &str, body: &Value) -> Result<T, Str
 where
     T: for<'de> Deserialize<'de>,
 {
+    post_json_typed(method, access_token, body).map_err(|error| error.diagnostic(method))
+}
+
+fn post_json_typed<T>(method: &str, access_token: &str, body: &Value) -> Result<T, CodeAssistError>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let token = access_token.trim();
     if token.is_empty() {
-        return Err("Google access token is unavailable".to_owned());
+        return Err(CodeAssistError::Unauthorized);
     }
     let request = minreq::post(format!("{API_BASE}:{method}"))
         .with_header("authorization", format!("Bearer {token}"))
@@ -124,22 +183,55 @@ where
         .with_timeout(HTTP_TIMEOUT_SECONDS)
         .with_follow_redirects(false)
         .with_json(body)
-        .map_err(|_| format!("Google Code Assist {method} request could not be encoded"))?;
-    let response = request.send().map_err(|error| {
-        format!(
-            "Google Code Assist {method} request failed ({})",
-            crate::http_diagnostic::transport_category(&error)
-        )
-    })?;
-    if !(200..300).contains(&response.status_code) {
-        return Err(format!(
-            "Google Code Assist {method} returned HTTP {}",
-            response.status_code
-        ));
+        .map_err(|_| CodeAssistError::InvalidRequest)?;
+    let response = request.send().map_err(|_| CodeAssistError::Transport)?;
+    match response.status_code {
+        200..=299 => {}
+        401 => return Err(CodeAssistError::Unauthorized),
+        403 => return Err(CodeAssistError::Forbidden),
+        429 => {
+            return Err(CodeAssistError::RateLimited {
+                retry_after_ms: retry_after_ms(&response),
+            })
+        }
+        status => return Err(CodeAssistError::Http(status)),
     }
     response
         .json::<T>()
-        .map_err(|_| format!("Google Code Assist {method} returned an invalid payload"))
+        .map_err(|_| CodeAssistError::InvalidPayload)
+}
+
+fn retry_after_ms(response: &minreq::Response) -> u64 {
+    retry_after_header_ms(
+        response.headers.get("retry-after").map(String::as_str),
+        DateTime::<Utc>::from(SystemTime::now()),
+    )
+}
+
+fn retry_after_header_ms(raw: Option<&str>, now: DateTime<Utc>) -> u64 {
+    let Some(raw) = raw else {
+        return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+    };
+    if let Ok(seconds) = raw.trim().parse::<u64>() {
+        return seconds
+            .saturating_mul(1000)
+            .clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS);
+    }
+    let when = DateTime::parse_from_rfc2822(raw.trim())
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(raw.trim(), "%a, %d %b %Y %H:%M:%S GMT")
+                .ok()
+                .map(|value| value.and_utc())
+        });
+    if let Some(when) = when {
+        let millis = when.signed_duration_since(now).num_milliseconds();
+        if millis > 0 {
+            return (millis as u64).clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS);
+        }
+    }
+    DEFAULT_RATE_LIMIT_COOLDOWN_MS
 }
 
 fn clean(value: Option<&str>) -> Option<String> {
@@ -224,6 +316,26 @@ mod tests {
         assert_eq!(
             project_from_value(load.cloudaicompanion_project.as_ref()).as_deref(),
             Some("agy-project")
+        );
+    }
+
+    #[test]
+    fn retry_after_seconds_and_http_date_are_bounded_and_parsed() {
+        let now = DateTime::parse_from_rfc3339("2026-09-08T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(retry_after_header_ms(Some("120"), now), 120_000);
+        assert_eq!(
+            retry_after_header_ms(Some("Tue, 08 Sep 2026 00:02:00 GMT"), now),
+            120_000
+        );
+        assert_eq!(
+            retry_after_header_ms(Some("999999"), now),
+            MAX_RATE_LIMIT_COOLDOWN_MS
+        );
+        assert_eq!(
+            retry_after_header_ms(None, now),
+            DEFAULT_RATE_LIMIT_COOLDOWN_MS
         );
     }
 

@@ -20,6 +20,7 @@ const EN = Object.freeze({
   'common.unavailable': 'Unavailable', 'common.stale': 'Stale', 'common.noQuotaWindows': 'No quota windows', 'common.loading': 'Loading…', 'common.noUsage': 'No usage',
   'common.refreshing': 'Refreshing…', 'common.failedRefresh': 'Failed to refresh usage', 'common.failedSettings': 'Failed to load settings',
   'view.home': 'Home', 'view.tool': 'Tools', 'view.model': 'Models', 'view.session': 'Sessions', 'view.limits': 'Limits', 'view.choose': 'Choose view',
+  'limits.home': 'Home', 'limits.showOnHome': 'Show this quota on Home', 'limits.homeAuto': 'Home: Auto',
   'session.back': '‹ Sessions', 'session.notFound': 'Session detail not found on this machine.', 'session.noActivity': 'No activity in this period.',
   'session.noSessionUsage': 'No session usage', 'session.mostTokens': '↕ Most tokens', 'session.newest': '↕ Newest',
   'session.messages': '{count} msgs', 'session.turn': 'AI {label}', 'session.split': 'in {input} · out {output} · cache {cache}{reason}', 'session.reason': ' · reason {value}',
@@ -48,6 +49,7 @@ const KO = Object.freeze({
   'common.unavailable': '사용 불가', 'common.stale': '이전 값', 'common.noQuotaWindows': '표시할 한도 구간 없음', 'common.loading': '불러오는 중…', 'common.noUsage': '사용량 없음',
   'common.refreshing': '새로고침 중…', 'common.failedRefresh': '사용량을 새로고침하지 못했습니다', 'common.failedSettings': '설정을 불러오지 못했습니다',
   'view.home': '홈', 'view.tool': '도구', 'view.model': '모델', 'view.session': '세션', 'view.limits': '한도', 'view.choose': '화면 선택',
+  'limits.home': '홈', 'limits.showOnHome': '이 한도를 홈에 표시', 'limits.homeAuto': '홈: 자동',
   'session.back': '‹ 세션', 'session.notFound': '이 PC에서 세션 상세 정보를 찾을 수 없습니다.', 'session.noActivity': '이 기간의 활동이 없습니다.',
   'session.noSessionUsage': '세션 사용량 없음', 'session.mostTokens': '↕ 토큰 많은 순', 'session.newest': '↕ 최신 순',
   'session.messages': '{count}개 메시지', 'session.turn': 'AI {label}', 'session.split': '입력 {input} · 출력 {output} · 캐시 {cache}{reason}', 'session.reason': ' · 추론 {value}',
@@ -63,6 +65,7 @@ const JA = Object.freeze({
   'dashboard.totalTokens':'合計トークン','home.models':'モデル','home.limits':'制限','home.activity':'アクティビティ','home.trend':'トレンド','home.noModelUsage':'モデル使用量なし','home.noLimits':'表示できる制限なし','home.loading':'読み込み中','home.loadingHistory':'使用履歴を読み込み中…','home.historyUnavailable':'使用履歴を取得できません','home.activeDays':'アクティブ {count} 日','home.noHistory':'使用履歴なし','home.peak':'ピーク {value}',
   'common.unavailable':'利用不可','common.stale':'古い値','common.noQuotaWindows':'表示できるクォータ期間なし','common.loading':'読み込み中…','common.noUsage':'使用量なし','common.refreshing':'更新中…','common.failedRefresh':'使用量を更新できませんでした','common.failedSettings':'設定を読み込めませんでした',
   'view.home':'ホーム','view.tool':'ツール','view.model':'モデル','view.session':'セッション','view.limits':'制限','view.choose':'表示を選択',
+  'limits.home':'ホーム','limits.showOnHome':'このクォータをホームに表示','limits.homeAuto':'ホーム: 自動',
   'session.back':'‹ セッション','session.notFound':'このPCでセッション詳細が見つかりません。','session.noActivity':'この期間のアクティビティはありません。','session.noSessionUsage':'セッション使用量なし','session.mostTokens':'↕ トークン数順','session.newest':'↕ 新しい順','session.messages':'{count}件のメッセージ','session.turn':'AI {label}','session.split':'入力 {input} · 出力 {output} · キャッシュ {cache}{reason}','session.reason':' · 推論 {value}',
   'quota.usageCredits':'使用クレジット','quota.fiveHour':'5時間','quota.weekly':'週間','quota.monthly':'月間','quota.quota':'クォータ','quota.additional':'追加制限','quota.left':'残り {value}','quota.resets':'リセット','quota.credits':'{value} credits','quota.rateReset':'Rate-limitリセット','quota.available':'{count}件利用可能','history.tokens':'{value} トークン',
 });
@@ -73,6 +76,7 @@ const ZH_CN = Object.freeze({
   'dashboard.totalTokens':'总 Token','home.models':'模型','home.limits':'额度','home.activity':'活动','home.trend':'趋势','home.noModelUsage':'暂无模型使用量','home.noLimits':'暂无可显示额度','home.loading':'加载中','home.loadingHistory':'正在加载使用记录…','home.historyUnavailable':'无法获取使用记录','home.activeDays':'活跃 {count} 天','home.noHistory':'暂无使用记录','home.peak':'峰值 {value}',
   'common.unavailable':'不可用','common.stale':'旧数据','common.noQuotaWindows':'暂无可显示额度周期','common.loading':'加载中…','common.noUsage':'暂无使用量','common.refreshing':'刷新中…','common.failedRefresh':'无法刷新使用量','common.failedSettings':'无法加载设置',
   'view.home':'主页','view.tool':'工具','view.model':'模型','view.session':'会话','view.limits':'额度','view.choose':'选择视图',
+  'limits.home':'主页','limits.showOnHome':'在主页显示此额度','limits.homeAuto':'主页：自动',
   'session.back':'‹ 会话','session.notFound':'在此电脑上找不到会话详情。','session.noActivity':'此时间段没有活动。','session.noSessionUsage':'暂无会话使用量','session.mostTokens':'↕ Token 最多','session.newest':'↕ 最新','session.messages':'{count} 条消息','session.turn':'AI {label}','session.split':'输入 {input} · 输出 {output} · 缓存 {cache}{reason}','session.reason':' · 推理 {value}',
   'quota.usageCredits':'使用额度','quota.fiveHour':'5 小时','quota.weekly':'每周','quota.monthly':'每月','quota.quota':'额度','quota.additional':'附加额度','quota.left':'剩余 {value}','quota.resets':'重置','quota.credits':'{value} credits','quota.rateReset':'Rate-limit 重置','quota.available':'可用 {count} 次','history.tokens':'{value} Token',
 });
@@ -83,6 +87,7 @@ const ZH_TW = Object.freeze({
   'dashboard.totalTokens':'總 Token','home.models':'模型','home.limits':'額度','home.activity':'活動','home.trend':'趨勢','home.noModelUsage':'沒有模型使用量','home.noLimits':'沒有可顯示額度','home.loading':'載入中','home.loadingHistory':'正在載入使用記錄…','home.historyUnavailable':'無法取得使用記錄','home.activeDays':'活躍 {count} 天','home.noHistory':'沒有使用記錄','home.peak':'峰值 {value}',
   'common.unavailable':'無法使用','common.stale':'舊資料','common.noQuotaWindows':'沒有可顯示額度週期','common.loading':'載入中…','common.noUsage':'沒有使用量','common.refreshing':'重新整理中…','common.failedRefresh':'無法重新整理使用量','common.failedSettings':'無法載入設定',
   'view.home':'首頁','view.tool':'工具','view.model':'模型','view.session':'工作階段','view.limits':'額度','view.choose':'選擇檢視',
+  'limits.home':'首頁','limits.showOnHome':'在首頁顯示此額度','limits.homeAuto':'首頁：自動',
   'session.back':'‹ 工作階段','session.notFound':'在此電腦上找不到工作階段詳細資料。','session.noActivity':'此期間沒有活動。','session.noSessionUsage':'沒有工作階段使用量','session.mostTokens':'↕ Token 最多','session.newest':'↕ 最新','session.messages':'{count} 則訊息','session.turn':'AI {label}','session.split':'輸入 {input} · 輸出 {output} · 快取 {cache}{reason}','session.reason':' · 推理 {value}',
   'quota.usageCredits':'使用額度','quota.fiveHour':'5 小時','quota.weekly':'每週','quota.monthly':'每月','quota.quota':'額度','quota.additional':'附加額度','quota.left':'剩餘 {value}','quota.resets':'重設','quota.credits':'{value} credits','quota.rateReset':'Rate-limit 重設','quota.available':'可用 {count} 次','history.tokens':'{value} Token',
 });

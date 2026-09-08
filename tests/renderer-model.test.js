@@ -10,6 +10,7 @@ import {
   modelVendorFor,
   quotaRows,
   quotaWindowLabel,
+  quotaWindowSelectionKey,
   sessionRows,
   toolRows,
 } from '../src/renderer-model.js';
@@ -122,6 +123,33 @@ test('Gemini CLI uses its own client/model identity and Home shows the two most 
   ]);
 });
 
+
+test('Gemini Home quota selections override Auto and explicit empty hides Gemini from Home', () => {
+  const limits = { providers: [{
+    provider: 'gemini', planLabel: 'Google AI Pro', status: 'ok',
+    windows: [
+      { kind: 'other', metric: 'quota', additional: true, label: 'gemini-3.1-pro-preview', remainingPercent: 75 },
+      { kind: 'other', metric: 'quota', additional: true, label: 'gemini-2.5-pro', remainingPercent: 15 },
+      { kind: 'other', metric: 'quota', additional: true, label: 'gemini-3.5-flash', remainingPercent: 80 },
+      { kind: 'other', metric: 'quota', additional: true, label: 'gemini-2.5-flash', remainingPercent: 25 },
+    ],
+  }] };
+  const gemini = quotaRows(limits).find((row) => row.providerId === 'gemini');
+  assert.deepEqual(homeQuotaWindows(gemini).map((window) => window.label), [
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+  ]);
+
+  const selections = { gemini: [
+    quotaWindowSelectionKey(gemini, gemini.windows[0]),
+    quotaWindowSelectionKey(gemini, gemini.windows[2]),
+  ] };
+  assert.deepEqual(homeQuotaWindows(gemini, selections).map((window) => window.label), [
+    'gemini-3.1-pro-preview',
+    'gemini-3.5-flash',
+  ]);
+  assert.deepEqual(homeQuotaRows(limits, { gemini: [] }).map((row) => row.providerId), []);
+});
 
 test('Antigravity keeps grouped quota labels and Home chooses the constrained lane per cadence', () => {
   const [antigravity] = quotaRows({ providers: [{

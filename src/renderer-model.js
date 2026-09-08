@@ -197,8 +197,8 @@ export function quotaRows(limits) {
   }).sort((a, b) => providerRank(a.providerId) - providerRank(b.providerId));
 }
 
-export function homeQuotaRows(limits) {
-  return quotaRows(limits).filter((row) => homeQuotaWindows(row).length > 0);
+export function homeQuotaRows(limits, selections = {}) {
+  return quotaRows(limits).filter((row) => homeQuotaWindows(row, selections).length > 0);
 }
 
 export function formatQuotaCount(window, showUsed = false) {
@@ -210,7 +210,16 @@ export function formatQuotaCount(window, showUsed = false) {
 }
 
 
-export function homeQuotaWindows(row) {
+export function quotaWindowSelectionKey(row, window) {
+  return [
+    normalizedId(row?.providerId),
+    normalizedId(window?.metric || 'quota'),
+    normalizedId(window?.kind || 'other'),
+    normalizedId(window?.label),
+  ].join('|');
+}
+
+export function homeQuotaWindows(row, selections = {}) {
   const windows = Array.isArray(row?.windows)
     ? row.windows.filter((window) => window?.remainingPercent != null
       || (window?.metric === 'spend' && window?.used != null)
@@ -221,7 +230,11 @@ export function homeQuotaWindows(row) {
     .slice()
     .sort((a, b) => remaining(a) - remaining(b) || a.label.localeCompare(b.label))
     .slice(0, count);
-  if (row?.providerId === 'gemini') return constrained(windows);
+  if (row?.providerId === 'gemini') {
+    if (!Object.prototype.hasOwnProperty.call(selections || {}, 'gemini')) return constrained(windows);
+    const selected = new Set(Array.isArray(selections.gemini) ? selections.gemini : []);
+    return windows.filter((window) => selected.has(quotaWindowSelectionKey(row, window))).slice(0, 2);
+  }
   if (row?.providerId === 'antigravity') {
     const canonical = windows.filter((window) => !window.additional && ['session', 'weekly'].includes(window.kind));
     if (canonical.length) {

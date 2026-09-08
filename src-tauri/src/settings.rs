@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -53,6 +54,7 @@ pub struct AppSettings {
     pub show_compact_total_tokens: bool,
     pub windows_backdrop: WindowsBackdrop,
     pub language: String,
+    pub home_quota_selections: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for AppSettings {
@@ -69,6 +71,7 @@ impl Default for AppSettings {
             show_compact_total_tokens: false,
             windows_backdrop: WindowsBackdrop::Acrylic,
             language: "auto".to_owned(),
+            home_quota_selections: BTreeMap::new(),
         }
     }
 }
@@ -86,6 +89,7 @@ pub struct SettingsPatch {
     pub show_compact_total_tokens: Option<bool>,
     pub windows_backdrop: Option<WindowsBackdrop>,
     pub language: Option<String>,
+    pub home_quota_selections: Option<BTreeMap<String, Vec<String>>>,
 }
 
 pub struct SettingsStore {
@@ -158,6 +162,9 @@ impl SettingsStore {
         if let Some(language) = patch.language {
             value.language = language;
         }
+        if let Some(selections) = patch.home_quota_selections {
+            value.home_quota_selections = selections;
+        }
         *value = normalize_settings(value.clone());
         write_settings(&self.path, &value)?;
         Ok(value.clone())
@@ -188,6 +195,19 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
     const LANGUAGES: [&str; 6] = ["auto", "en", "ko", "ja", "zh-CN", "zh-TW"];
     if !LANGUAGES.contains(&value.language.as_str()) {
         value.language = "auto".to_owned();
+    }
+    for selections in value.home_quota_selections.values_mut() {
+        let mut normalized = Vec::new();
+        for key in selections.drain(..) {
+            let key = key.trim().to_ascii_lowercase();
+            if !key.is_empty() && key.len() <= 512 && !normalized.contains(&key) {
+                normalized.push(key);
+                if normalized.len() == 2 {
+                    break;
+                }
+            }
+        }
+        *selections = normalized;
     }
     value
 }
@@ -226,6 +246,7 @@ mod tests {
         assert!(!settings.show_compact_total_tokens);
         assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
         assert_eq!(settings.language, "auto");
+        assert!(settings.home_quota_selections.is_empty());
     }
 
     #[test]
@@ -282,6 +303,32 @@ mod tests {
         assert!(!settings.show_compact_total_tokens);
         assert_eq!(settings.windows_backdrop, WindowsBackdrop::Acrylic);
         assert_eq!(settings.language, "auto");
+        assert!(settings.home_quota_selections.is_empty());
+    }
+
+    #[test]
+    fn home_quota_selections_are_normalized_and_limited_to_two() {
+        let mut selections = BTreeMap::new();
+        selections.insert(
+            "gemini".to_owned(),
+            vec![
+                " GEMINI|QUOTA|OTHER|A ".to_owned(),
+                "gemini|quota|other|a".to_owned(),
+                "gemini|quota|other|b".to_owned(),
+                "gemini|quota|other|c".to_owned(),
+            ],
+        );
+        let settings = normalize_settings(AppSettings {
+            home_quota_selections: selections,
+            ..AppSettings::default()
+        });
+        assert_eq!(
+            settings.home_quota_selections.get("gemini"),
+            Some(&vec![
+                "gemini|quota|other|a".to_owned(),
+                "gemini|quota|other|b".to_owned(),
+            ])
+        );
     }
 
     #[test]
@@ -315,10 +362,13 @@ mod tests {
                 ..SettingsPatch::default()
             })
             .expect("first settings update should persist");
+        let mut home_quota_selections = BTreeMap::new();
+        home_quota_selections.insert("gemini".to_owned(), Vec::new());
         store
             .update(SettingsPatch {
                 floating_bubble_trigger: Some(FloatingBubbleTrigger::Hover),
                 floating_bubble_scale: Some(1.3),
+                home_quota_selections: Some(home_quota_selections),
                 ..SettingsPatch::default()
             })
             .expect("second settings update should replace the same file");
@@ -335,6 +385,7 @@ mod tests {
         assert!(value.floating_bubble_enabled);
         assert_eq!(value.floating_bubble_trigger, FloatingBubbleTrigger::Hover);
         assert_eq!(value.floating_bubble_scale, 1.3);
+        assert_eq!(value.home_quota_selections.get("gemini"), Some(&Vec::new()));
         assert_eq!(
             value.window_bounds,
             Some(WindowBounds {

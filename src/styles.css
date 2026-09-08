@@ -189,3 +189,33 @@ html, body, #app {
   outline-offset: 2px;
   border-radius: 6px;
 }
+
+.limit-window-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.limit-home-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--token-lens-font-size-small);
+  cursor: pointer;
+  user-select: none;
+}
+
+.limit-home-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.limit-home-toggle.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

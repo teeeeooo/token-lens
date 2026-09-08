@@ -24,6 +24,7 @@ import {
   modelRows,
   quotaRows,
   quotaWindowLabel,
+  quotaWindowSelectionKey,
   sessionRows,
   toolRows,
 } from './renderer-model.js';
@@ -65,6 +66,22 @@ let activeLocale = navigator.languages?.[0] || navigator.language || 'en';
 const t = (key, params = {}) => translate(activeLanguage, key, params);
 const currentLocale = () => activeLocale;
 
+function normalizeHomeQuotaSelections(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const normalized = {};
+  for (const [provider, rawKeys] of Object.entries(value)) {
+    if (!Array.isArray(rawKeys)) continue;
+    const keys = [];
+    for (const rawKey of rawKeys) {
+      const key = String(rawKey || '').trim().toLowerCase();
+      if (key && !keys.includes(key)) keys.push(key);
+      if (keys.length === 2) break;
+    }
+    normalized[String(provider || '').trim().toLowerCase()] = keys;
+  }
+  return normalized;
+}
+
 const state = {
   stats: null,
   history: null,
@@ -84,6 +101,7 @@ const state = {
     showCompactTotalTokens: false,
     windowsBackdrop: 'acrylic',
     language: 'auto',
+    homeQuotaSelections: {},
   },
   floatingBubble: { collapsed: false, side: null },
   settingsOpen: false,
@@ -318,6 +336,7 @@ function applySettings(settings = {}) {
     showCompactTotalTokens: settings.showCompactTotalTokens === true,
     windowsBackdrop: settings.windowsBackdrop === 'off' ? 'off' : 'acrylic',
     language: normalizeLanguage(settings.language ?? state.settings.language),
+    homeQuotaSelections: normalizeHomeQuotaSelections(settings.homeQuotaSelections ?? state.settings.homeQuotaSelections),
   };
   activeLanguage = resolveLanguage(state.settings.language, navigator.languages);
   activeLocale = state.settings.language === 'auto'
@@ -649,7 +668,7 @@ function renderHomeModels() {
 
 function renderHomeLimits() {
   const { module, body } = homeModule(t('home.limits'), 'limits', 'view-icon-limits');
-  const rows = homeQuotaRows(state.stats?.limits);
+  const rows = homeQuotaRows(state.stats?.limits, state.settings.homeQuotaSelections);
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
@@ -671,7 +690,7 @@ function renderHomeLimits() {
     head.append(mark, name);
     const windows = document.createElement('div');
     windows.className = 'home-limit-windows';
-    const compactWindows = homeQuotaWindows(row);
+    const compactWindows = homeQuotaWindows(row, state.settings.homeQuotaSelections);
     if (!compactWindows.length) {
       const empty = document.createElement('div');
       empty.className = 'home-module-empty';
@@ -1084,6 +1103,34 @@ function renderBreakdown() {
   els.breakdown.replaceChildren(...rows.map((row) => breakdownRow(row, max, state.view)));
 }
 
+function hasExplicitHomeQuotaSelection(providerId) {
+  return Object.prototype.hasOwnProperty.call(state.settings.homeQuotaSelections || {}, providerId);
+}
+
+function effectiveHomeQuotaSelectionKeys(row) {
+  const providerId = String(row?.providerId || '').trim().toLowerCase();
+  if (hasExplicitHomeQuotaSelection(providerId)) {
+    return Array.isArray(state.settings.homeQuotaSelections[providerId])
+      ? [...state.settings.homeQuotaSelections[providerId]]
+      : [];
+  }
+  return homeQuotaWindows(row, {}).map((window) => quotaWindowSelectionKey(row, window));
+}
+
+async function setHomeQuotaWindowSelection(row, window, enabled) {
+  const providerId = String(row?.providerId || '').trim().toLowerCase();
+  if (!providerId) return;
+  const key = quotaWindowSelectionKey(row, window);
+  let keys = effectiveHomeQuotaSelectionKeys(row).filter((value) => value !== key);
+  if (enabled) {
+    if (keys.length >= 2) return;
+    keys.push(key);
+  }
+  const selections = normalizeHomeQuotaSelections(state.settings.homeQuotaSelections);
+  selections[providerId] = keys;
+  await saveSettings({ homeQuotaSelections: selections });
+}
+
 function limitWindowNode(window, row) {
   const item = document.createElement('div');
   item.className = 'limit-window';
@@ -1097,7 +1144,32 @@ function limitWindowNode(window, row) {
   label.textContent = localizedQuotaWindowLabel(window);
   const value = document.createElement('span');
   value.textContent = quotaWindowValue(window, { detail: true });
-  text.append(label, value);
+  if (row.providerId === 'gemini') {
+    const selectionKeys = effectiveHomeQuotaSelectionKeys(row);
+    const selectionKey = quotaWindowSelectionKey(row, window);
+    const selected = selectionKeys.includes(selectionKey);
+    const actions = document.createElement('div');
+    actions.className = 'limit-window-actions';
+    const toggle = document.createElement('label');
+    toggle.className = 'limit-home-toggle';
+    toggle.title = t('limits.showOnHome');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = selected;
+    input.disabled = !selected && selectionKeys.length >= 2;
+    const caption = document.createElement('span');
+    caption.textContent = t('limits.home');
+    toggle.append(input, caption);
+    toggle.classList.toggle('is-disabled', input.disabled);
+    input.addEventListener('change', () => {
+      input.disabled = true;
+      void setHomeQuotaWindowSelection(row, window, input.checked);
+    });
+    actions.append(value, toggle);
+    text.append(label, actions);
+  } else {
+    text.append(label, value);
+  }
   item.append(text);
   if (window.remainingPercent != null) {
     const meter = document.createElement('div');
@@ -1147,6 +1219,7 @@ function renderLimits() {
     plan.textContent = [
       row.plan,
       row.status === 'stale' ? t('common.stale') : row.status === 'unavailable' ? t('common.unavailable') : '',
+      row.providerId === 'gemini' && !hasExplicitHomeQuotaSelection('gemini') ? t('limits.homeAuto') : '',
     ].filter(Boolean).join(' · ');
     head.append(name, plan);
     const windows = document.createElement('div');

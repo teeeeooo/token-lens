@@ -57,3 +57,11 @@ test('fresh expanded window is large enough for the complete home surface', () =
   assert.equal(mainWindow.maxWidth, 1200);
   assert.equal(mainWindow.maxHeight, 1400);
 });
+
+
+test('provider filter and Gemini quota controls remain bounded at narrow window widths', () => {
+  assert.match(v2Css, /\.provider-filter-menu\s*\{[^}]*max-width:\s*calc\(100vw - 28px\);/s);
+  assert.match(v2Css, /\.limit-windows-gemini\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+  assert.match(v2Css, /@media \(max-width:\s*340px\)[\s\S]*?\.limit-window-text-selectable\s*\{[^}]*display:\s*grid;/s);
+  assert.match(v2Css, /\.breakdown \.row-name\s*\{[^}]*overflow:\s*hidden;/s);
+});

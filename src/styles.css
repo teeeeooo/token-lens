@@ -219,3 +219,94 @@ html, body, #app {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* Provider filter shared by Models and Sessions. Keep it compact at the
+   300 px minimum window width instead of spreading provider chips across a row. */
+.provider-filter {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-self: stretch;
+  justify-content: flex-end;
+  padding: 0 0 2px;
+}
+.provider-filter-button {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(var(--line-rgb), 0.14);
+  border-radius: 7px;
+  background: rgba(var(--panel-rgb), 0.72);
+  color: var(--muted);
+  cursor: pointer;
+}
+.provider-filter-button > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-filter-arrow { flex: 0 0 auto; font-size: 9px; }
+.provider-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  width: min(190px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
+  padding: 5px;
+  border: 1px solid rgba(var(--line-rgb), 0.18);
+  border-radius: 9px;
+  background: rgba(var(--panel-rgb), 0.98);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+}
+.provider-filter-item {
+  width: 100%;
+  padding: 6px 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.provider-filter-item:hover,
+.provider-filter-item.is-selected {
+  background: rgba(var(--overlay-rgb), 0.07);
+  color: var(--text);
+}
+
+/* Gemini exposes several long model-named quota lanes. Once Home selection
+   controls are present, give each lane a full row so the toggle never gets
+   pushed outside the 380 px default window. */
+.limit-windows-gemini { grid-template-columns: minmax(0, 1fr); }
+.limit-window-text-selectable { min-width: 0; }
+.limit-window-text-selectable > span:first-child { flex: 1 1 auto; }
+.limit-window-text-selectable .limit-window-actions { min-width: 0; }
+
+@media (max-width: 340px) {
+  .limit-window-text-selectable {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .limit-window-text-selectable .limit-window-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+/* Keep breakdown labels shrinkable so long model/session names cannot push the
+   token/cost metrics past the right edge. */
+.breakdown .row-name { overflow: hidden; }
+.breakdown .row-label { flex: 1 1 auto; }

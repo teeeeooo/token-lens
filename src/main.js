@@ -12,6 +12,7 @@ import {
 } from './fixed-periods.js';
 import {
   clientColor,
+  clientLabel,
   compactTotalLabel,
   formatCompact,
   formatCost,
@@ -25,6 +26,7 @@ import {
   quotaRows,
   quotaWindowLabel,
   quotaWindowSelectionKey,
+  providerFilteredTotals,
   sessionRows,
   toolRows,
 } from './renderer-model.js';
@@ -54,6 +56,7 @@ const HISTORY_REFRESH_MS = 10 * 60 * 1000;
 const BUBBLE_LOGICAL_HEIGHT = 34;
 const BUBBLE_MAX_WIDTH = 240;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
+const PROVIDER_FILTER_ORDER = ['codex', 'claude', 'gemini', 'antigravity'];
 const VIEW_META = Object.freeze({
   home: { labelKey: 'view.home', icon: 'view-icon-home' },
   tool: { labelKey: 'view.tool', icon: 'view-icon-tool' },
@@ -114,6 +117,8 @@ const state = {
   refreshQueuedForce: false,
   lastRefreshAt: 0,
   viewMenuOpen: false,
+  providerFilter: [],
+  providerFilterMenuOpen: false,
   alwaysOnTop: true,
   openSession: null,
   detailSort: 'time',
@@ -595,12 +600,16 @@ function syncPeriodTabs() {
 
 function renderHeadline() {
   const period = currentPeriod();
-  const total = Math.max(0, Number(period.totalTokens) || 0);
+  const filterApplies = ['model', 'session'].includes(state.view) && state.providerFilter.length > 0;
+  const totals = filterApplies
+    ? providerFilteredTotals(period, state.providerFilter)
+    : { totalTokens: period.totalTokens, costUsd: period.costUsd };
+  const total = Math.max(0, Number(totals.totalTokens) || 0);
   els.totalTokens.textContent = formatNumber(total);
   const compactLabel = compactTotalLabel(total, state.settings.showCompactTotalTokens);
   els.totalTokensCompact.textContent = compactLabel;
   els.totalTokensCompact.classList.toggle('hidden', !compactLabel);
-  els.cost.textContent = formatCost(period.costUsd);
+  els.cost.textContent = formatCost(totals.costUsd);
   syncPeriodTabs();
 }
 
@@ -916,9 +925,77 @@ function breakdownRow(row, max, kind) {
 function rowsForView() {
   const period = currentPeriod();
   if (state.view === 'tool') return toolRows(period);
-  if (state.view === 'model') return modelRows(period);
-  if (state.view === 'session') return sessionRows(period);
+  if (state.view === 'model') return modelRows(period, state.providerFilter);
+  if (state.view === 'session') return sessionRows(period, state.providerFilter);
   return [];
+}
+
+function providerFilterLabel() {
+  if (!state.providerFilter.length) return t('filter.all');
+  const labels = state.providerFilter.map((provider) => clientLabel(provider).replace(' Code', ''));
+  if (labels.length <= 2) return labels.join(' + ');
+  return t('filter.providersCount', { count: labels.length });
+}
+
+function setProviderFilter(next) {
+  state.providerFilter = PROVIDER_FILTER_ORDER.filter((provider) => next.includes(provider));
+  state.openSession = null;
+  render();
+}
+
+function renderProviderFilter() {
+  const wrap = document.createElement('div');
+  wrap.className = `provider-filter${state.providerFilterMenuOpen ? ' is-open' : ''}`;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'provider-filter-button';
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', String(state.providerFilterMenuOpen));
+  button.setAttribute('aria-label', t('filter.provider'));
+  const buttonLabel = document.createElement('span');
+  buttonLabel.textContent = providerFilterLabel();
+  const arrow = document.createElement('span');
+  arrow.className = 'provider-filter-arrow';
+  arrow.textContent = '▾';
+  button.append(buttonLabel, arrow);
+  button.addEventListener('click', () => {
+    state.providerFilterMenuOpen = !state.providerFilterMenuOpen;
+    renderBreakdown();
+  });
+  wrap.append(button);
+  if (state.providerFilterMenuOpen) {
+    const menu = document.createElement('div');
+    menu.className = 'provider-filter-menu';
+    menu.setAttribute('role', 'menu');
+    const all = document.createElement('button');
+    all.type = 'button';
+    all.className = `provider-filter-item${state.providerFilter.length ? '' : ' is-selected'}`;
+    all.setAttribute('role', 'menuitemcheckbox');
+    all.setAttribute('aria-checked', String(state.providerFilter.length === 0));
+    all.textContent = `${state.providerFilter.length ? '○' : '✓'} ${t('filter.all')}`;
+    all.addEventListener('click', () => setProviderFilter([]));
+    menu.append(all);
+    for (const provider of PROVIDER_FILTER_ORDER) {
+      const selected = state.providerFilter.includes(provider);
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `provider-filter-item${selected ? ' is-selected' : ''}`;
+      item.setAttribute('role', 'menuitemcheckbox');
+      item.setAttribute('aria-checked', String(selected));
+      item.textContent = `${selected ? '✓' : '○'} ${clientLabel(provider).replace(' Code', '')}`;
+      item.addEventListener('click', () => {
+        const next = selected
+          ? state.providerFilter.filter((value) => value !== provider)
+          : [...state.providerFilter, provider];
+        setProviderFilter(next);
+        state.providerFilterMenuOpen = true;
+        renderBreakdown();
+      });
+      menu.append(item);
+    }
+    wrap.append(menu);
+  }
+  return wrap;
 }
 async function openSessionDetail(row) {
   if (!row?.sessionId || !['codex', 'claude'].includes(row.client)) return;
@@ -1093,14 +1170,18 @@ function renderSessionDetail() {
 function renderBreakdown() {
   const rows = rowsForView();
   const max = Math.max(1, ...rows.map((row) => row.value));
+  const nodes = [];
+  if (['model', 'session'].includes(state.view)) nodes.push(renderProviderFilter());
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
     empty.textContent = state.view === 'session' ? t('session.noSessionUsage') : t('common.noUsage');
-    els.breakdown.replaceChildren(empty);
+    nodes.push(empty);
+    els.breakdown.replaceChildren(...nodes);
     return;
   }
-  els.breakdown.replaceChildren(...rows.map((row) => breakdownRow(row, max, state.view)));
+  nodes.push(...rows.map((row) => breakdownRow(row, max, state.view)));
+  els.breakdown.replaceChildren(...nodes);
 }
 
 function hasExplicitHomeQuotaSelection(providerId) {
@@ -1139,7 +1220,7 @@ function limitWindowNode(window, row) {
     : '';
   if (window.additional || creditsDetail) item.classList.add('limit-window-wide');
   const text = document.createElement('div');
-  text.className = 'limit-window-text';
+  text.className = `limit-window-text${row.providerId === 'gemini' ? ' limit-window-text-selectable' : ''}`;
   const label = document.createElement('span');
   label.textContent = localizedQuotaWindowLabel(window);
   const value = document.createElement('span');
@@ -1223,7 +1304,7 @@ function renderLimits() {
     ].filter(Boolean).join(' · ');
     head.append(name, plan);
     const windows = document.createElement('div');
-    windows.className = 'limit-windows';
+    windows.className = `limit-windows${row.providerId === 'gemini' ? ' limit-windows-gemini' : ''}`;
     for (const window of row.windows) windows.append(limitWindowNode(window, row));
     if (!row.windows.length) {
       const empty = document.createElement('div');
@@ -1249,6 +1330,7 @@ function setView(view) {
   state.view = view;
   if (view !== 'session') state.openSession = null;
   state.viewMenuOpen = false;
+  state.providerFilterMenuOpen = false;
   render();
   if (changed && view === 'session') void refresh();
 }
@@ -1269,6 +1351,7 @@ function setPeriod(period) {
   if (changed) state.openSession = null;
   if (MONTH_PERIODS.includes(period)) state.monthMode = period;
   setPeriodMenuOpen(false);
+  state.providerFilterMenuOpen = false;
   render();
   if (derivedRequest(period, { locale: currentLocale() })) void refresh();
   return changed;
@@ -1653,9 +1736,15 @@ els.monthPeriodMenu?.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('click', (event) => {
-  if (!state.periodMenuOpen) return;
-  if (els.monthPeriodMenu?.contains(event.target) || els.monthPeriodTab?.contains(event.target)) return;
-  setPeriodMenuOpen(false);
+  if (state.periodMenuOpen
+      && !els.monthPeriodMenu?.contains(event.target)
+      && !els.monthPeriodTab?.contains(event.target)) {
+    setPeriodMenuOpen(false);
+  }
+  if (state.providerFilterMenuOpen && !event.target.closest?.('.provider-filter')) {
+    state.providerFilterMenuOpen = false;
+    if (['model', 'session'].includes(state.view)) renderBreakdown();
+  }
 });
 
 document.addEventListener('keydown', (event) => {
@@ -1663,6 +1752,12 @@ document.addEventListener('keydown', (event) => {
   if (state.periodMenuOpen) {
     event.preventDefault();
     setPeriodMenuOpen(false, { restoreFocus: true });
+    return;
+  }
+  if (state.providerFilterMenuOpen) {
+    event.preventDefault();
+    state.providerFilterMenuOpen = false;
+    renderBreakdown();
     return;
   }
   if (state.settingsOpen) {

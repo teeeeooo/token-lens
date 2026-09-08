@@ -10,6 +10,7 @@ import {
   modelVendorFor,
   quotaRows,
   quotaWindowLabel,
+  providerFilteredTotals,
   quotaWindowSelectionKey,
   sessionRows,
   toolRows,
@@ -43,6 +44,45 @@ test('renderer rows preserve v1 ranking semantics for supported tools', () => {
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0].name, 'Restore tray behavior');
   assert.equal(sessions[0].detail, 'Codex · gpt-5.6-sol · 12 msgs');
+});
+
+
+test('provider filters keep model and session rows scoped to the actual client', () => {
+  const filteredPeriod = {
+    totalTokens: 1000,
+    costUsd: 10,
+    clients: { codex: 300, gemini: 250, antigravity: 450 },
+    clientCosts: { codex: 3, gemini: 2.5, antigravity: 4.5 },
+    models: { 'gpt-5.6-sol': 300, 'gemini-3.1-pro': 500, 'claude-sonnet': 200 },
+    modelCosts: { 'gpt-5.6-sol': 3, 'gemini-3.1-pro': 5, 'claude-sonnet': 2 },
+    clientModels: {
+      codex: { 'gpt-5.6-sol': 300 },
+      gemini: { 'gemini-3.1-pro': 250 },
+      antigravity: { 'gemini-3.1-pro': 250, 'claude-sonnet': 200 },
+    },
+    clientModelCosts: {
+      codex: { 'gpt-5.6-sol': 3 },
+      gemini: { 'gemini-3.1-pro': 2.5 },
+      antigravity: { 'gemini-3.1-pro': 2.5, 'claude-sonnet': 2 },
+    },
+    sessions: {
+      'gemini:g1': { client: 'gemini', sessionId: 'g1', totalTokens: 250, costUsd: 2.5, models: { 'gemini-3.1-pro': 250 } },
+      'antigravity:a1': { client: 'antigravity', sessionId: 'a1', totalTokens: 450, costUsd: 4.5, models: { 'gemini-3.1-pro': 250, 'claude-sonnet': 200 } },
+    },
+  };
+  assert.deepEqual(providerFilteredTotals(filteredPeriod, ['gemini', 'antigravity']), { totalTokens: 700, costUsd: 7 });
+  assert.deepEqual(modelRows(filteredPeriod, ['gemini']).map((row) => [row.name, row.value]), [
+    ['gemini-3.1-pro', 250],
+  ]);
+  assert.deepEqual(modelRows(filteredPeriod, ['antigravity']).map((row) => [row.name, row.value]), [
+    ['gemini-3.1-pro', 250],
+    ['claude-sonnet', 200],
+  ]);
+  assert.deepEqual(modelRows(filteredPeriod, ['gemini', 'antigravity']).map((row) => [row.name, row.value]), [
+    ['gemini-3.1-pro', 500],
+    ['claude-sonnet', 200],
+  ]);
+  assert.deepEqual(sessionRows(filteredPeriod, ['gemini']).map((row) => row.client), ['gemini']);
 });
 
 test('compact formatter keeps dashboard-scale labels', () => {

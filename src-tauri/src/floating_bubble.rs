@@ -57,11 +57,18 @@ struct ExpandedState {
     always_on_top: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CollapsedState {
+    bounds: Bounds,
+    side: FloatingBubbleSide,
+}
+
 #[derive(Debug)]
 struct BubbleState {
     collapsed: bool,
     side: Option<FloatingBubbleSide>,
     expanded: Option<ExpandedState>,
+    last_collapsed: Option<CollapsedState>,
     collapsed_logical_width: f64,
 }
 
@@ -71,6 +78,7 @@ impl Default for BubbleState {
             collapsed: false,
             side: None,
             expanded: None,
+            last_collapsed: None,
             collapsed_logical_width: BUBBLE_LOGICAL_MIN_WIDTH,
         }
     }
@@ -212,6 +220,27 @@ fn collapsed_bounds(
         height,
     }
 }
+fn collapse_target(
+    expanded: Bounds,
+    previous: Option<CollapsedState>,
+    area: Bounds,
+    bubble_width: u32,
+    bubble_height: u32,
+    y_margin: i32,
+) -> Bounds {
+    match previous {
+        Some(previous) => resized_collapsed_bounds(
+            previous.bounds,
+            area,
+            bubble_width,
+            bubble_height,
+            previous.side,
+            y_margin,
+        ),
+        None => collapsed_bounds(expanded, area, bubble_width, bubble_height, y_margin),
+    }
+}
+
 fn dragged_bounds(
     cursor: (f64, f64),
     area: Bounds,
@@ -321,18 +350,27 @@ fn collapse_impl(
         return payload(settings, &state);
     }
     let current = Bounds::from_window(window)?;
-    let monitor = window
-        .current_monitor()
-        .map_err(window_error)?
-        .ok_or_else(|| "no monitor is available for the floating bubble".to_owned())?;
+    let previous = state.last_collapsed;
+    let monitor = if let Some(previous) = previous {
+        let center_x = previous.bounds.x as f64 + previous.bounds.width as f64 / 2.0;
+        let center_y = previous.bounds.y as f64 + previous.bounds.height as f64 / 2.0;
+        window
+            .monitor_from_point(center_x, center_y)
+            .map_err(window_error)?
+            .or_else(|| window.current_monitor().ok().flatten())
+    } else {
+        window.current_monitor().map_err(window_error)?
+    }
+    .ok_or_else(|| "no monitor is available for the floating bubble".to_owned())?;
     let scale = monitor.scale_factor();
     let bubble_scale = settings.get()?.floating_bubble_scale;
     let policy = PlatformPolicy::current();
     let area = collapsed_area(&monitor, policy);
     let (bubble_width, bubble_height) =
         physical_bubble_size(state.collapsed_logical_width, bubble_scale, scale);
-    let target = collapsed_bounds(
+    let target = collapse_target(
         current,
+        previous,
         area,
         bubble_width,
         bubble_height,
@@ -344,7 +382,12 @@ fn collapse_impl(
         always_on_top: window.is_always_on_top().map_err(window_error)?,
     });
     state.collapsed = true;
-    state.side = Some(side_for(target, area));
+    let side = side_for(target, area);
+    state.side = Some(side);
+    state.last_collapsed = Some(CollapsedState {
+        bounds: target,
+        side,
+    });
     apply_collapsed_window(window, target)?;
     appearance::apply_backdrop(window, &settings.get()?, true);
     payload(settings, &state)
@@ -412,9 +455,15 @@ pub fn expand(
         .map_err(window_error)?
         .or_else(|| window.current_monitor().ok().flatten())
         .ok_or_else(|| "no monitor is available for floating bubble expansion".to_owned())?;
+    let work_area = monitor_work_area(&monitor);
+    let collapsed_side = state.side.unwrap_or_else(|| side_for(current, work_area));
+    state.last_collapsed = Some(CollapsedState {
+        bounds: current,
+        side: collapsed_side,
+    });
     let target = expanded_bounds(
         current,
-        monitor_work_area(&monitor),
+        work_area,
         (expanded.logical_width, expanded.logical_height),
         monitor.scale_factor(),
     );
@@ -504,6 +553,10 @@ pub fn set_collapsed_width(
     );
     apply_collapsed_window(window, target)?;
     state.side = Some(side);
+    state.last_collapsed = Some(CollapsedState {
+        bounds: target,
+        side,
+    });
     payload(settings, &state)
 }
 
@@ -556,7 +609,12 @@ pub fn move_to_cursor(
     window
         .set_position(PhysicalPosition::new(target.x, target.y))
         .map_err(window_error)?;
-    state.side = Some(side_for(target, area));
+    let side = side_for(target, area);
+    state.side = Some(side);
+    state.last_collapsed = Some(CollapsedState {
+        bounds: target,
+        side,
+    });
     payload(settings, &state)
 }
 
@@ -711,6 +769,37 @@ mod tests {
         assert_eq!(resized.width, 120);
         assert_eq!(resized.height, 34);
         assert_eq!(1440 - (resized.x + resized.width as i32), 20);
+    }
+
+    #[test]
+    fn recollapse_prefers_the_previous_bubble_anchor_over_the_expanded_center() {
+        let previous = CollapsedState {
+            bounds: Bounds {
+                x: 1386,
+                y: 820,
+                width: 54,
+                height: 34,
+            },
+            side: FloatingBubbleSide::Right,
+        };
+        let expanded = Bounds {
+            x: 1000,
+            y: 100,
+            width: 380,
+            height: 720,
+        };
+        let restored = collapse_target(
+            expanded,
+            Some(previous),
+            area(),
+            120,
+            34,
+            COLLAPSED_Y_MARGIN,
+        );
+        assert_eq!(restored.x, 1320);
+        assert_eq!(restored.y, 820);
+        assert_eq!(restored.width, 120);
+        assert_eq!(restored.height, 34);
     }
 
     #[test]

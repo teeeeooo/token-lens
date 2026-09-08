@@ -85,14 +85,45 @@ export function iconClassForClient(client) {
   const id = normalizedId(client);
   return ['claude', 'codex', 'gemini', 'antigravity'].includes(id) ? `row-icon-${id}` : 'row-icon-token-monitor';
 }
-export function modelRows(period) {
-  const total = Math.max(0, finite(period?.totalTokens));
-  return Object.entries(period?.models || {})
+export function providerFilteredTotals(period, clients = []) {
+  const selected = Array.isArray(clients) ? clients.map(normalizedId).filter(Boolean) : [];
+  if (!selected.length) {
+    return {
+      totalTokens: Math.max(0, finite(period?.totalTokens)),
+      costUsd: Math.max(0, finite(period?.costUsd)),
+    };
+  }
+  return selected.reduce((totals, client) => ({
+    totalTokens: totals.totalTokens + Math.max(0, finite(period?.clients?.[client])),
+    costUsd: totals.costUsd + Math.max(0, finite(period?.clientCosts?.[client])),
+  }), { totalTokens: 0, costUsd: 0 });
+}
+
+export function modelRows(period, clients = []) {
+  const selected = Array.isArray(clients) ? clients.map(normalizedId).filter(Boolean) : [];
+  const models = {};
+  const costs = {};
+  if (selected.length) {
+    for (const client of selected) {
+      for (const [model, tokens] of Object.entries(period?.clientModels?.[client] || {})) {
+        models[model] = finite(models[model]) + finite(tokens);
+      }
+      for (const [model, cost] of Object.entries(period?.clientModelCosts?.[client] || {})) {
+        costs[model] = finite(costs[model]) + finite(cost);
+      }
+    }
+  }
+  const sourceModels = selected.length ? models : (period?.models || {});
+  const sourceCosts = selected.length ? costs : (period?.modelCosts || {});
+  const total = selected.length
+    ? providerFilteredTotals(period, selected).totalTokens
+    : Math.max(0, finite(period?.totalTokens));
+  return Object.entries(sourceModels)
     .map(([model, tokens]) => ({
       key: model,
       name: model,
       value: finite(tokens),
-      cost: finite(period?.modelCosts?.[model]),
+      cost: finite(sourceCosts?.[model]),
       share: total > 0 ? finite(tokens) / total : 0,
       color: modelColor(model),
       iconClass: `row-icon-${modelVendorFor(model) || 'token-monitor'}`,
@@ -117,7 +148,8 @@ export function toolRows(period) {
     .sort((a, b) => b.value - a.value || b.cost - a.cost || a.name.localeCompare(b.name));
 }
 
-export function sessionRows(period) {
+export function sessionRows(period, clients = []) {
+  const selected = new Set(Array.isArray(clients) ? clients.map(normalizedId).filter(Boolean) : []);
   return Object.entries(period?.sessions || {})
     .map(([key, session]) => {
       const models = Object.entries(session?.models || {})
@@ -147,7 +179,7 @@ export function sessionRows(period) {
         sessionId,
       };
     })
-    .filter((row) => row.value > 0)
+    .filter((row) => row.value > 0 && (!selected.size || selected.has(row.client)))
     .sort((a, b) => b.value - a.value || b.cost - a.cost || a.name.localeCompare(b.name));
 }
 

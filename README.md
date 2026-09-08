@@ -27,7 +27,7 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 ## ✨ Key Features
 
 - 🪟 **Floating Monitor & System Tray** — minimize Token Lens into a draggable provider-quota bubble, or reopen it from the native tray. The default bubble shows provider icons with remaining quota percentages.
-- ⏱️ **Quota & Reset Visibility** — monitor available short-window, weekly, reset, credit, and provider-specific limits with periodic background refresh.
+- ⏱️ **Quota & Reset Visibility** — monitor available short-window, weekly, reset, credit, and provider-specific limits with periodic background refresh, bounded stale-data fallback, and provider-level rate-limit cooldowns.
 - 📊 **Usage & Cost Analytics** — inspect Day, Week, Month, Last 7 Days, Last 30 Days, and All-Time usage with model/session breakdowns, token categories, and cost where available.
 - 🧭 **Session Exploration** — identify sessions using provider-owned metadata and inspect per-turn usage/tool metadata for supported providers without turning Token Lens into a transcript viewer.
 - ⚡ **Tauri 2 + tokScale** — a focused native desktop shell with a deliberately smaller backend/runtime surface than the Electron-based v1 line.
@@ -64,6 +64,12 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 | **Antigravity (AGY)** | ✅ | ✅ | ✅ | tokScale-provided metadata only | — |
 
 The provider set is an explicit runtime allowlist, not a permanent architectural ceiling. New providers may be added through a reviewed adapter and security/data-contract update; model identifiers themselves are not hardcoded into an allowlist.
+
+### Quota recovery behavior
+
+- **Claude Code** — normal tokScale/direct OAuth quota collection remains the primary path. On authentication failure Token Lens re-reads the provider-owned credential and retries once only if the access token changed. If recovery is still needed, it may use an interactive Claude CLI PTY `/usage` probe; non-interactive `claude -p "/usage"` is never treated as quota data. Enterprise credit/spend panels are supported by the fallback parser.
+- **Gemini CLI** — Token Lens uses the existing read-only Gemini Code Assist adapter and re-reads the provider-owned access token after HTTP 401, retrying once only when the token changed. Token Lens does not use Gemini CLI `/stats model` subprocess/PTY scraping because current non-interactive behavior can fall through to an LLM prompt instead of returning authoritative quota data.
+- **Rate limits and transient failures** — HTTP 429 respects `Retry-After` with a provider-level cooldown. A recent last-good quota may be shown explicitly as **Stale** for a bounded period; expired/reset-past windows are not silently reused.
 
 ---
 
@@ -104,6 +110,16 @@ Token Lens is a **monitor**, not an authentication manager or transcript viewer.
 3. **Restricted WebView surface** — the Tauri frontend runs under an explicit Content Security Policy. Packaged scripts are self-only, arbitrary external WebView connections are not allowed, and only the inline-style compatibility required by the retained renderer is permitted.
 4. **Narrow provider networking** — when quota data requires it, Rust backend adapters may contact the relevant official provider API or a detected local provider service. Token Lens does not provide a general-purpose network client surface to the renderer.
 5. **No Token Lens cloud service** — no Hub/multi-device sync, Discord RPC, Token Lens telemetry backend, in-app updater, or silent runtime tokScale download/update is part of the v2 product.
+6. **Provider-owned authentication lifecycle** — Token Lens does not redeem provider refresh tokens or write provider credentials. Recovery is limited to re-reading provider-owned access tokens and using provider-owned interfaces where explicitly supported.
+7. **Error-only local diagnostics** — provider incidents such as authentication failures, rate limits, transport errors, and recovery outcomes are written as sanitized JSONL records. Tokens, credential payloads, authorization headers, raw CLI output, account identifiers, prompts, and transcripts are excluded. Logs are retained for up to **3 days**, capped at **1 MiB** total, and deduplicated for repeated incidents.
+
+On Windows, diagnostic files are stored under:
+
+```text
+%LOCALAPPDATA%\com.teeeeooo.tokenlens\logs
+```
+
+You can open the exact platform-specific directory from **Settings → Troubleshooting → Open error log folder**. Portable builds use the same per-user log location regardless of where the EXE itself is stored.
 
 For the durable security, privacy, and provider-authority rules, see [`docs/architecture/v2-architecture.md`](docs/architecture/v2-architecture.md).
 
@@ -151,7 +167,7 @@ GitHub CI additionally runs Clippy with warnings denied, a native Tauri debug bu
 
 Token Lens v2 uses **Tauri 2** for the desktop shell and pins **tokScale 4.15.1** as the current primary usage/quota dependency. Raw tokScale/provider payloads stay behind stable Rust domain contracts before reaching the renderer.
 
-Token Lens-owned provider integrations remain deliberately narrow: they cover confirmed quota gaps plus the session metadata/detail behavior required by the retained UX. The current examples are Codex App Server fallback for missing base quota plus Business `individualLimit`, read-only Claude OAuth usage/spend enrichment, Gemini CLI quota using provider-owned credentials, AGY quota, Codex/Claude/Gemini session metadata, and Codex/Claude per-turn usage detail.
+Token Lens-owned provider integrations remain deliberately narrow: they cover confirmed quota gaps plus the session metadata/detail behavior required by the retained UX. The current examples are Codex App Server fallback for missing base quota plus Business `individualLimit`; read-only Claude OAuth usage/spend enrichment with an interactive CLI `/usage` recovery fallback; read-only Gemini Code Assist quota using provider-owned access-token state with 401 re-read/one-shot retry and no CLI quota scraping; AGY quota; Codex/Claude/Gemini session metadata; and Codex/Claude per-turn usage detail.
 
 Token Lens originated as a downstream of the MIT-licensed [Javis603/token-monitor](https://github.com/Javis603/token-monitor) project. The Electron-based v1 line initially tracked upstream Token Monitor **v0.53.0** at commit `0b17b1ec53ccd60508a645144ccb7db74027168c`.
 

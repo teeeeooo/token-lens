@@ -62,6 +62,29 @@ fn report_provider_recovery_pending(report: &QuotaReport, provider: SupportedPro
         .is_some_and(provider_auth_recovery_pending)
 }
 
+fn merge_provider_result(
+    report: &mut QuotaReport,
+    enriched: QuotaReport,
+    provider: SupportedProvider,
+) {
+    let Some(provider_result) = enriched
+        .providers
+        .into_iter()
+        .find(|item| item.provider == provider)
+    else {
+        return;
+    };
+    if let Some(existing) = report
+        .providers
+        .iter_mut()
+        .find(|item| item.provider == provider)
+    {
+        *existing = provider_result;
+    } else {
+        report.providers.push(provider_result);
+    }
+}
+
 #[tauri::command]
 pub async fn get_usage_report(
     adapter: State<'_, TokscaleAdapter>,
@@ -123,20 +146,47 @@ pub async fn get_quota_report(
         .record_internal("quota-tokscale-ready");
     let report = match home {
         Some(home) => {
-            let report =
-                codex_business::enrich_quota_report(&home, expected_workspace_id, report).await;
+            let base = report;
+            let (codex, claude, gemini, antigravity) = tokio::join!(
+                async {
+                    let enriched = codex_business::enrich_quota_report(
+                        &home,
+                        expected_workspace_id,
+                        base.clone(),
+                    )
+                    .await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-codex-ready");
+                    enriched
+                },
+                async {
+                    let enriched = claude_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-claude-ready");
+                    enriched
+                },
+                async {
+                    let enriched = gemini_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-gemini-ready");
+                    enriched
+                },
+                async {
+                    let enriched =
+                        antigravity_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-antigravity-ready");
+                    enriched
+                },
+            );
+            let mut merged = base;
+            merge_provider_result(&mut merged, codex, SupportedProvider::Codex);
+            merge_provider_result(&mut merged, claude, SupportedProvider::Claude);
+            merge_provider_result(&mut merged, gemini, SupportedProvider::Gemini);
+            merge_provider_result(&mut merged, antigravity, SupportedProvider::Antigravity);
             app.state::<StartupTiming>()
-                .record_internal("quota-codex-ready");
-            let report = claude_quota::enrich_quota_report(&home, report).await;
-            app.state::<StartupTiming>()
-                .record_internal("quota-claude-ready");
-            let report = gemini_quota::enrich_quota_report(&home, report).await;
-            app.state::<StartupTiming>()
-                .record_internal("quota-gemini-ready");
-            let report = antigravity_quota::enrich_quota_report(&home, report).await;
-            app.state::<StartupTiming>()
-                .record_internal("quota-antigravity-ready");
-            report
+                .record_internal("quota-enrichment-ready");
+            merged
         }
         None => report,
     };
@@ -351,6 +401,70 @@ pub fn move_floating_bubble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quota_provider(provider: SupportedProvider, diagnostic: &str) -> QuotaProvider {
+        QuotaProvider {
+            provider,
+            plan: None,
+            account_email: None,
+            diagnostic: Some(diagnostic.to_owned()),
+            windows: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
+    #[test]
+    fn parallel_quota_merge_replaces_only_the_target_provider() {
+        let mut base = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "base-codex"),
+                quota_provider(SupportedProvider::Claude, "base-claude"),
+            ],
+            source: "test",
+        };
+        let enriched = QuotaReport {
+            generated_at_ms: 2,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "wrong-codex"),
+                quota_provider(SupportedProvider::Claude, "parallel-claude"),
+            ],
+            source: "test",
+        };
+        merge_provider_result(&mut base, enriched, SupportedProvider::Claude);
+        assert_eq!(base.generated_at_ms, 1);
+        assert_eq!(base.providers[0].diagnostic.as_deref(), Some("base-codex"));
+        assert_eq!(
+            base.providers[1].diagnostic.as_deref(),
+            Some("parallel-claude")
+        );
+    }
+
+    #[test]
+    fn parallel_quota_merge_appends_a_provider_missing_from_tokscale_base() {
+        let mut base = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![quota_provider(SupportedProvider::Codex, "base-codex")],
+            source: "test",
+        };
+        let enriched = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "base-codex"),
+                quota_provider(SupportedProvider::Gemini, "parallel-gemini"),
+            ],
+            source: "test",
+        };
+        merge_provider_result(&mut base, enriched, SupportedProvider::Gemini);
+        assert_eq!(base.providers.len(), 2);
+        assert_eq!(base.providers[1].provider, SupportedProvider::Gemini);
+        assert_eq!(
+            base.providers[1].diagnostic.as_deref(),
+            Some("parallel-gemini")
+        );
+    }
 
     #[test]
     fn quota_recovery_detection_is_limited_to_cli_recovery_diagnostics() {

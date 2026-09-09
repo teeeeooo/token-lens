@@ -4,7 +4,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(120);
+const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(240);
 
 pub(crate) fn classify_refresh_error(error: &str) -> (&'static str, &'static str) {
     let lower = error.to_ascii_lowercase();
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn refresh_errors_are_sanitized_and_classified() {
         assert_eq!(
-            classify_refresh_error("Gemini CLI auth refresh timed out after 120s").0,
+            classify_refresh_error("Gemini CLI auth refresh timed out after 240s").0,
             "CLI_TIMEOUT"
         );
         assert_eq!(

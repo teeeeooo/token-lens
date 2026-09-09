@@ -9,6 +9,10 @@ test('installs only the retained compatibility methods implemented so far', () =
   assert.equal(target.tokenMonitor, facade);
   assert.deepEqual(Object.keys(facade), [
     'getStats',
+    'getBootstrapStats',
+    'getPeriodStats',
+    'getQuotaLimits',
+    'preloadSlowUsage',
     'getDashboardHistory',
     'getSessionDetail',
     'getTokscaleStatus',

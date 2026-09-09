@@ -100,6 +100,54 @@ test('stale quota keeps last-good windows visible with an explicit stale status'
   assert.equal(limits.providers[0].windows[0].remainingPercent, 62);
 });
 
+test('progressive bootstrap returns Today before quota and slower ranges', async () => {
+  const calls = [];
+  const usage = async (period) => {
+    calls.push(`usage:${period}`);
+    return report([], period === 'today' ? 1000 : 2000);
+  };
+  const quota = async () => {
+    calls.push('quota');
+    return { generatedAtMs: 3000, providers: [], source: 'tokscale' };
+  };
+  const getStats = createStatsLoader({ usage, quota });
+
+  const bootstrap = await getStats.getBootstrapStats();
+  assert.deepEqual(calls, ['usage:today']);
+  assert.deepEqual(Object.keys(bootstrap.periods), ['today']);
+  assert.equal(bootstrap.limits.providers.length, 0);
+
+  const quotaPatch = await getStats.getQuotaLimits();
+  assert.deepEqual(calls, ['usage:today', 'quota']);
+  assert.equal(quotaPatch.limits.providers.length, 0);
+});
+
+test('background preload shares an in-flight Month scan with an early period request', async () => {
+  const calls = [];
+  let releaseMonth;
+  const monthGate = new Promise((resolve) => { releaseMonth = resolve; });
+  const usage = async (period) => {
+    calls.push(period);
+    if (period === 'month') await monthGate;
+    return report([], period === 'month' ? 2000 : 3000);
+  };
+  const getStats = createStatsLoader({ usage, quota: async () => ({ generatedAtMs: 1, providers: [] }) });
+
+  const preload = getStats.preloadSlowUsage();
+  const requestedMonth = getStats.getPeriodStats('month');
+  await Promise.resolve();
+  assert.equal(calls.filter((period) => period === 'month').length, 1);
+  releaseMonth();
+
+  const month = await requestedMonth;
+  const slow = await preload;
+  assert.equal(month.period, 'month');
+  assert.equal(calls.filter((period) => period === 'month').length, 1);
+  assert.equal(calls.filter((period) => period === 'all_time').length, 1);
+  assert.deepEqual(Object.keys(slow.periods), ['month', 'allTime']);
+  assert.equal('limits' in slow, false);
+});
+
 test('getStats compatibility loader keeps tokScale scans serial and exposes v1 period keys', async () => {
   const calls = [];
   const usage = async (period, grouping) => {

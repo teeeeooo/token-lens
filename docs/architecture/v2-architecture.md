@@ -243,10 +243,12 @@ The `window.tokenMonitor` compatibility layer may shape these normalized results
 
 Preserve only the API surface that the retained v2 renderer actually calls. The current `window.tokenMonitor` facade is intentionally small:
 
-- usage/dashboard: `getStats`, `getDashboardHistory`, `getSessionDetail`, `getTokscaleStatus`;
+- usage/dashboard: `getStats`, `getBootstrapStats`, `getPeriodStats`, `getQuotaLimits`, `preloadSlowUsage`, `getDashboardHistory`, `getSessionDetail`, `getTokscaleStatus`;
 - settings: `getSettings`, `updateSettings`;
 - floating/window behavior: `getFloatingBubbleState`, `collapseFloatingBubbleIfIdle`, `minimizeMainWindow`, `setFloatingBubbleWidth`, `expandFloatingBubble`, `peekFloatingBubble`, `moveFloatingBubble`;
 - tray summary: `updateTraySummary`.
+
+First launch follows a **progressive bootstrap** contract: Today usage is the first-render critical path; quota, Month, and All Time must not block the first usable dashboard render. Quota updates Limits when it arrives, while Month and All Time preload through the same cache/in-flight deduplication used by on-demand period requests. A normal full refresh may still compose the complete stats payload, but startup must not regress to waiting on all ranges or provider quota recovery before rendering Today.
 
 Close, drag, always-on-top, and ordinary native window state use Tauri APIs directly; minimize uses the narrow facade because it owns the Bubble → tray → OS fallback policy. Tray navigation arrives through a narrow Tauri event rather than a recreated Electron IPC surface.
 

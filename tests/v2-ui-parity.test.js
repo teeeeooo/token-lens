@@ -37,6 +37,14 @@ test('bubble size is a persisted 70 to 150 percent control with scaled bubble CS
   assert.match(v2Css, /calc\(34px \* var\(--bubble-scale, 1\)\)/);
 });
 
+test('bubble width sync cannot replay stale collapsed state after expansion', () => {
+  const match = main.match(/async function syncFloatingBubbleWidth\(\) \{([\s\S]*?)\n\}/);
+  assert.ok(match);
+  assert.match(match[1], /setFloatingBubbleWidth/);
+  assert.doesNotMatch(match[1], /applyFloatingBubbleState/);
+  assert.match(main, /applyFloatingBubbleState\(next\);/);
+});
+
 test('home quota balances use full credit labels and one-decimal money formatting', () => {
   assert.match(main, /t\('quota\.credits', \{ value: count \}\)/);
   assert.doesNotMatch(main, /\$\{count\} cr/);

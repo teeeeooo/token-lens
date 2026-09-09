@@ -53,6 +53,7 @@ const PERIODS = ['today', 'month', 'week', 'last7', 'last30', 'allTime'];
 const MONTH_PERIODS = ['month', 'week', 'last7', 'last30'];
 const AUTO_REFRESH_MS = 30 * 1000;
 const HISTORY_REFRESH_MS = 10 * 60 * 1000;
+const APP_BOOTSTRAP_STARTED_AT = performance.now();
 const BUBBLE_LOGICAL_HEIGHT = 34;
 const BUBBLE_MAX_WIDTH = 240;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
@@ -115,6 +116,8 @@ const state = {
   refreshing: false,
   refreshQueued: false,
   refreshQueuedForce: false,
+  quotaLoading: false,
+  statsGeneration: 0,
   lastRefreshAt: 0,
   viewMenuOpen: false,
   providerFilter: [],
@@ -308,6 +311,11 @@ function setStatus(message = '', error = false) {
   els.liveDot.classList.toggle('live', !error && Boolean(state.stats));
 }
 
+function recordStartupTiming(phase) {
+  const elapsedMs = Math.round((performance.now() - APP_BOOTSTRAP_STARTED_AT) * 10) / 10;
+  console.info('[Token Lens startup]', { phase, elapsedMs });
+}
+
 function renderThemePresetControls() {
   const active = state.settings.themePreset;
   els.themePresetChips.replaceChildren(...THEME_PRESETS.map((preset) => {
@@ -445,11 +453,9 @@ function measureFloatingBubbleWidth() {
   return Math.max(minWidth, Math.min(maxWidth, width || minWidth));
 }
 
-async function syncFloatingBubbleWidth({ applyState = true } = {}) {
+async function syncFloatingBubbleWidth() {
   renderFloatingBubbleContent();
-  const payload = await window.tokenMonitor.setFloatingBubbleWidth(measureFloatingBubbleWidth());
-  if (applyState && payload?.collapsed) applyFloatingBubbleState(payload, { renderContent: false });
-  return payload;
+  return window.tokenMonitor.setFloatingBubbleWidth(measureFloatingBubbleWidth());
 }
 
 function applyFloatingBubbleState(payload = {}, { renderContent = true } = {}) {
@@ -681,7 +687,7 @@ function renderHomeLimits() {
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = t('home.noLimits');
+    empty.textContent = state.quotaLoading ? t('common.loading') : t('home.noLimits');
     body.append(empty);
     return module;
   }
@@ -1284,7 +1290,15 @@ function limitWindowNode(window, row) {
 }
 
 function renderLimits() {
-  const nodes = quotaRows(state.stats?.limits).map((row) => {
+  const rows = quotaRows(state.stats?.limits);
+  if (!rows.length && state.quotaLoading) {
+    const loading = document.createElement('div');
+    loading.className = 'home-module-empty';
+    loading.textContent = t('common.loading');
+    els.limitsPanel.replaceChildren(loading);
+    return;
+  }
+  const nodes = rows.map((row) => {
     const item = document.createElement('div');
     item.className = 'limit-row';
     const head = document.createElement('div');
@@ -1354,6 +1368,7 @@ function setPeriod(period) {
   state.providerFilterMenuOpen = false;
   render();
   if (derivedRequest(period, { locale: currentLocale() })) void refresh();
+  else if (['month', 'allTime'].includes(period) && !state.stats?.periods?.[period]) void loadPeriodIfMissing(period);
   return changed;
 }
 
@@ -1450,6 +1465,31 @@ function render() {
   renderSurface();
 }
 
+function mergeStatsPatch(patch, generation) {
+  if (!state.stats || generation !== state.statsGeneration) return false;
+  const incomingAt = Date.parse(patch?.updatedAt || '') || 0;
+  const currentAt = Date.parse(state.stats.updatedAt || '') || 0;
+  state.stats = {
+    ...state.stats,
+    ...(patch?.limits ? { limits: patch.limits } : {}),
+    periods: { ...state.stats.periods, ...(patch?.periods || {}) },
+    updatedAt: new Date(Math.max(incomingAt, currentAt, Date.now())).toISOString(),
+  };
+  return true;
+}
+
+async function loadPeriodIfMissing(period) {
+  if (!['month', 'allTime'].includes(period) || state.stats?.periods?.[period]) return;
+  const generation = state.statsGeneration;
+  try {
+    const result = await window.tokenMonitor.getPeriodStats(period);
+    if (!mergeStatsPatch({ periods: { [period]: result.value }, updatedAt: result.updatedAt }, generation)) return;
+    if (state.period === period) render();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 async function refresh({ force = false } = {}) {
   if (state.refreshing) {
     state.refreshQueued = true;
@@ -1458,10 +1498,14 @@ async function refresh({ force = false } = {}) {
   }
   state.refreshing = true;
   const requestPeriod = state.period;
+  const generation = ++state.statsGeneration;
   els.refreshButton.classList.add('is-refreshing');
   setStatus(t('common.refreshing'));
   try {
-    state.stats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    const nextStats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    if (generation !== state.statsGeneration) return;
+    state.stats = nextStats;
+    state.quotaLoading = false;
     if (force) state.historyLoadedAt = 0;
     const today = state.stats?.periods?.today || {};
     await window.tokenMonitor.updateTraySummary({
@@ -1639,7 +1683,7 @@ async function collapseFloatingBubbleIfIdle() {
 
 async function minimizeWindow() {
   try {
-    await syncFloatingBubbleWidth({ applyState: false });
+    await syncFloatingBubbleWidth();
     applyFloatingBubbleState(await window.tokenMonitor.minimizeMainWindow());
   } catch (error) {
     console.error(error);
@@ -1795,6 +1839,40 @@ async function handleTrayAction(payload = {}) {
   }
 }
 
+async function runBootstrapBackground(generation) {
+  const quotaTask = (async () => {
+    try {
+      const patch = await window.tokenMonitor.getQuotaLimits();
+      if (!mergeStatsPatch(patch, generation)) return;
+      state.quotaLoading = false;
+      render();
+      await syncFloatingBubbleWidth();
+      recordStartupTiming('quota-ready');
+    } catch (error) {
+      console.error(error);
+      if (generation !== state.statsGeneration) return;
+      state.quotaLoading = false;
+      render();
+      recordStartupTiming('quota-failed');
+    }
+  })();
+
+  const slowUsageTask = (async () => {
+    try {
+      const patch = await window.tokenMonitor.preloadSlowUsage();
+      if (!mergeStatsPatch(patch, generation)) return;
+      if (['month', 'allTime'].includes(state.period)) render();
+      recordStartupTiming('slow-usage-ready');
+    } catch (error) {
+      console.error(error);
+      recordStartupTiming('slow-usage-failed');
+    }
+  })();
+
+  await Promise.allSettled([quotaTask, slowUsageTask]);
+  recordStartupTiming('background-complete');
+}
+
 async function bootstrapShell() {
   try {
     stopTrayActionListener = await listen('token-lens://tray-action', ({ payload }) => {
@@ -1806,12 +1884,36 @@ async function bootstrapShell() {
     ]);
     applySettings(settings);
     applyFloatingBubbleState(bubble);
+    recordStartupTiming('shell-settings-ready');
   } catch (error) {
     console.error(error);
     setStatus(error?.message || t('common.failedSettings'), true);
   }
 
-  await refresh();
+  const generation = ++state.statsGeneration;
+  state.quotaLoading = true;
+  setStatus(t('common.refreshing'));
+  try {
+    const bootstrapStats = await window.tokenMonitor.getBootstrapStats();
+    if (generation !== state.statsGeneration) return;
+    state.stats = bootstrapStats;
+    state.lastRefreshAt = Date.now();
+    setStatus();
+    render();
+    recordStartupTiming('today-first-render');
+
+    const today = state.stats?.periods?.today || {};
+    void window.tokenMonitor.updateTraySummary({
+      todayTokens: Number(today.totalTokens) || 0,
+      todayCostUsd: Number(today.costUsd) || 0,
+    }).catch(console.error);
+    void syncFloatingBubbleWidth().catch(console.error);
+    void runBootstrapBackground(generation);
+  } catch (error) {
+    console.error(error);
+    state.quotaLoading = false;
+    setStatus(error?.message || t('common.failedRefresh'), true);
+  }
 }
 
 window.addEventListener('resize', syncPeriodIndicator);

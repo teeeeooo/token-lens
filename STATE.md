@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is preserved on `v1-legacy` at `493d4a5`. The v2 implementation and Windows package-shape automation are complete through promotion commit `983b764`, including the floating monitor, CSP hardening, retired-subsystem CSS cleanup, the roomier persisted window shell, and the read-only provider-quota parity follow-up. Real Windows QA after `e81291a` showed that Codex/Claude/Gemini usage aggregation worked while quota did not; commit `53315ae` restores the missing Codex OAuth, Claude Windows/WSL credential, and Gemini CLI current secure-storage paths without adding credential refresh/write behavior. Fresh macOS/Windows CI and Windows installer/single-EXE packaging are green on `main`; a real Windows live-provider retest remains the quota release gate.
+Token Lens v2 is promoted to `main`; the previous Electron-based v1 line remains preserved on `v1-legacy`. The current follow-up work is on `fix/nonblocking-provider-auth-refresh`, based on `4951f83`, after real Windows validation confirmed that provider-owned bare CLI startup can refresh Claude/Gemini credentials without Token Lens owning refresh tokens. The branch now also contains a progressive Today-first bootstrap, detached quota loading, background Month/All Time preload, the floating-bubble stale-state race fix, startup timing instrumentation, and a longer Gemini CLI startup bound. Local automated gates are green; the next release gate is packaged Windows timing/runtime validation before merge.
 
 ## Accepted baseline
 
@@ -24,7 +24,7 @@ Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is 
 - Codex reset credits, ordinary credit status, and scalar spend-control state are retained from tokScale;
 - Codex base-quota enrichment now follows `tokScale → existing Codex OAuth usage endpoint → App Server`: healthy tokScale canonical windows always win, OAuth may fill missing base windows without refreshing/writing `auth.json`, and App Server may fill any lane still missing plus structured Business/Team/Enterprise `individualLimit`;
 - Tauri commands expose normalized reports; raw tokScale JSON is not a renderer contract;
-- `window.tokenMonitor.getStats` composes the retained local stats contract and preserves serial tokScale scans;
+- `window.tokenMonitor.getStats` preserves the retained full-refresh stats contract and serial scan order, while first launch now uses phased Today-first bootstrap helpers so quota, Month, and All Time cannot block the first usable render;
 - the compatibility payload retains client/model/session totals, token components, message counts, provider attribution, and cost;
 - Codex reasoning follows the v1 additive public-total convention without double-counting Claude/Gemini/AGY reasoning;
 - the renderer preserves the Token Lens stylesheet/class vocabulary, icon language, frameless transparent geometry, and always-on-top behavior rather than the temporary skeleton UI; first launch now uses 380x720 logical pixels, expanded resizing is bounded to 300x140 through 1200x1400, and the last normal expanded size/position is persisted without allowing floating-bubble geometry to overwrite it; retired Hub/export/diagnostic/service-status/updater/account-switch/session-archive CSS has been removed while provider icon/style assets remain available for later explicit provider adapters;
@@ -37,18 +37,18 @@ Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is 
 - DAY / MONTH / TOTAL switching, manual refresh, view switching, close/minimize, drag region, and floating/normal pin toggle are wired through Tauri; the period selector sits in the true center of a symmetric three-column titlebar, its moving indicator is clipped inside the selector chrome, and the right-side window controls retain a separate full hover region so neither surface overlaps the other;
 - the MONTH slot now preserves v1 `MONTH` / `WEEK` / `7D` / `30D` selection semantics, including locale-aware first-day-of-week behavior;
 - derived Week / Last 7 / Last 30 ranges use a narrow `--since YYYY-MM-DD` tokScale command rather than reintroducing the v1 history subsystem;
-- stats polling is visibility-aware at 30 seconds, while the compatibility layer caches Today (30s), Month (2m), derived ranges (1m), All Time (5m), and quota (5m); manual refresh bypasses all caches;
+- stats polling is visibility-aware at 30 seconds, while the compatibility layer caches Today (30s), Month (2m), derived ranges (1m), All Time (5m), and quota (5m); non-forced duplicate period/quota requests share the same in-flight load, while manual refresh bypasses caches and intentionally starts fresh reads;
 - overlapping renderer refreshes are serialized and coalesced so period changes cannot race an in-flight tokScale scan;
 - the renderer controller is a small v2-specific implementation rather than a port of the v1 788 KB `app.js`;
 - macOS transparent-window support is enabled through Tauri's `macos-private-api`; this implies macOS App Store distribution is not a target for this configuration;
 - the persisted settings store now owns the retained floating/tray and appearance controls; fresh installs default Floating Bubble on with `limitsAllSessions`, while existing persisted v2 choices remain preserved, and the accepted bubble modes are limited to provider limits, icon-only, lowest session, lowest weekly, first-two-provider bars, and lowest-remaining bars;
-- floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs;
+- floating-bubble collapse/expand, left/right edge docking, drag-to-cursor movement, skip-taskbar behavior, always-on-top restoration, and original collapsed renderer classes are implemented through native Tauri window APIs; bubble-width synchronization is measurement-only and cannot replay a stale `collapsed=true` payload after an explicit expansion;
 - floating-bubble geometry is DPI-aware with a fixed 34px logical height and content-driven logical width; docking, dragging, resizing, and movement between monitors recalculate physical dimensions at the destination scale factor;
 - Windows-specific bubble policy is explicit: collapse against full monitor bounds with zero edge margin, while macOS/other desktop targets use the work area with the original vertical margin;
 - Windows background subprocesses owned by Token Lens (tokScale, Codex App Server, and AGY/PowerShell discovery helpers) use `CREATE_NO_WINDOW`, preventing periodic refresh from flashing CMD/PowerShell windows;
 - macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
-- the current local gate is green for the window-shell and quota-parity follow-ups: `npm run check` (57/57 frontend tests; 68 Rust tests passed with 9 live tests ignored), Clippy with `-D warnings`, rustfmt, native macOS Tauri debug build, `npm audit` with 0 vulnerabilities, and `git diff --check` all pass; Codex OAuth live smoke succeeds on the current Mac account;
+- the current local gate is green for the progressive-bootstrap/bubble follow-up: `npm run check` (71/71 frontend tests; 100 Rust tests passed with 9 live tests ignored), frontend production build, rustfmt, Clippy with `-D warnings`, and `git diff --check` all pass; targeted regression tests cover Today-first bootstrap, quota detachment, shared in-flight Month preload, and stale bubble-width state suppression;
 - commit `53315ae` is green in `Token Lens v2 CI` run `34078935973` on both macOS and Windows (Windows: 69 Rust tests passed with 9 live tests ignored), and `Build Token Lens v2 Windows` run `34078935933` completed packaging-helper checks, pinned tokScale 4.15.1 staging, unsigned NSIS/single-EXE build, and artifact upload successfully;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
 - window controls now use explicit v2 semantics: minimize collapses to Floating Bubble when enabled, otherwise hides to the tray when available and finally falls back to OS minimize; close always quits, and ordinary focus loss no longer collapses the window;
@@ -69,7 +69,7 @@ Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is 
 - local live smoke confirms both the installed Codex App Server transport/schema path and the restored Codex OAuth `/wham/usage` fallback; an actual Business account is still required to validate live `individualLimit` values end to end, and fresh Claude credentials remain an external quota validation gate;
 - Gemini CLI actual usage is now admitted directly from tokScale as a first-class `gemini` client/provider; the renderer keeps Gemini CLI distinct from Antigravity while Google/Gemini model rows use the Gemini visual identity;
 - Gemini session metadata uses only the local session header `sessionId`, its provider-owned `tmp/<project-key>` location, and `projects.json` path-to-key mapping, exposing only the project basename and never deriving a title from conversation content;
-- Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter from provider-owned access tokens; on Windows it reads `gemini-cli-oauth/main-account` from Credential Manager and the current Gemini CLI encrypted `~/.gemini/gemini-credentials.json` file-keychain fallback, with older `~/.gemini/oauth_creds.json` retained for migration compatibility. If the credential is missing, expired, or rejected, Token Lens schedules one bounded bare `gemini` startup in the background (120 s hard timeout, 1 s credential polling), immediately returns the current stale/unavailable quota, discards all TUI output, and lets Gemini CLI own any refresh/write. Only one Gemini refresh runs at a time, and quota polling temporarily tightens to 30 s until provider recovery is observed; Token Lens never reads/redeems Google refresh tokens, writes credentials itself, or calls onboarding/project-creation APIs;
+- Gemini quota uses a best-effort read-only `loadCodeAssist` → `retrieveUserQuota` adapter from provider-owned access tokens; on Windows it reads `gemini-cli-oauth/main-account` from Credential Manager and the current Gemini CLI encrypted `~/.gemini/gemini-credentials.json` file-keychain fallback, with older `~/.gemini/oauth_creds.json` retained for migration compatibility. If the credential is missing, expired, or rejected, Token Lens schedules one bounded bare `gemini` startup in the background (240 s hard timeout, 1 s credential polling), immediately returns the current stale/unavailable quota, discards all TUI output, and lets Gemini CLI own any refresh/write. Only one Gemini refresh runs at a time, and quota polling temporarily tightens to 30 s until provider recovery is observed; Token Lens never reads/redeems Google refresh tokens, writes credentials itself, or calls onboarding/project-creation APIs;
 - Gemini model quota windows remain allowlist-free and Limits shows all returned model buckets, while Home selects the two lowest remaining percentages;
 - AGY quota now uses an isolated local-language-server adapter: it detects running Antigravity app, `agy`/CLI, and IDE processes in that order, probes only `127.0.0.1`, prefers grouped `RetrieveUserQuotaSummary`, and falls back to `GetUserStatus` / `GetCommandModelConfigs` without reintroducing the v1 quota framework;
 - AGY grouped local quota preserves Gemini and Claude/GPT 5-hour/weekly lanes; legacy local or remote model-only payloads remain conservative family windows and do not invent cadence;
@@ -81,24 +81,24 @@ Token Lens v2 is now promoted to `main`; the previous Electron-based v1 line is 
 
 ## Next action
 
-Validate the fresh `53315ae` Windows package on the target Windows machine; automated implementation and packaging gates are green.
+Validate the completed startup/interaction follow-up on the target Windows machine before merge.
 
-1. install/run the NSIS artifact from `Build Token Lens v2 Windows` run `34078935933` and confirm adjacent bundled tokScale 4.15.1 resolution;
-2. run the single-file portable artifact from the same run and confirm embedded-portable tokScale resolution/temp cleanup plus absence of CMD/PowerShell flashes;
-3. validate live Codex Business quota/credits, Claude Enterprise monetary quota, Gemini CLI quota, and the retained Acrylic/Bubble/window/titlebar behavior.
+1. compare launch-to-first-Today-render timing against the previous package; startup timing records are emitted with the `[Token Lens startup]` prefix for `shell-settings-ready`, `today-first-render`, `quota-ready`, `slow-usage-ready`, and `background-complete` phases;
+2. confirm Home renders Today while Limits temporarily shows Loading, then quota fills independently without blocking Month/All Time preload;
+3. switch to MONTH and TOTAL both before and after preload completion and confirm there are no duplicate/stuck scans or zero-value regressions;
+4. repeatedly collapse to Bubble and click-expand around refresh completion to confirm the main window never remains in bubble-only DOM state;
+5. validate Claude/Gemini provider-owned CLI recovery again, including a Gemini startup that exceeds two minutes but completes within the new 240-second bound.
 
-Current `53315ae` Windows artifact checksums:
-
-- `Token-Lens-Setup-2.0.0-alpha.0.exe`: `3930f3fa1be591a03be93d7184a3e25bc28f54d1d9040dd7d20237630ea09207`;
-- `Token-Lens-2.0.0-alpha.0.exe`: `95b2466d8496e0db83d388218e07d543e915139b019d1bc589452594991395c8`.
-
-The downloaded artifact independently matches `SHA256SUMS.txt`; both outer executables are unsigned Windows GUI PEs, and the portable footer/payload round-trip verifies `TLTS0001` with the expected 24,359,424-byte embedded tokScale payload.
-
-Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework. The v1 token/cost text modes and custom tray/bubble composer remain intentionally excluded; only the six accepted compact quota modes are retained.
+If these checks pass, commit/push the follow-up, run native Windows CI/package gates, and merge to `main`. Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework.
 
 ## Known open items
 
 No architecture decision currently blocks implementation.
+
+Deferred performance work after the current progressive-bootstrap batch:
+
+- **parallel provider quota enrichment** — Codex, Claude, Gemini, and Antigravity enrichment is still applied serially after the base tokScale quota report. Revisit after Windows startup measurements confirm the remaining quota-path cost; preserve provider authority and account/workspace guards when merging independent results.
+- **persistent tokScale extraction cache for Windows single-EXE** — the portable build currently extracts its embedded tokScale payload into a fresh temporary run directory on each launch. Measure Defender/enterprise endpoint-security impact first, then evaluate a version/hash-addressed persistent cache with integrity validation and safe invalidation.
 
 Production tokScale packaging is wired through Tauri `externalBin` for installed bundles and the single-file portable overlay for no-install Windows use. The build stages the platform-native 4.15.1 npm binary under the required target-triple name, validates package identity plus `--version`, and portable runtime discovery prefers its embedded compressed payload before adjacent/project/PATH fallbacks. The hardened no-runtime-download/update policy is unchanged.
 

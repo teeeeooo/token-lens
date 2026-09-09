@@ -1,6 +1,9 @@
 name: Claude Refresh Diagnostic Validation
 
 on:
+  push:
+    branches:
+      - diag/claude-refresh-probe
   workflow_dispatch:
 
 permissions:

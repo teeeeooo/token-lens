@@ -1,4 +1,4 @@
-use crate::floating_bubble::{self, FloatingBubbleController};
+use crate::floating_bubble::{self, FloatingBubbleController, FloatingBubblePayload};
 use crate::settings::{AppSettings, SettingsStore};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -34,6 +34,8 @@ struct TrayActionPayload<'a> {
     action: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     view: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bubble: Option<FloatingBubblePayload>,
 }
 
 pub fn initialize(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
@@ -95,15 +97,21 @@ pub fn initialize(app: &AppHandle, settings: &AppSettings) -> Result<(), String>
         .show_menu_on_left_click(false)
         .on_menu_event(handle_menu_event)
         .on_tray_icon_event(|tray, event| {
-            if matches!(
+            let activate = matches!(
                 event,
                 TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
                     ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
                 }
-            ) {
-                let _ = focus_main_window(tray.app_handle());
+            );
+            if activate {
+                if let Ok(bubble) = focus_main_window(tray.app_handle()) {
+                    let _ = emit_action(tray.app_handle(), "focus", None, Some(bubble));
+                }
             }
         });
     #[cfg(target_os = "macos")]
@@ -132,36 +140,48 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         return;
     }
     if id == MENU_REFRESH {
-        let _ = emit_action(app, "refresh", None);
+        let _ = emit_action(app, "refresh", None, None);
         return;
     }
     if id == MENU_SETTINGS {
-        let _ = focus_main_window(app);
-        let _ = emit_action(app, "openSettings", None);
+        let bubble = focus_main_window(app).ok();
+        let _ = emit_action(app, "openSettings", None, bubble);
         return;
     }
     if let Some(view) = id.strip_prefix(MENU_VIEW_PREFIX) {
         if RETAINED_VIEWS.iter().any(|(id, _)| *id == view) {
-            let _ = focus_main_window(app);
-            let _ = emit_action(app, "openView", Some(view));
+            let bubble = focus_main_window(app).ok();
+            let _ = emit_action(app, "openView", Some(view), bubble);
         }
     }
 }
 
-fn emit_action(app: &AppHandle, action: &str, view: Option<&str>) -> Result<(), String> {
-    app.emit_to("main", EVENT_NAME, TrayActionPayload { action, view })
-        .map_err(|error| format!("failed to emit tray action: {error}"))
+fn emit_action(
+    app: &AppHandle,
+    action: &str,
+    view: Option<&str>,
+    bubble: Option<FloatingBubblePayload>,
+) -> Result<(), String> {
+    app.emit_to(
+        "main",
+        EVENT_NAME,
+        TrayActionPayload {
+            action,
+            view,
+            bubble,
+        },
+    )
+    .map_err(|error| format!("failed to emit tray action: {error}"))
 }
 
-pub fn focus_main_window(app: &AppHandle) -> Result<(), String> {
+pub fn focus_main_window(app: &AppHandle) -> Result<FloatingBubblePayload, String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main Token Lens window is unavailable".to_owned())?;
     let settings = app.state::<SettingsStore>();
     let bubble = app.state::<FloatingBubbleController>();
     if floating_bubble::current_state(&settings, &bubble)?.collapsed {
-        floating_bubble::expand(&window, &settings, &bubble, true)?;
-        return Ok(());
+        return floating_bubble::expand(&window, &settings, &bubble, true);
     }
     window
         .show()
@@ -176,7 +196,8 @@ pub fn focus_main_window(app: &AppHandle) -> Result<(), String> {
     }
     window
         .set_focus()
-        .map_err(|error| format!("failed to focus Token Lens window: {error}"))
+        .map_err(|error| format!("failed to focus Token Lens window: {error}"))?;
+    floating_bubble::current_state(&settings, &bubble)
 }
 
 pub fn apply_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
@@ -233,6 +254,23 @@ fn compact_tokens(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_focus_payload_carries_expanded_bubble_state_to_renderer() {
+        let payload = TrayActionPayload {
+            action: "focus",
+            view: None,
+            bubble: Some(FloatingBubblePayload {
+                enabled: true,
+                collapsed: false,
+                side: None,
+            }),
+        };
+        let json = serde_json::to_value(payload).expect("serialize tray payload");
+        assert_eq!(json["action"], "focus");
+        assert_eq!(json["bubble"]["collapsed"], false);
+        assert!(json.get("view").is_none());
+    }
 
     #[test]
     fn compact_token_labels_stay_small_enough_for_a_menu_bar() {

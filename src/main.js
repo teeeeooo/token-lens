@@ -1823,6 +1823,11 @@ document.addEventListener('visibilitychange', () => {
   if (Date.now() - state.lastRefreshAt >= AUTO_REFRESH_MS) void refresh();
 });
 async function handleTrayAction(payload = {}) {
+  if (payload.bubble) {
+    applyFloatingBubbleState(payload.bubble);
+    render();
+  }
+  if (payload.action === 'focus') return;
   if (payload.action === 'refresh') {
     await refresh({ force: true });
     return;

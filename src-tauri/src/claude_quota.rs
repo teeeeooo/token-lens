@@ -601,6 +601,9 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
 }
 
 fn provider_needs_enrichment(provider: &QuotaProvider) -> bool {
+    if provider_is_stale(provider) {
+        return true;
+    }
     let has_spend = provider
         .windows
         .iter()
@@ -623,6 +626,17 @@ fn provider_has_usable_windows(provider: &QuotaProvider) -> bool {
             || window.remaining.is_some()
             || window.used.is_some()
     })
+}
+
+fn provider_is_stale(provider: &QuotaProvider) -> bool {
+    provider
+        .diagnostic
+        .as_deref()
+        .is_some_and(|diagnostic| diagnostic.starts_with(STALE_DIAGNOSTIC_PREFIX))
+}
+
+fn provider_has_authoritative_windows(provider: &QuotaProvider) -> bool {
+    provider_has_usable_windows(provider) && !provider_is_stale(provider)
 }
 
 fn merge_windows(provider: &mut QuotaProvider, incoming: Vec<QuotaWindow>) {
@@ -658,7 +672,8 @@ fn window_rank(window: &QuotaWindow) -> u8 {
 
 fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
     let Some(provider) = report.providers.iter().find(|provider| {
-        provider.provider == SupportedProvider::Claude && provider_has_usable_windows(provider)
+        provider.provider == SupportedProvider::Claude
+            && provider_has_authoritative_windows(provider)
     }) else {
         return;
     };
@@ -753,7 +768,7 @@ fn apply_failure_with_cache(
         .providers
         .iter()
         .find(|provider| provider.provider == SupportedProvider::Claude)
-        .is_some_and(provider_has_usable_windows)
+        .is_some_and(provider_has_authoritative_windows)
     {
         set_diagnostic(report, detail);
         return FailurePresentation::Current;
@@ -1451,6 +1466,36 @@ mod tests {
         assert!(!window_not_expired(&window, now));
         window.resets_at = Some("2026-09-07T13:30:00Z".to_owned());
         assert!(window_not_expired(&window, now));
+    }
+
+    #[test]
+    fn stale_claude_quota_requires_enrichment_and_is_not_authoritative() {
+        let windows = windows_from_usage(&json!({
+            "five_hour": { "utilization": 20 },
+            "spend": {
+                "enabled": true,
+                "used": { "amount_minor": 100, "currency": "usd", "exponent": 2 },
+                "limit": { "amount_minor": 1000, "currency": "usd", "exponent": 2 }
+            }
+        }));
+        let mut provider = QuotaProvider {
+            provider: SupportedProvider::Claude,
+            plan: Some("Test".to_owned()),
+            account_email: None,
+            diagnostic: None,
+            windows,
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        };
+        assert!(!provider_needs_enrichment(&provider));
+        assert!(provider_has_authoritative_windows(&provider));
+        provider.diagnostic = Some(format!(
+            "{STALE_DIAGNOSTIC_PREFIX} · Claude CLI credential refresh already in progress"
+        ));
+        assert!(provider_has_usable_windows(&provider));
+        assert!(provider_needs_enrichment(&provider));
+        assert!(!provider_has_authoritative_windows(&provider));
     }
 
     #[test]

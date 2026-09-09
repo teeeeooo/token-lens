@@ -186,7 +186,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         .providers
         .iter()
         .find(|provider| provider.provider == SupportedProvider::Gemini)
-        .is_some_and(provider_has_usable_quota)
+        .is_some_and(provider_has_authoritative_quota)
     {
         cache_last_good(&report, now);
         clear_rate_limit_state();
@@ -623,6 +623,14 @@ fn provider_has_usable_quota(provider: &QuotaProvider) -> bool {
     })
 }
 
+fn provider_has_authoritative_quota(provider: &QuotaProvider) -> bool {
+    provider_has_usable_quota(provider)
+        && !provider
+            .diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.starts_with(STALE_DIAGNOSTIC_PREFIX))
+}
+
 fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
     let detail = detail.into();
     if let Some(provider) = report
@@ -647,7 +655,7 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
 
 fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
     let Some(provider) = report.providers.iter().find(|provider| {
-        provider.provider == SupportedProvider::Gemini && provider_has_usable_quota(provider)
+        provider.provider == SupportedProvider::Gemini && provider_has_authoritative_quota(provider)
     }) else {
         return;
     };
@@ -827,14 +835,14 @@ impl CredentialSnapshot {
         format!("{}:{}", self.access_token, self.expiry.unwrap_or_default())
     }
 
-    fn into_valid(self) -> Option<ValidCredential> {
-        if self
+    fn is_usable_at(&self, now: u64) -> bool {
+        !self
             .expiry
-            .is_some_and(|value| value <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS))
-        {
-            return None;
-        }
-        Some(ValidCredential {
+            .is_some_and(|value| value <= now.saturating_add(TOKEN_EXPIRY_SAFETY_MS))
+    }
+
+    fn into_valid(self) -> Option<ValidCredential> {
+        self.is_usable_at(now_ms()).then_some(ValidCredential {
             access_token: self.access_token,
         })
     }
@@ -852,20 +860,37 @@ fn credential_snapshot(
 }
 
 fn read_credential_snapshot(home: &Path) -> Option<CredentialSnapshot> {
+    let mut candidates = Vec::new();
     #[cfg(target_os = "windows")]
     {
         if let Some(credential) = read_windows_keychain_snapshot() {
-            return Some(credential);
+            candidates.push(credential);
         }
         if let Some(credential) = read_windows_file_keychain_snapshot(home) {
-            return Some(credential);
+            candidates.push(credential);
         }
     }
 
     let path = gemini_home(home).join("oauth_creds.json");
-    let bytes = fs::read(path).ok()?;
-    let raw = serde_json::from_slice::<StoredGeminiCredential>(&bytes).ok()?;
-    credential_snapshot(raw.access_token, raw.expiry_date)
+    if let Ok(bytes) = fs::read(path) {
+        if let Ok(raw) = serde_json::from_slice::<StoredGeminiCredential>(&bytes) {
+            if let Some(credential) = credential_snapshot(raw.access_token, raw.expiry_date) {
+                candidates.push(credential);
+            }
+        }
+    }
+    select_credential_snapshot(candidates, now_ms())
+}
+
+fn select_credential_snapshot(
+    candidates: Vec<CredentialSnapshot>,
+    now: u64,
+) -> Option<CredentialSnapshot> {
+    let fallback = candidates.first().cloned();
+    candidates
+        .into_iter()
+        .find(|credential| credential.is_usable_at(now))
+        .or(fallback)
 }
 
 fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
@@ -876,10 +901,12 @@ fn credential_discovery_code(home: &Path) -> &'static str {
     #[cfg(target_os = "windows")]
     {
         if let Some(bytes) = read_windows_keychain_blob() {
-            return if parse_keychain_snapshot(&bytes).is_some() {
-                "WINDOWS_CREDENTIAL_BECAME_AVAILABLE_DURING_DISCOVERY"
-            } else {
-                "WINDOWS_CREDENTIAL_PARSE_FAILED"
+            return match parse_keychain_snapshot(&bytes) {
+                Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                    "WINDOWS_CREDENTIAL_BECAME_USABLE_DURING_DISCOVERY"
+                }
+                Some(_) => "WINDOWS_CREDENTIAL_EXPIRED_OR_NEAR_EXPIRY",
+                None => "WINDOWS_CREDENTIAL_PARSE_FAILED",
             };
         }
         let file_keychain = gemini_home(home).join("gemini-credentials.json");
@@ -893,10 +920,12 @@ fn credential_discovery_code(home: &Path) -> &'static str {
             let Some(username) = env::var("USERNAME").ok().or_else(|| env::var("USER").ok()) else {
                 return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
             };
-            return if parse_file_keychain_snapshot(&text, &hostname, &username).is_some() {
-                "FILE_KEYCHAIN_BECAME_AVAILABLE_DURING_DISCOVERY"
-            } else {
-                "FILE_KEYCHAIN_PARSE_FAILED"
+            return match parse_file_keychain_snapshot(&text, &hostname, &username) {
+                Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                    "FILE_KEYCHAIN_BECAME_USABLE_DURING_DISCOVERY"
+                }
+                Some(_) => "FILE_KEYCHAIN_EXPIRED_OR_NEAR_EXPIRY",
+                None => "FILE_KEYCHAIN_PARSE_FAILED",
             };
         }
     }
@@ -909,10 +938,12 @@ fn credential_discovery_code(home: &Path) -> &'static str {
         let parsed = serde_json::from_slice::<StoredGeminiCredential>(&bytes)
             .ok()
             .and_then(|raw| credential_snapshot(raw.access_token, raw.expiry_date));
-        return if parsed.is_some() {
-            "OAUTH_FILE_BECAME_AVAILABLE_DURING_DISCOVERY"
-        } else {
-            "OAUTH_FILE_PARSE_FAILED"
+        return match parsed {
+            Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                "OAUTH_FILE_BECAME_USABLE_DURING_DISCOVERY"
+            }
+            Some(_) => "OAUTH_FILE_EXPIRED_OR_NEAR_EXPIRY",
+            None => "OAUTH_FILE_PARSE_FAILED",
         };
     }
     "STORE_NOT_FOUND"
@@ -1388,6 +1419,33 @@ mod tests {
             effective_rate_limit_cooldown_ms(2, 1_000, 60 * 60 * 1000),
             60 * 60 * 1000
         );
+    }
+
+    #[test]
+    fn expired_higher_priority_store_does_not_shadow_usable_credential() {
+        let now = 1_000_000;
+        let expired = CredentialSnapshot {
+            access_token: "expired-keychain".to_owned(),
+            expiry: Some(now),
+        };
+        let usable = CredentialSnapshot {
+            access_token: "fresh-oauth-file".to_owned(),
+            expiry: Some(now + TOKEN_EXPIRY_SAFETY_MS + 60_000),
+        };
+        let selected = select_credential_snapshot(vec![expired, usable], now)
+            .expect("usable fallback credential");
+        assert_eq!(selected.access_token, "fresh-oauth-file");
+    }
+
+    #[test]
+    fn stale_gemini_quota_is_not_authoritative() {
+        let mut provider = provider_fixture("2099-01-01T00:00:00Z");
+        assert!(provider_has_authoritative_quota(&provider));
+        provider.diagnostic = Some(format!(
+            "{STALE_DIAGNOSTIC_PREFIX} · Gemini CLI credential refresh already in progress"
+        ));
+        assert!(provider_has_usable_quota(&provider));
+        assert!(!provider_has_authoritative_quota(&provider));
     }
 
     #[test]

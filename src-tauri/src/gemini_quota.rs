@@ -1,4 +1,5 @@
 use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, SupportedProvider};
+use crate::gemini_cli;
 use crate::google_code_assist::{self, CodeAssistError, LoadSnapshot, QuotaBucket};
 use crate::provider_error_log::{self, ProviderIncident};
 #[cfg(any(target_os = "windows", test))]
@@ -100,10 +101,9 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         return report;
     }
 
-    // Gemini CLI 0.58.0 does not expose `/stats model` as a reliable headless quota
-    // source: non-interactive slash-command handling can fall through to an LLM prompt,
-    // while the interactive model_stats UI is TUI-only. Recovery therefore remains
-    // read-only credential re-read + direct API retry; there is intentionally no CLI fallback.
+    // Gemini quota remains API-backed. On missing/rejected OAuth credentials, Token Lens
+    // only starts the official Gemini CLI and waits for the CLI to refresh its own credential;
+    // it never sends a model prompt or scrapes `/stats` TUI output.
     let attempt = read_provider_with_reloaded_credential(home);
     match attempt.result {
         Ok(provider) => {
@@ -112,24 +112,30 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
                 record_incident(
                     trigger,
                     "recovered_credential_reread",
-                    attempt.credential_reread,
-                    attempt.credential_changed,
-                    false,
+                    GeminiIncidentRecovery {
+                        credential_reread: attempt.credential_reread,
+                        credential_changed: attempt.credential_changed,
+                        ..GeminiIncidentRecovery::default()
+                    },
                 );
             }
         }
         Err(DirectAttemptError::MissingCredential) => {
-            let presentation = apply_failure_with_cache(
-                &mut report,
-                "Gemini credential: no readable non-expired access token",
-                now,
-            );
-            record_incident(
+            return recover_auth_with_cli(
+                home,
+                report,
                 GeminiFailure::MissingCredential,
-                presentation.result_label(),
                 false,
                 None,
-                presentation.last_good_used(),
+            );
+        }
+        Err(DirectAttemptError::Fetch(error)) if error.is_unauthorized() => {
+            return recover_auth_with_cli(
+                home,
+                report,
+                error,
+                attempt.credential_reread,
+                attempt.credential_changed,
             );
         }
         Err(DirectAttemptError::Fetch(error)) => {
@@ -140,9 +146,12 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             record_incident(
                 error,
                 presentation.result_label(),
-                attempt.credential_reread,
-                attempt.credential_changed,
-                presentation.last_good_used(),
+                GeminiIncidentRecovery {
+                    credential_reread: attempt.credential_reread,
+                    credential_changed: attempt.credential_changed,
+                    last_good_used: presentation.last_good_used(),
+                    ..GeminiIncidentRecovery::default()
+                },
             );
         }
     }
@@ -346,6 +355,115 @@ fn fetch_provider(home: &Path, access_token: &str) -> Result<QuotaProvider, Gemi
     })
 }
 
+fn recover_auth_with_cli(
+    home: &Path,
+    mut report: QuotaReport,
+    failure: GeminiFailure,
+    credential_reread: bool,
+    credential_changed: Option<bool>,
+) -> QuotaReport {
+    let now = now_ms();
+    if read_credential_snapshot(home).is_none() {
+        let presentation = apply_failure_with_cache(&mut report, failure.diagnostic(), now);
+        record_incident(
+            failure,
+            presentation.result_label(),
+            GeminiIncidentRecovery {
+                credential_reread,
+                credential_changed,
+                last_good_used: presentation.last_good_used(),
+                ..GeminiIncidentRecovery::default()
+            },
+        );
+        return report;
+    }
+    let refresh = gemini_cli::refresh_credential_via_startup(home, || {
+        read_credential_snapshot(home).map(|credential| credential.signature())
+    });
+    match refresh {
+        Ok(()) => {
+            let Some(credential) = read_valid_credential(home) else {
+                let presentation = apply_failure_with_cache(
+                    &mut report,
+                    "Gemini CLI refreshed but no readable non-expired access token was found",
+                    now,
+                );
+                record_incident(
+                    failure,
+                    presentation.result_label(),
+                    GeminiIncidentRecovery {
+                        credential_reread: true,
+                        credential_changed: Some(true),
+                        cli_fallback: true,
+                        recovery_code: Some("CLI_REFRESH_NO_CREDENTIAL"),
+                        last_good_used: presentation.last_good_used(),
+                    },
+                );
+                return report;
+            };
+            match fetch_provider(home, &credential.access_token) {
+                Ok(provider) => {
+                    apply_success(&mut report, provider, now);
+                    record_incident(
+                        failure,
+                        "recovered_api_after_cli",
+                        GeminiIncidentRecovery {
+                            credential_reread: true,
+                            credential_changed: Some(true),
+                            cli_fallback: true,
+                            ..GeminiIncidentRecovery::default()
+                        },
+                    );
+                    return report;
+                }
+                Err(error) => {
+                    if let Some(retry_after_ms) = error.retry_after_ms() {
+                        set_cooldown(now, retry_after_ms);
+                    }
+                    let recovery_code = if error.retry_after_ms().is_some() {
+                        "POST_CLI_RATE_LIMITED"
+                    } else {
+                        "POST_CLI_API_FAILED"
+                    };
+                    let presentation =
+                        apply_failure_with_cache(&mut report, error.diagnostic(), now);
+                    record_incident(
+                        error,
+                        presentation.result_label(),
+                        GeminiIncidentRecovery {
+                            credential_reread: true,
+                            credential_changed: Some(true),
+                            cli_fallback: true,
+                            recovery_code: Some(recovery_code),
+                            last_good_used: presentation.last_good_used(),
+                        },
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            let (code, diagnostic) = gemini_cli::classify_refresh_error(&error);
+            let presentation = apply_failure_with_cache(
+                &mut report,
+                format!("{}; {diagnostic}", failure.diagnostic()),
+                now,
+            );
+            record_incident(
+                failure,
+                presentation.result_label(),
+                GeminiIncidentRecovery {
+                    credential_reread,
+                    credential_changed: credential_changed.or(Some(false)),
+                    cli_fallback: true,
+                    recovery_code: Some(code),
+                    last_good_used: presentation.last_good_used(),
+                },
+            );
+        }
+    }
+    report
+}
+
 fn apply_success(report: &mut QuotaReport, provider: QuotaProvider, now: u64) {
     if let Some(existing) = report
         .providers
@@ -498,13 +616,16 @@ fn window_not_expired(window: &QuotaWindow, now: u64) -> bool {
         .unwrap_or(true)
 }
 
-fn record_incident(
-    failure: GeminiFailure,
-    result: &'static str,
+#[derive(Debug, Default)]
+struct GeminiIncidentRecovery {
     credential_reread: bool,
     credential_changed: Option<bool>,
+    cli_fallback: bool,
+    recovery_code: Option<&'static str>,
     last_good_used: bool,
-) {
+}
+
+fn record_incident(failure: GeminiFailure, result: &'static str, recovery: GeminiIncidentRecovery) {
     let retry_after_ms = failure.retry_after_ms();
     let (category, code, stage) = failure.log_fields();
     provider_error_log::record(ProviderIncident {
@@ -513,13 +634,13 @@ fn record_incident(
         code,
         stage,
         result,
-        credential_reread: credential_reread.then_some(true),
-        credential_changed,
-        cli_fallback: None,
-        recovery_code: None,
+        credential_reread: recovery.credential_reread.then_some(true),
+        credential_changed: recovery.credential_changed,
+        cli_fallback: recovery.cli_fallback.then_some(true),
+        recovery_code: recovery.recovery_code,
         retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
-        last_good_used: last_good_used.then_some(true),
+        last_good_used: recovery.last_good_used.then_some(true),
     });
 }
 
@@ -527,13 +648,48 @@ struct ValidCredential {
     access_token: String,
 }
 
-fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
+#[derive(Debug, Clone)]
+struct CredentialSnapshot {
+    access_token: String,
+    expiry: Option<u64>,
+}
+
+impl CredentialSnapshot {
+    fn signature(&self) -> String {
+        format!("{}:{}", self.access_token, self.expiry.unwrap_or_default())
+    }
+
+    fn into_valid(self) -> Option<ValidCredential> {
+        if self
+            .expiry
+            .is_some_and(|value| value <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS))
+        {
+            return None;
+        }
+        Some(ValidCredential {
+            access_token: self.access_token,
+        })
+    }
+}
+
+fn credential_snapshot(
+    access_token: Option<String>,
+    expiry: Option<u64>,
+) -> Option<CredentialSnapshot> {
+    let access_token = access_token?.trim().to_owned();
+    (!access_token.is_empty()).then_some(CredentialSnapshot {
+        access_token,
+        expiry,
+    })
+}
+
+fn read_credential_snapshot(home: &Path) -> Option<CredentialSnapshot> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(credential) = read_windows_keychain_credential() {
+        if let Some(credential) = read_windows_keychain_snapshot() {
             return Some(credential);
         }
-        if let Some(credential) = read_windows_file_keychain_credential(home) {
+        if let Some(credential) = read_windows_file_keychain_snapshot(home) {
             return Some(credential);
         }
     }
@@ -541,29 +697,27 @@ fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
     let path = gemini_home(home).join("oauth_creds.json");
     let bytes = fs::read(path).ok()?;
     let raw = serde_json::from_slice::<StoredGeminiCredential>(&bytes).ok()?;
-    valid_credential(raw.access_token, raw.expiry_date)
+    credential_snapshot(raw.access_token, raw.expiry_date)
 }
 
-fn valid_credential(access_token: Option<String>, expiry: Option<u64>) -> Option<ValidCredential> {
-    let access_token = access_token?.trim().to_owned();
-    if access_token.is_empty() {
-        return None;
-    }
-    if expiry.is_some_and(|value| value <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS)) {
-        return None;
-    }
-    Some(ValidCredential { access_token })
+fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
+    read_credential_snapshot(home)?.into_valid()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_keychain_snapshot(bytes: &[u8]) -> Option<CredentialSnapshot> {
+    let raw = serde_json::from_slice::<StoredGeminiKeychainCredential>(bytes).ok()?;
+    let token = raw.token?;
+    credential_snapshot(token.access_token, token.expires_at)
 }
 
 #[cfg(any(target_os = "windows", test))]
 fn parse_keychain_credential(bytes: &[u8]) -> Option<ValidCredential> {
-    let raw = serde_json::from_slice::<StoredGeminiKeychainCredential>(bytes).ok()?;
-    let token = raw.token?;
-    valid_credential(token.access_token, token.expires_at)
+    parse_keychain_snapshot(bytes)?.into_valid()
 }
 
 #[cfg(target_os = "windows")]
-fn read_windows_keychain_credential() -> Option<ValidCredential> {
+fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -573,8 +727,8 @@ fn read_windows_keychain_credential() -> Option<ValidCredential> {
     };
 
     // Current Gemini CLI (OAuthCredentialStorage + keytar) stores the main
-    // account as service/account => `gemini-cli-oauth/main-account`. Read only:
-    // Token Lens never asks Gemini CLI or Google to refresh the credential.
+    // account as service/account => `gemini-cli-oauth/main-account`. Token Lens
+    // reads only access-token/expiry metadata; the official CLI owns refresh.
     let target = OsStr::new("gemini-cli-oauth/main-account")
         .encode_wide()
         .chain(once(0))
@@ -589,17 +743,32 @@ fn read_windows_keychain_credential() -> Option<ValidCredential> {
         std::slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize).to_vec()
     };
     unsafe { CredFree(credential.cast()) };
-    parse_keychain_credential(&bytes)
+    parse_keychain_snapshot(&bytes)
 }
 
 #[cfg(target_os = "windows")]
-fn read_windows_file_keychain_credential(home: &Path) -> Option<ValidCredential> {
+fn read_windows_file_keychain_snapshot(home: &Path) -> Option<CredentialSnapshot> {
     let hostname = env::var("COMPUTERNAME").ok()?;
     let username = env::var("USERNAME")
         .ok()
         .or_else(|| env::var("USER").ok())?;
     let text = fs::read_to_string(gemini_home(home).join("gemini-credentials.json")).ok()?;
-    parse_file_keychain_credential(&text, &hostname, &username)
+    parse_file_keychain_snapshot(&text, &hostname, &username)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_file_keychain_snapshot(
+    encrypted: &str,
+    hostname: &str,
+    username: &str,
+) -> Option<CredentialSnapshot> {
+    let plaintext = decrypt_file_keychain(encrypted, hostname, username)?;
+    let store = serde_json::from_slice::<serde_json::Value>(&plaintext).ok()?;
+    let secret = store
+        .get("gemini-cli-oauth")?
+        .get("main-account")?
+        .as_str()?;
+    parse_keychain_snapshot(secret.as_bytes())
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -608,13 +777,7 @@ fn parse_file_keychain_credential(
     hostname: &str,
     username: &str,
 ) -> Option<ValidCredential> {
-    let plaintext = decrypt_file_keychain(encrypted, hostname, username)?;
-    let store = serde_json::from_slice::<serde_json::Value>(&plaintext).ok()?;
-    let secret = store
-        .get("gemini-cli-oauth")?
-        .get("main-account")?
-        .as_str()?;
-    parse_keychain_credential(secret.as_bytes())
+    parse_file_keychain_snapshot(encrypted, hostname, username)?.into_valid()
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -1088,9 +1251,20 @@ mod tests {
 
     #[test]
     fn credential_without_expiry_can_be_validated_by_the_read_only_api_call() {
-        let parsed = valid_credential(Some("existing-access-token".into()), None)
+        let parsed = credential_snapshot(Some("existing-access-token".into()), None)
+            .and_then(CredentialSnapshot::into_valid)
             .expect("unknown expiry should not discard an existing access token");
         assert_eq!(parsed.access_token, "existing-access-token");
+    }
+
+    #[test]
+    fn credential_signature_detects_expiry_only_refreshes() {
+        let before = credential_snapshot(Some("same-access-token".into()), Some(1))
+            .expect("stored credential");
+        let after = credential_snapshot(Some("same-access-token".into()), Some(2))
+            .expect("stored credential");
+        assert_ne!(before.signature(), after.signature());
+        assert!(before.into_valid().is_none());
     }
 
     #[test]

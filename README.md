@@ -67,8 +67,8 @@ The provider set is an explicit runtime allowlist, not a permanent architectural
 
 ### Quota recovery behavior
 
-- **Claude Code** — normal tokScale/direct OAuth quota collection remains the primary path. On authentication failure Token Lens re-reads the provider-owned credential and retries once only if the access token changed. If recovery is still needed, it may use an interactive Claude CLI PTY `/usage` probe; non-interactive `claude -p "/usage"` is never treated as quota data. Enterprise credit/spend panels are supported by the fallback parser.
-- **Gemini CLI** — Token Lens uses the existing read-only Gemini Code Assist adapter and re-reads the provider-owned access token after HTTP 401, retrying once only when the token changed. Token Lens does not use Gemini CLI `/stats model` subprocess/PTY scraping because current non-interactive behavior can fall through to an LLM prompt instead of returning authoritative quota data.
+- **Claude Code** — normal tokScale/direct OAuth quota collection remains the primary path. After HTTP 401 Token Lens re-reads the provider-owned credential and retries once if it already changed. If the rejected credential is still unchanged, Token Lens starts the official `claude` CLI with no prompt or slash command, waits up to 60 seconds for Claude Code to refresh its own access credential, then retries the usage API once. Claude TUI output is discarded and is never quota data.
+- **Gemini CLI** — Token Lens uses the existing read-only Gemini Code Assist adapter. When an existing Gemini OAuth credential is expired or an API request returns HTTP 401, Token Lens starts the official `gemini` CLI with no prompt or slash command, waits up to 120 seconds for Gemini CLI to refresh its own credential, then retries the existing quota API once. `/stats model` subprocess/PTY output is never scraped or treated as quota data.
 - **Rate limits and transient failures** — HTTP 429 respects `Retry-After` with a provider-level cooldown. A recent last-good quota may be shown explicitly as **Stale** for a bounded period; expired/reset-past windows are not silently reused.
 
 ---

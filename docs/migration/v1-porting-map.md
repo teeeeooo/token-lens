@@ -68,7 +68,7 @@ Relevant v1 history includes `a920202`, `9e6074d`, and their follow-up tests/mer
 
 ### Claude quota parity
 
-Retain only the provider-owned read-only quota behavior missing from tokScale 4.15.1 on the tested Enterprise Windows path: reuse an already-present Claude Code access token, including provider-owned WSL `~/.claude/.credentials.json` discovery on Windows and Windows Credential Manager fallback, call `/api/oauth/usage`, fill missing 5-hour/weekly windows, and parse `spend` / `extra_usage` into the `Usage credits` monetary window. Preserve provider plan labels verbatim. Do not restore OAuth refresh/write/login or the general v1 account-management framework.
+Retain only the provider-owned quota behavior missing from tokScale 4.15.1 on the tested Enterprise Windows path: reuse an already-present Claude Code access token, including provider-owned WSL `~/.claude/.credentials.json` discovery on Windows and Windows Credential Manager fallback, call `/api/oauth/usage`, fill missing 5-hour/weekly windows, and parse `spend` / `extra_usage` into the `Usage credits` monetary window. Preserve provider plan labels verbatim. For rejected stored credentials, a bounded bare startup of the official Claude CLI may delegate refresh back to Claude Code; Token Lens does not parse `/usage`, read/redeem refresh tokens, write credentials, or restore the general v1 account-management framework.
 
 ### Gemini CLI
 
@@ -76,7 +76,7 @@ Gemini CLI is now a first-class v2 provider even though the hardened v1 downstre
 
 - actual usage comes from tokScale's `gemini` client;
 - quota follows Gemini CLI's Google Code Assist read path (`loadCodeAssist` then `retrieveUserQuota`) without copying OAuth refresh/onboarding/account-management behavior;
-- credentials remain owned by Gemini CLI and are read-only from Token Lens; current secure storage includes `gemini-cli-oauth/main-account` in the platform keychain and Gemini CLI's encrypted `gemini-credentials.json` file fallback, while the older `oauth_creds.json` source remains a compatibility input; Token Lens neither refreshes nor persists these credentials;
+- credentials remain owned by Gemini CLI; current secure storage includes `gemini-cli-oauth/main-account` in the platform keychain and Gemini CLI's encrypted `gemini-credentials.json` file fallback, while the older `oauth_creds.json` source remains a compatibility input. For an existing expired/rejected credential, Token Lens may perform a bounded bare startup of the official Gemini CLI so Gemini itself refreshes/persists its credential; Token Lens never reads/redeems refresh tokens or writes credentials itself;
 - session identification may use provider-owned project metadata, but no Gemini transcript content is promoted into renderer metadata.
 
 ### Antigravity quota

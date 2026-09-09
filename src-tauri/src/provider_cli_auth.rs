@@ -198,8 +198,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     fn unchanged_exit_command() -> CommandBuilder {
-        let mut command = CommandBuilder::new("powershell.exe");
-        command.args(["-NoProfile", "-Command", "Start-Sleep -Milliseconds 100"]);
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/s", "/c", "exit /b 0"]);
         command
     }
 
@@ -214,12 +214,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     fn credential_writer_command(path: &std::path::Path) -> CommandBuilder {
-        let escaped = path.to_string_lossy().replace('\'', "''");
-        let script = format!(
-            "Start-Sleep -Milliseconds 200; Set-Content -NoNewline -LiteralPath '{escaped}' -Value after; Start-Sleep -Seconds 10"
-        );
-        let mut command = CommandBuilder::new("powershell.exe");
-        command.args(["-NoProfile", "-Command", &script]);
+        let escaped = path.to_string_lossy().replace('"', "\"");
+        let script = format!(">\"{escaped}\" <nul set /p =after & ping -n 10 127.0.0.1 >nul");
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/s", "/c", &script]);
         command
     }
 }

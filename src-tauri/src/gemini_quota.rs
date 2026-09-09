@@ -711,7 +711,7 @@ fn parse_keychain_snapshot(bytes: &[u8]) -> Option<CredentialSnapshot> {
     credential_snapshot(token.access_token, token.expires_at)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn parse_keychain_credential(bytes: &[u8]) -> Option<ValidCredential> {
     parse_keychain_snapshot(bytes)?.into_valid()
 }
@@ -771,7 +771,7 @@ fn parse_file_keychain_snapshot(
     parse_keychain_snapshot(secret.as_bytes())
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn parse_file_keychain_credential(
     encrypted: &str,
     hostname: &str,

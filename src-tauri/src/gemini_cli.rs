@@ -70,7 +70,7 @@ fn bare_command_builder(binary: &Path) -> CommandBuilder {
     CommandBuilder::new(binary)
 }
 
-fn discover_binary(home: &Path) -> Option<PathBuf> {
+fn discover_binary(_home: &Path) -> Option<PathBuf> {
     if let Some(path) = env::var_os("TOKEN_LENS_GEMINI_BIN") {
         let path = PathBuf::from(path);
         if !path.as_os_str().is_empty() {
@@ -80,8 +80,8 @@ fn discover_binary(home: &Path) -> Option<PathBuf> {
 
     #[cfg(target_os = "macos")]
     for candidate in [
-        home.join(".local/bin/gemini"),
-        home.join(".npm-global/bin/gemini"),
+        _home.join(".local/bin/gemini"),
+        _home.join(".npm-global/bin/gemini"),
         PathBuf::from("/opt/homebrew/bin/gemini"),
         PathBuf::from("/usr/local/bin/gemini"),
     ] {

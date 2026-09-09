@@ -1,0 +1,47 @@
+name: Claude Refresh Diagnostic Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-script:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Parse PowerShell script
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          $path = Resolve-Path 'scripts/claude-refresh-diagnostic.ps1'
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - name: Check diagnostic secret policy
+        shell: powershell
+        run: |
+          $text = Get-Content -Raw 'scripts/claude-refresh-diagnostic.ps1'
+          if ($text -match '(?i)refreshToken|refresh_token') {
+            Write-Error 'Diagnostic must not read or reference refresh tokens.'
+            exit 1
+          }
+          if ($text -notmatch 'SHA256') {
+            Write-Error 'Diagnostic must fingerprint access tokens instead of printing them.'
+            exit 1
+          }
+          if ($text -notmatch 'COPY FROM HERE') {
+            Write-Error 'Diagnostic must emit a manually copyable report.'
+            exit 1
+          }

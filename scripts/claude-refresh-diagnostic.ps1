@@ -268,9 +268,15 @@ function Invoke-ClaudeInteractive {
     param([string]$Instruction)
     Write-Host ""
     Write-Host $Instruction -ForegroundColor Cyan
-    [void](Read-Host "Press Enter to launch Claude")
-    & claude
-    return Get-LastExitCodeSafe
+    [void](Read-Host "Press Enter to launch Claude in a separate console")
+    try {
+        $process = Start-Process -FilePath $script:ClaudeCommandPath -WorkingDirectory $HOME -PassThru -Wait
+        return $process.ExitCode
+    }
+    catch {
+        Write-Host "Claude launch failed: $($_.Exception.Message)" -ForegroundColor Red
+        return "launch-error"
+    }
 }
 if ($SelfTest) {
     $fixtureToken = "diagnostic-fixture-access-token"
@@ -296,6 +302,10 @@ if ($SelfTest) {
 
 $claude = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $claude) { throw "Claude CLI was not found on PATH." }
+$script:ClaudeCommandPath = $claude.Source
+if ([string]::IsNullOrWhiteSpace($script:ClaudeCommandPath)) {
+    $script:ClaudeCommandPath = $claude.Definition
+}
 
 $tokenLensProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match "(?i)token[-_ ]?lens" })
 if ($tokenLensProcesses.Count -gt 0) {

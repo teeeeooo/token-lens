@@ -2,6 +2,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::env;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,29 @@ where
             candidate.is_file().then_some(candidate)
         })
     })
+}
+
+pub(crate) fn spawn_refresh_once<F>(running: &'static AtomicBool, job: F) -> bool
+where
+    F: FnOnce() + Send + 'static,
+{
+    if running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    thread::spawn(move || {
+        struct ResetRunning(&'static AtomicBool);
+        impl Drop for ResetRunning {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _reset = ResetRunning(running);
+        job();
+    });
+    true
 }
 
 pub(crate) fn run_until_credential_change<F>(
@@ -119,9 +143,15 @@ fn credential_changed(before: Option<&str>, after: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{credential_changed, find_executable_in_paths, run_until_credential_change};
+    use super::{
+        credential_changed, find_executable_in_paths, run_until_credential_change,
+        spawn_refresh_once,
+    };
     use portable_pty::CommandBuilder;
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -152,6 +182,30 @@ mod tests {
         assert!(!credential_changed(None, None));
         assert!(!credential_changed(Some("token-a"), None));
         assert!(!credential_changed(Some("token-a"), Some("token-a")));
+    }
+
+    #[test]
+    fn background_refresh_runs_once_and_releases_gate() {
+        let running: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        assert!(spawn_refresh_once(running, move || {
+            started_tx.send(()).expect("signal background start");
+            release_rx.recv().expect("release background refresh");
+        }));
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("background refresh started");
+        assert!(!spawn_refresh_once(running, || {}));
+        release_tx.send(()).expect("release first refresh");
+        for _ in 0..100 {
+            if !running.load(Ordering::Acquire) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!running.load(Ordering::Acquire));
+        assert!(spawn_refresh_once(running, || {}));
     }
 
     #[test]

@@ -68,7 +68,7 @@ Relevant v1 history includes `a920202`, `9e6074d`, and their follow-up tests/mer
 
 ### Claude quota parity
 
-Retain only the provider-owned quota behavior missing from tokScale 4.15.1 on the tested Enterprise Windows path: reuse an already-present Claude Code access token, including provider-owned WSL `~/.claude/.credentials.json` discovery on Windows and Windows Credential Manager fallback, call `/api/oauth/usage`, fill missing 5-hour/weekly windows, and parse `spend` / `extra_usage` into the `Usage credits` monetary window. Preserve provider plan labels verbatim. For rejected stored credentials, a bounded bare startup of the official Claude CLI may delegate refresh back to Claude Code; Token Lens does not parse `/usage`, read/redeem refresh tokens, write credentials, or restore the general v1 account-management framework.
+Retain only the provider-owned quota behavior missing from tokScale 4.15.1 on the tested Enterprise Windows path: reuse Claude Code access-token state, including provider-owned WSL `~/.claude/.credentials.json` discovery on Windows and Windows Credential Manager fallback, call `/api/oauth/usage`, fill missing 5-hour/weekly windows, and parse `spend` / `extra_usage` into the `Usage credits` monetary window. Preserve provider plan labels verbatim. For missing or rejected credentials, a bounded bare startup of the official Claude CLI may be scheduled in the background to delegate refresh back to Claude Code; Token Lens returns quota without waiting for the CLI, suppresses duplicate refresh launches, and consumes the refreshed credential on a later poll. Token Lens does not parse `/usage`, read/redeem refresh tokens, write credentials, or restore the general v1 account-management framework.
 
 ### Gemini CLI
 
@@ -76,7 +76,7 @@ Gemini CLI is now a first-class v2 provider even though the hardened v1 downstre
 
 - actual usage comes from tokScale's `gemini` client;
 - quota follows Gemini CLI's Google Code Assist read path (`loadCodeAssist` then `retrieveUserQuota`) without copying OAuth refresh/onboarding/account-management behavior;
-- credentials remain owned by Gemini CLI; current secure storage includes `gemini-cli-oauth/main-account` in the platform keychain and Gemini CLI's encrypted `gemini-credentials.json` file fallback, while the older `oauth_creds.json` source remains a compatibility input. For an existing expired/rejected credential, Token Lens may perform a bounded bare startup of the official Gemini CLI so Gemini itself refreshes/persists its credential; Token Lens never reads/redeems refresh tokens or writes credentials itself;
+- credentials remain owned by Gemini CLI; current secure storage includes `gemini-cli-oauth/main-account` in the platform keychain and Gemini CLI's encrypted `gemini-credentials.json` file fallback, while the older `oauth_creds.json` source remains a compatibility input. For a missing, expired, or rejected credential, Token Lens may schedule one bounded bare startup of the official Gemini CLI in the background so Gemini itself refreshes/persists its credential; the foreground quota read returns immediately, duplicate launches are suppressed, and a later poll consumes the refreshed credential. Token Lens never reads/redeems refresh tokens or writes credentials itself;
 - session identification may use provider-owned project metadata, but no Gemini transcript content is promoted into renderer metadata.
 
 ### Antigravity quota

@@ -2,6 +2,7 @@ import { getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport
 
 const DISJOINT_REASONING_CLIENTS = new Set(['codex']);
 const DEFAULT_LIMIT_REFRESH_MS = 5 * 60 * 1000;
+const AUTH_REFRESH_LIMIT_POLL_MS = 30 * 1000;
 const TODAY_CACHE_MS = 30 * 1000;
 const MONTH_CACHE_MS = 2 * 60 * 1000;
 const ALL_TIME_CACHE_MS = 5 * 60 * 1000;
@@ -202,11 +203,18 @@ function compatibilityWindow(window) {
   };
 }
 
+function quotaAuthRefreshPending(report) {
+  return (report?.providers || []).some((provider) =>
+    /CLI credential refresh (?:started in background|already in progress|cooling down)/.test(
+      String(provider?.diagnostic || ''),
+    ));
+}
+
 export function quotaReportToCompatLimits(report) {
   const generatedAt = finite(report?.generatedAtMs);
   return {
     updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
-    refreshMs: DEFAULT_LIMIT_REFRESH_MS,
+    refreshMs: quotaAuthRefreshPending(report) ? AUTH_REFRESH_LIMIT_POLL_MS : DEFAULT_LIMIT_REFRESH_MS,
     providers: (report?.providers || []).map((provider) => {
       const diagnostic = String(provider.diagnostic || '');
       const windows = provider.windows || [];
@@ -252,7 +260,8 @@ export function createStatsLoader({
   async function cached(key, ttlMs, loader, force) {
     const current = cache.get(key);
     const timestamp = now();
-    if (!force && current && timestamp - current.at < ttlMs) return current.value;
+    const ttl = typeof ttlMs === 'function' ? ttlMs(current?.value) : ttlMs;
+    if (!force && current && timestamp - current.at < ttl) return current.value;
     const value = await loader();
     cache.set(key, { at: timestamp, value });
     return value;
@@ -271,7 +280,12 @@ export function createStatsLoader({
       const cacheKey = `derived:${derived.key}:${derived.since}`;
       derivedReport = await cached(cacheKey, DERIVED_CACHE_MS, () => usageSince(derived.since, 'client_session_model'), force);
     }
-    const limitsReport = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
+    const limitsReport = await cached(
+      'quota',
+      (current) => quotaAuthRefreshPending(current) ? AUTH_REFRESH_LIMIT_POLL_MS : DEFAULT_LIMIT_REFRESH_MS,
+      quota,
+      force,
+    );
     const reports = [today, month, allTime, limitsReport, derivedReport].filter(Boolean);
     const generatedAt = latestGeneratedAt(reports);
     const periods = {

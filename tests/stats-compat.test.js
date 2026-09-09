@@ -146,6 +146,55 @@ test('getStats caches slower ranges and refreshes today independently', async ()
   ]);
 });
 
+test('getStats rechecks quota after 30s while provider CLI credential refresh is pending', async () => {
+  let clock = 1_000_000;
+  let quotaCalls = 0;
+  const usage = async () => report([], clock);
+  const quota = async () => {
+    quotaCalls += 1;
+    return quotaCalls === 1
+      ? {
+          generatedAtMs: clock,
+          providers: [{
+            provider: 'claude',
+            diagnostic: 'Claude credential is unavailable; Claude CLI credential refresh started in background',
+            windows: [],
+          }],
+        }
+      : { generatedAtMs: clock, providers: [{ provider: 'claude', diagnostic: null, windows: [] }] };
+  };
+  const getStats = createStatsLoader({ usage, quota, now: () => clock });
+
+  const first = await getStats();
+  assert.equal(first.limits.refreshMs, 30_000);
+  assert.equal(quotaCalls, 1);
+
+  clock += 29_000;
+  await getStats();
+  assert.equal(quotaCalls, 1);
+
+  clock += 2_000;
+  const recovered = await getStats();
+  assert.equal(quotaCalls, 2);
+  assert.equal(recovered.limits.refreshMs, 5 * 60 * 1000);
+
+  clock += 31_000;
+  await getStats();
+  assert.equal(quotaCalls, 2);
+});
+
+test('quota compatibility keeps 30s polling during CLI refresh backoff', () => {
+  const limits = quotaReportToCompatLimits({
+    generatedAtMs: 1_700_000_000_000,
+    providers: [{
+      provider: 'gemini',
+      diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
+      windows: [],
+    }],
+  });
+  assert.equal(limits.refreshMs, 30_000);
+});
+
 test('getStats exposes a cached derived period from an explicit since date', async () => {
   const calls = [];
   const usage = async (period) => report([], period === 'today' ? 1000 : 2000);

@@ -30,6 +30,8 @@ pub(crate) struct ProviderIncident {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooldown_seconds: Option<u64>,
@@ -117,13 +119,14 @@ pub(crate) fn record(incident: ProviderIncident) {
 
 fn incident_signature(incident: &ProviderIncident) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
         incident.provider,
         incident.category,
         incident.code,
         incident.stage,
         incident.result,
-        incident.recovery_code.unwrap_or("")
+        incident.recovery_code.unwrap_or(""),
+        incident.discovery_code.unwrap_or("")
     )
 }
 
@@ -235,6 +238,7 @@ mod tests {
             credential_changed: Some(false),
             cli_fallback: Some(true),
             recovery_code: None,
+            discovery_code: None,
             retry_after_seconds: None,
             cooldown_seconds: None,
             last_good_used: None,

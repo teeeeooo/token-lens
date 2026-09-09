@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,6 +25,9 @@ const TOKEN_EXPIRY_SAFETY_MS: u64 = 30_000;
 const MAX_RATE_LIMIT_COOLDOWN_MS: u64 = 60 * 60 * 1000;
 const LAST_GOOD_TTL_MS: u64 = 30 * 60 * 1000;
 const STALE_DIAGNOSTIC_PREFIX: &str = "Stale Gemini quota";
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS: u64 = 5 * 60 * 1000;
+static AUTH_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
+static AUTH_REFRESH_RETRY_AFTER_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 struct StoredGeminiCredential {
@@ -86,6 +90,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     {
         cache_last_good(&report, now);
         clear_cooldown();
+        AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return report;
     }
 
@@ -121,7 +126,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             }
         }
         Err(DirectAttemptError::MissingCredential) => {
-            return recover_auth_with_cli(
+            return recover_auth_in_background(
                 home,
                 report,
                 GeminiFailure::MissingCredential,
@@ -130,7 +135,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             );
         }
         Err(DirectAttemptError::Fetch(error)) if error.is_unauthorized() => {
-            return recover_auth_with_cli(
+            return recover_auth_in_background(
                 home,
                 report,
                 error,
@@ -355,7 +360,7 @@ fn fetch_provider(home: &Path, access_token: &str) -> Result<QuotaProvider, Gemi
     })
 }
 
-fn recover_auth_with_cli(
+fn recover_auth_in_background(
     home: &Path,
     mut report: QuotaReport,
     failure: GeminiFailure,
@@ -363,104 +368,104 @@ fn recover_auth_with_cli(
     credential_changed: Option<bool>,
 ) -> QuotaReport {
     let now = now_ms();
-    if read_credential_snapshot(home).is_none() {
-        let presentation = apply_failure_with_cache(&mut report, failure.diagnostic(), now);
+    let discovery_code = matches!(failure, GeminiFailure::MissingCredential)
+        .then(|| credential_discovery_code(home));
+    let retry_after_ms = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
+    if retry_after_ms > now {
+        let presentation = apply_failure_with_cache(
+            &mut report,
+            format!(
+                "{}; Gemini CLI credential refresh cooling down; retry in about {}s",
+                failure.diagnostic(),
+                retry_after_ms.saturating_sub(now).div_ceil(1000)
+            ),
+            now,
+        );
         record_incident(
             failure,
             presentation.result_label(),
             GeminiIncidentRecovery {
                 credential_reread,
                 credential_changed,
+                cli_fallback: true,
+                recovery_code: Some("CLI_REFRESH_COOLDOWN"),
+                discovery_code,
                 last_good_used: presentation.last_good_used(),
-                ..GeminiIncidentRecovery::default()
             },
         );
         return report;
     }
-    let refresh = gemini_cli::refresh_credential_via_startup(home, || {
-        read_credential_snapshot(home).map(|credential| credential.signature())
-    });
-    match refresh {
-        Ok(()) => {
-            let Some(credential) = read_valid_credential(home) else {
-                let presentation = apply_failure_with_cache(
-                    &mut report,
-                    "Gemini CLI refreshed but no readable non-expired access token was found",
-                    now,
-                );
+    let home = home.to_path_buf();
+    let failure_for_job = failure.clone();
+    let started = crate::provider_cli_auth::spawn_refresh_once(&AUTH_REFRESH_RUNNING, move || {
+        let refresh = gemini_cli::refresh_credential_via_startup(&home, || {
+            read_credential_snapshot(&home).map(|credential| credential.signature())
+        });
+        match refresh {
+            Ok(()) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
                 record_incident(
-                    failure,
-                    presentation.result_label(),
+                    failure_for_job,
+                    "cli_refresh_completed",
                     GeminiIncidentRecovery {
                         credential_reread: true,
                         credential_changed: Some(true),
                         cli_fallback: true,
-                        recovery_code: Some("CLI_REFRESH_NO_CREDENTIAL"),
-                        last_good_used: presentation.last_good_used(),
+                        discovery_code,
+                        ..GeminiIncidentRecovery::default()
                     },
                 );
-                return report;
-            };
-            match fetch_provider(home, &credential.access_token) {
-                Ok(provider) => {
-                    apply_success(&mut report, provider, now);
-                    record_incident(
-                        failure,
-                        "recovered_api_after_cli",
-                        GeminiIncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            ..GeminiIncidentRecovery::default()
-                        },
-                    );
-                    return report;
-                }
-                Err(error) => {
-                    if let Some(retry_after_ms) = error.retry_after_ms() {
-                        set_cooldown(now, retry_after_ms);
-                    }
-                    let recovery_code = if error.retry_after_ms().is_some() {
-                        "POST_CLI_RATE_LIMITED"
-                    } else {
-                        "POST_CLI_API_FAILED"
-                    };
-                    let presentation =
-                        apply_failure_with_cache(&mut report, error.diagnostic(), now);
-                    record_incident(
-                        error,
-                        presentation.result_label(),
-                        GeminiIncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            recovery_code: Some(recovery_code),
-                            last_good_used: presentation.last_good_used(),
-                        },
-                    );
-                }
+            }
+            Err(error) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(
+                    now_ms().saturating_add(AUTH_REFRESH_FAILURE_COOLDOWN_MS),
+                    Ordering::Release,
+                );
+                let (code, _) = gemini_cli::classify_refresh_error(&error);
+                record_incident(
+                    failure_for_job,
+                    "cli_refresh_failed",
+                    GeminiIncidentRecovery {
+                        credential_reread,
+                        credential_changed: credential_changed.or(Some(false)),
+                        cli_fallback: true,
+                        recovery_code: Some(code),
+                        discovery_code,
+                        ..GeminiIncidentRecovery::default()
+                    },
+                );
             }
         }
-        Err(error) => {
-            let (code, diagnostic) = gemini_cli::classify_refresh_error(&error);
-            let presentation = apply_failure_with_cache(
-                &mut report,
-                format!("{}; {diagnostic}", failure.diagnostic()),
-                now,
-            );
-            record_incident(
-                failure,
-                presentation.result_label(),
-                GeminiIncidentRecovery {
-                    credential_reread,
-                    credential_changed: credential_changed.or(Some(false)),
-                    cli_fallback: true,
-                    recovery_code: Some(code),
-                    last_good_used: presentation.last_good_used(),
-                },
-            );
-        }
-    }
+    });
+
+    let detail = if started {
+        format!(
+            "{}; Gemini CLI credential refresh started in background",
+            failure.diagnostic()
+        )
+    } else {
+        format!(
+            "{}; Gemini CLI credential refresh already in progress",
+            failure.diagnostic()
+        )
+    };
+    let presentation = apply_failure_with_cache(&mut report, detail, now);
+    record_incident(
+        failure,
+        presentation.result_label(),
+        GeminiIncidentRecovery {
+            credential_reread,
+            credential_changed,
+            cli_fallback: true,
+            recovery_code: Some(if started {
+                "CLI_REFRESH_STARTED"
+            } else {
+                "CLI_REFRESH_IN_PROGRESS"
+            }),
+            discovery_code,
+            last_good_used: presentation.last_good_used(),
+        },
+    );
     report
 }
 
@@ -475,6 +480,7 @@ fn apply_success(report: &mut QuotaReport, provider: QuotaProvider, now: u64) {
         report.providers.push(provider);
     }
     clear_cooldown();
+    AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
     cache_last_good(report, now);
 }
 
@@ -622,6 +628,7 @@ struct GeminiIncidentRecovery {
     credential_changed: Option<bool>,
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
+    discovery_code: Option<&'static str>,
     last_good_used: bool,
 }
 
@@ -638,6 +645,7 @@ fn record_incident(failure: GeminiFailure, result: &'static str, recovery: Gemin
         credential_changed: recovery.credential_changed,
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
+        discovery_code: recovery.discovery_code,
         retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),
@@ -704,6 +712,52 @@ fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
     read_credential_snapshot(home)?.into_valid()
 }
 
+fn credential_discovery_code(home: &Path) -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(bytes) = read_windows_keychain_blob() {
+            return if parse_keychain_snapshot(&bytes).is_some() {
+                "WINDOWS_CREDENTIAL_CHANGED_DURING_DISCOVERY"
+            } else {
+                "WINDOWS_CREDENTIAL_PARSE_FAILED"
+            };
+        }
+        let file_keychain = gemini_home(home).join("gemini-credentials.json");
+        if file_keychain.exists() {
+            let Ok(text) = fs::read_to_string(file_keychain) else {
+                return "FILE_KEYCHAIN_READ_FAILED";
+            };
+            let Some(hostname) = env::var("COMPUTERNAME").ok() else {
+                return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
+            };
+            let Some(username) = env::var("USERNAME").ok().or_else(|| env::var("USER").ok()) else {
+                return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
+            };
+            return if parse_file_keychain_snapshot(&text, &hostname, &username).is_some() {
+                "FILE_KEYCHAIN_CHANGED_DURING_DISCOVERY"
+            } else {
+                "FILE_KEYCHAIN_PARSE_FAILED"
+            };
+        }
+    }
+
+    let oauth_file = gemini_home(home).join("oauth_creds.json");
+    if oauth_file.exists() {
+        let Ok(bytes) = fs::read(oauth_file) else {
+            return "OAUTH_FILE_READ_FAILED";
+        };
+        let parsed = serde_json::from_slice::<StoredGeminiCredential>(&bytes)
+            .ok()
+            .and_then(|raw| credential_snapshot(raw.access_token, raw.expiry_date));
+        return if parsed.is_some() {
+            "OAUTH_FILE_CHANGED_DURING_DISCOVERY"
+        } else {
+            "OAUTH_FILE_PARSE_FAILED"
+        };
+    }
+    "STORE_NOT_FOUND"
+}
+
 #[cfg(any(target_os = "windows", test))]
 fn parse_keychain_snapshot(bytes: &[u8]) -> Option<CredentialSnapshot> {
     let raw = serde_json::from_slice::<StoredGeminiKeychainCredential>(bytes).ok()?;
@@ -718,6 +772,11 @@ fn parse_keychain_credential(bytes: &[u8]) -> Option<ValidCredential> {
 
 #[cfg(target_os = "windows")]
 fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
+    read_windows_keychain_blob().and_then(|bytes| parse_keychain_snapshot(&bytes))
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_keychain_blob() -> Option<Vec<u8>> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -726,9 +785,6 @@ fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
         CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
     };
 
-    // Current Gemini CLI (OAuthCredentialStorage + keytar) stores the main
-    // account as service/account => `gemini-cli-oauth/main-account`. Token Lens
-    // reads only access-token/expiry metadata; the official CLI owns refresh.
     let target = OsStr::new("gemini-cli-oauth/main-account")
         .encode_wide()
         .chain(once(0))
@@ -743,7 +799,7 @@ fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
         std::slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize).to_vec()
     };
     unsafe { CredFree(credential.cast()) };
-    parse_keychain_snapshot(&bytes)
+    Some(bytes)
 }
 
 #[cfg(target_os = "windows")]

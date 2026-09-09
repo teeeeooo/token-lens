@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,9 @@ const DEFAULT_RATE_LIMIT_COOLDOWN_MS: u64 = 60_000;
 const MAX_RATE_LIMIT_COOLDOWN_MS: u64 = 60 * 60 * 1000;
 const LAST_GOOD_TTL_MS: u64 = 30 * 60 * 1000;
 const STALE_DIAGNOSTIC_PREFIX: &str = "Stale Claude quota";
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS: u64 = 5 * 60 * 1000;
+static AUTH_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
+static AUTH_REFRESH_RETRY_AFTER_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UsageFetchError {
@@ -71,6 +75,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     if !needs {
         cache_last_good(&report, now_ms());
         clear_cooldown();
+        AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return report;
     }
 
@@ -124,22 +129,13 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             );
             report
         }
-        Err(DirectAttemptError::MissingCredential) => {
-            let presentation = apply_failure_with_cache(
-                &mut report,
-                RecoveryTrigger::MissingCredential.diagnostic(),
-                now,
-            );
-            record_incident(
-                RecoveryTrigger::MissingCredential,
-                presentation.result_label(),
-                IncidentRecovery {
-                    last_good_used: presentation.last_good_used(),
-                    ..IncidentRecovery::default()
-                },
-            );
-            report
-        }
+        Err(DirectAttemptError::MissingCredential) => recover_auth_in_background(
+            home,
+            report,
+            RecoveryTrigger::MissingCredential,
+            false,
+            None,
+        ),
         Err(DirectAttemptError::Fetch(UsageFetchError::RateLimited { retry_after_ms })) => {
             set_cooldown(now, retry_after_ms);
             let presentation = apply_failure_with_cache(
@@ -163,7 +159,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         Err(DirectAttemptError::Fetch(error)) => {
             let trigger = RecoveryTrigger::from_fetch_error(&error);
             if matches!(error, UsageFetchError::Unauthorized) {
-                recover_auth_with_cli(
+                recover_auth_in_background(
                     home,
                     report,
                     trigger,
@@ -299,7 +295,7 @@ where
     }
 }
 
-fn recover_auth_with_cli(
+fn recover_auth_in_background(
     home: &Path,
     mut report: QuotaReport,
     trigger: RecoveryTrigger,
@@ -307,6 +303,8 @@ fn recover_auth_with_cli(
     credential_changed: Option<bool>,
 ) -> QuotaReport {
     let now = now_ms();
+    let discovery_code = matches!(trigger, RecoveryTrigger::MissingCredential)
+        .then(|| credential_discovery_code(home));
     if environment_access_token().is_some() {
         let presentation = apply_failure_with_cache(
             &mut report,
@@ -323,131 +321,111 @@ fn recover_auth_with_cli(
                 credential_reread,
                 credential_changed,
                 recovery_code: Some("CLI_ENV_CREDENTIAL_IMMUTABLE"),
+                discovery_code,
                 last_good_used: presentation.last_good_used(),
                 ..IncidentRecovery::default()
             },
         );
         return report;
     }
-    let refresh = claude_cli::refresh_credential_via_startup(home, || read_access_token(home));
-    match refresh {
-        Ok(()) => {
-            let Some(token) = read_access_token(home) else {
-                let presentation = apply_failure_with_cache(
-                    &mut report,
-                    format!(
-                        "{}; Claude CLI refreshed but no access token was readable",
-                        trigger.diagnostic()
-                    ),
-                    now,
-                );
+
+    let retry_after_ms = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
+    if retry_after_ms > now {
+        let presentation = apply_failure_with_cache(
+            &mut report,
+            format!(
+                "{}; Claude CLI credential refresh cooling down; retry in about {}s",
+                trigger.diagnostic(),
+                retry_after_ms.saturating_sub(now).div_ceil(1000)
+            ),
+            now,
+        );
+        record_incident(
+            trigger,
+            presentation.result_label(),
+            IncidentRecovery {
+                credential_reread,
+                credential_changed,
+                cli_fallback: true,
+                recovery_code: Some("CLI_REFRESH_COOLDOWN"),
+                discovery_code,
+                last_good_used: presentation.last_good_used(),
+                ..IncidentRecovery::default()
+            },
+        );
+        return report;
+    }
+
+    let home = home.to_path_buf();
+    let started = crate::provider_cli_auth::spawn_refresh_once(&AUTH_REFRESH_RUNNING, move || {
+        let refresh =
+            claude_cli::refresh_credential_via_startup(&home, || read_access_token(&home));
+        match refresh {
+            Ok(()) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
                 record_incident(
                     trigger,
-                    presentation.result_label(),
+                    "cli_refresh_completed",
                     IncidentRecovery {
                         credential_reread: true,
                         credential_changed: Some(true),
                         cli_fallback: true,
-                        recovery_code: Some("CLI_REFRESH_NO_CREDENTIAL"),
-                        last_good_used: presentation.last_good_used(),
+                        discovery_code,
                         ..IncidentRecovery::default()
                     },
                 );
-                return report;
-            };
-            match fetch_usage(&token) {
-                Ok(usage) => {
-                    let windows = windows_from_usage(&usage);
-                    if !windows.is_empty() {
-                        apply_success(&mut report, windows, now);
-                        record_incident(
-                            trigger,
-                            "recovered_api_after_cli",
-                            IncidentRecovery {
-                                credential_reread: true,
-                                credential_changed: Some(true),
-                                cli_fallback: true,
-                                ..IncidentRecovery::default()
-                            },
-                        );
-                        return report;
-                    }
-                    let presentation = apply_failure_with_cache(
-                        &mut report,
-                        "Claude usage API returned no supported quota windows after CLI refresh",
-                        now,
-                    );
-                    record_incident(
-                        RecoveryTrigger::NoQuotaWindows,
-                        presentation.result_label(),
-                        IncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            recovery_code: Some("POST_CLI_NO_QUOTA_WINDOWS"),
-                            last_good_used: presentation.last_good_used(),
-                            ..IncidentRecovery::default()
-                        },
-                    );
-                }
-                Err(UsageFetchError::RateLimited { retry_after_ms }) => {
-                    set_cooldown(now, retry_after_ms);
-                    let error = UsageFetchError::RateLimited { retry_after_ms };
-                    let presentation =
-                        apply_failure_with_cache(&mut report, error.diagnostic(), now);
-                    record_incident(
-                        RecoveryTrigger::RateLimited,
-                        presentation.result_label(),
-                        IncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            recovery_code: Some("POST_CLI_RATE_LIMITED"),
-                            retry_after_ms: Some(retry_after_ms),
-                            last_good_used: presentation.last_good_used(),
-                        },
-                    );
-                }
-                Err(error) => {
-                    let post_trigger = RecoveryTrigger::from_fetch_error(&error);
-                    let presentation =
-                        apply_failure_with_cache(&mut report, error.diagnostic(), now);
-                    record_incident(
-                        post_trigger,
-                        presentation.result_label(),
-                        IncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            recovery_code: Some("POST_CLI_API_FAILED"),
-                            last_good_used: presentation.last_good_used(),
-                            ..IncidentRecovery::default()
-                        },
-                    );
-                }
+            }
+            Err(error) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(
+                    now_ms().saturating_add(AUTH_REFRESH_FAILURE_COOLDOWN_MS),
+                    Ordering::Release,
+                );
+                let (code, _) = claude_cli::classify_refresh_error(&error);
+                record_incident(
+                    trigger,
+                    "cli_refresh_failed",
+                    IncidentRecovery {
+                        credential_reread,
+                        credential_changed: credential_changed.or(Some(false)),
+                        cli_fallback: true,
+                        recovery_code: Some(code),
+                        discovery_code,
+                        ..IncidentRecovery::default()
+                    },
+                );
             }
         }
-        Err(error) => {
-            let (code, diagnostic) = claude_cli::classify_refresh_error(&error);
-            let presentation = apply_failure_with_cache(
-                &mut report,
-                format!("{}; {diagnostic}", trigger.diagnostic()),
-                now,
-            );
-            record_incident(
-                trigger,
-                presentation.result_label(),
-                IncidentRecovery {
-                    credential_reread,
-                    credential_changed: credential_changed.or(Some(false)),
-                    cli_fallback: true,
-                    recovery_code: Some(code),
-                    last_good_used: presentation.last_good_used(),
-                    ..IncidentRecovery::default()
-                },
-            );
-        }
-    }
+    });
+
+    let detail = if started {
+        format!(
+            "{}; Claude CLI credential refresh started in background",
+            trigger.diagnostic()
+        )
+    } else {
+        format!(
+            "{}; Claude CLI credential refresh already in progress",
+            trigger.diagnostic()
+        )
+    };
+    let presentation = apply_failure_with_cache(&mut report, detail, now);
+    record_incident(
+        trigger,
+        presentation.result_label(),
+        IncidentRecovery {
+            credential_reread,
+            credential_changed,
+            cli_fallback: true,
+            recovery_code: Some(if started {
+                "CLI_REFRESH_STARTED"
+            } else {
+                "CLI_REFRESH_IN_PROGRESS"
+            }),
+            discovery_code,
+            last_good_used: presentation.last_good_used(),
+            ..IncidentRecovery::default()
+        },
+    );
     report
 }
 
@@ -472,6 +450,7 @@ fn apply_success(report: &mut QuotaReport, windows: Vec<QuotaWindow>, now: u64) 
         });
     }
     clear_cooldown();
+    AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
     cache_last_good(report, now);
 }
 
@@ -686,6 +665,7 @@ struct IncidentRecovery {
     credential_changed: Option<bool>,
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
+    discovery_code: Option<&'static str>,
     retry_after_ms: Option<u64>,
     last_good_used: bool,
 }
@@ -702,6 +682,7 @@ fn record_incident(trigger: RecoveryTrigger, result: &'static str, recovery: Inc
         credential_changed: recovery.credential_changed,
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
+        discovery_code: recovery.discovery_code,
         retry_after_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),
@@ -973,6 +954,33 @@ fn read_access_token(home: &Path) -> Option<String> {
     None
 }
 
+fn credential_discovery_code(home: &Path) -> &'static str {
+    for path in claude_credential_paths(home) {
+        if !path.exists() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(path) else {
+            return "FILE_READ_FAILED";
+        };
+        if read_token_json(&bytes).is_none() {
+            return "FILE_PARSE_FAILED";
+        }
+        return "FILE_CHANGED_DURING_DISCOVERY";
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(bytes) = read_windows_credential_blob() {
+        let parsed = decode_credential_blob(&bytes)
+            .and_then(|text| read_token_json(text.as_bytes()))
+            .is_some();
+        return if parsed {
+            "WINDOWS_CREDENTIAL_CHANGED_DURING_DISCOVERY"
+        } else {
+            "WINDOWS_CREDENTIAL_PARSE_FAILED"
+        };
+    }
+    "STORE_NOT_FOUND"
+}
+
 fn claude_credential_paths(home: &Path) -> Vec<PathBuf> {
     if let Some(root) = env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -1036,6 +1044,13 @@ fn read_token_json(bytes: &[u8]) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn read_windows_credential_token() -> Option<String> {
+    read_windows_credential_blob().and_then(|bytes| {
+        decode_credential_blob(&bytes).and_then(|text| read_token_json(text.as_bytes()))
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_credential_blob() -> Option<Vec<u8>> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -1070,11 +1085,7 @@ fn read_windows_credential_token() -> Option<String> {
                 .to_vec()
         };
         unsafe { CredFree(credential.cast()) };
-        if let Some(token) =
-            decode_credential_blob(&bytes).and_then(|text| read_token_json(text.as_bytes()))
-        {
-            return Some(token);
-        }
+        return Some(bytes);
     }
     None
 }

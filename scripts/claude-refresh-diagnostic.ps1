@@ -1,5 +1,6 @@
 param(
-    [string]$ReportPath = ""
+    [string]$ReportPath = "",
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -270,6 +271,28 @@ function Invoke-ClaudeInteractive {
     & claude
     return Get-LastExitCodeSafe
 }
+if ($SelfTest) {
+    $fixtureToken = "diagnostic-fixture-access-token"
+    $fixture = '{"claudeAiOauth":{"accessToken":"' + $fixtureToken + '","expiresAt":1893456000000}}'
+    $parsed = Get-OauthFieldsFromJsonText $fixture
+    if ($null -eq $parsed -or $parsed.AccessToken -ne $fixtureToken) {
+        throw "Self-test failed: access-token parsing"
+    }
+    $utf8 = [Text.Encoding]::UTF8.GetBytes($fixture)
+    $utf16 = [Text.Encoding]::Unicode.GetBytes($fixture)
+    if ((Decode-CredentialBlob $utf8) -ne $fixture) {
+        throw "Self-test failed: UTF-8 credential decoding"
+    }
+    if ((Decode-CredentialBlob $utf16) -ne $fixture) {
+        throw "Self-test failed: UTF-16 credential decoding"
+    }
+    if ((Get-TokenFingerprint $fixtureToken).Length -ne 12) {
+        throw "Self-test failed: fingerprint"
+    }
+    Write-Host "Claude refresh diagnostic self-test: PASS"
+    exit 0
+}
+
 $claude = Get-Command claude -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $claude) { throw "Claude CLI was not found on PATH." }
 

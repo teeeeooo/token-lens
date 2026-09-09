@@ -32,6 +32,10 @@ jobs:
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
           }
+      - name: Run diagnostic self-test
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/claude-refresh-diagnostic.ps1 -SelfTest
+
       - name: Check diagnostic secret policy
         shell: powershell
         run: |

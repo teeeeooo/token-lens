@@ -222,7 +222,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     fn credential_writer_command(path: &std::path::Path) -> CommandBuilder {
-        let escaped = path.to_string_lossy().replace('"', "\"");
+        let escaped = path.to_string_lossy();
         let script = format!(">\"{escaped}\" <nul set /p =after & ping -n 10 127.0.0.1 >nul");
         let mut command = CommandBuilder::new("cmd.exe");
         command.args(["/d", "/s", "/c", &script]);

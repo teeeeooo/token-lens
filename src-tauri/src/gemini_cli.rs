@@ -98,11 +98,7 @@ fn discover_binary(_home: &Path) -> Option<PathBuf> {
                 return Some(npm);
             }
         }
-        return provider_cli_auth::find_executable_on_path(&[
-            "gemini.exe",
-            "gemini.cmd",
-            "gemini.bat",
-        ]);
+        provider_cli_auth::find_executable_on_path(&["gemini.exe", "gemini.cmd", "gemini.bat"])
     }
 
     #[cfg(not(target_os = "windows"))]

@@ -113,11 +113,7 @@ fn discover_binary(home: &Path) -> Option<PathBuf> {
         if let Some(binary) = discover_windows_winget_binary() {
             return Some(binary);
         }
-        return provider_cli_auth::find_executable_on_path(&[
-            "claude.exe",
-            "claude.cmd",
-            "claude.bat",
-        ]);
+        provider_cli_auth::find_executable_on_path(&["claude.exe", "claude.cmd", "claude.bat"])
     }
 
     #[cfg(not(target_os = "windows"))]

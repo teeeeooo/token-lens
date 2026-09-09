@@ -134,7 +134,7 @@ fn discover_binary(_home: &Path) -> Option<DiscoveredBinary> {
             .map(PathBuf::from)
             .map(|appdata| appdata.join("npm/gemini.cmd"))
             .filter(|candidate| candidate.is_file());
-        return choose_windows_candidate(path_candidate, appdata_candidate);
+        choose_windows_candidate(path_candidate, appdata_candidate)
     }
 
     #[cfg(not(target_os = "windows"))]

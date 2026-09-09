@@ -155,6 +155,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
+    )]
     fn pty_auth_touch_reports_clean_exit_without_credential_change() {
         let command = unchanged_exit_command();
         let result =
@@ -170,6 +174,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
+    )]
     fn pty_auth_touch_returns_after_provider_owned_credential_change() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)

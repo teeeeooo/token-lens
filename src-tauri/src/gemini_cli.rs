@@ -6,6 +6,20 @@ use std::time::Duration;
 
 const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(240);
 
+#[derive(Debug)]
+pub(crate) struct RefreshAttempt {
+    pub result: Result<(), String>,
+    pub cli_source: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredBinary {
+    path: PathBuf,
+    source: &'static str,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    shell_name: bool,
+}
+
 pub(crate) fn classify_refresh_error(error: &str) -> (&'static str, &'static str) {
     let lower = error.to_ascii_lowercase();
     if lower.contains("not installed") || lower.contains("not discoverable") {
@@ -35,24 +49,38 @@ pub(crate) fn classify_refresh_error(error: &str) -> (&'static str, &'static str
     ("CLI_REFRESH_FAILED", "Gemini CLI auth refresh failed")
 }
 
-pub(crate) fn refresh_credential_via_startup<F>(
-    home: &Path,
-    read_signature: F,
-) -> Result<(), String>
+pub(crate) fn refresh_credential_via_startup<F>(home: &Path, read_signature: F) -> RefreshAttempt
 where
     F: FnMut() -> Option<String>,
 {
-    let binary = discover_binary(home)
-        .ok_or_else(|| "Gemini CLI is not installed or discoverable".to_owned())?;
-    let mut command = bare_command_builder(&binary);
+    let Some(binary) = discover_binary(home) else {
+        return RefreshAttempt {
+            result: Err("Gemini CLI is not installed or discoverable".to_owned()),
+            cli_source: None,
+        };
+    };
+    let mut command = discovered_command_builder(&binary);
     command.cwd(home);
     command.env("PWD", home);
-    provider_cli_auth::run_until_credential_change(
-        "Gemini",
-        command,
-        AUTH_TOUCH_TIMEOUT,
-        read_signature,
-    )
+    RefreshAttempt {
+        result: provider_cli_auth::run_until_credential_change(
+            "Gemini",
+            command,
+            AUTH_TOUCH_TIMEOUT,
+            read_signature,
+        ),
+        cli_source: Some(binary.source),
+    }
+}
+
+fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
+    #[cfg(target_os = "windows")]
+    if binary.shell_name {
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/s", "/c", "gemini"]);
+        return command;
+    }
+    bare_command_builder(&binary.path)
 }
 
 fn bare_command_builder(binary: &Path) -> CommandBuilder {
@@ -70,44 +98,77 @@ fn bare_command_builder(binary: &Path) -> CommandBuilder {
     CommandBuilder::new(binary)
 }
 
-fn discover_binary(_home: &Path) -> Option<PathBuf> {
+fn discover_binary(_home: &Path) -> Option<DiscoveredBinary> {
     if let Some(path) = env::var_os("TOKEN_LENS_GEMINI_BIN") {
         let path = PathBuf::from(path);
         if !path.as_os_str().is_empty() {
-            return Some(path);
+            return Some(DiscoveredBinary {
+                path,
+                source: "override",
+                shell_name: false,
+            });
         }
     }
 
     #[cfg(target_os = "macos")]
-    for candidate in [
-        _home.join(".local/bin/gemini"),
-        _home.join(".npm-global/bin/gemini"),
-        PathBuf::from("/opt/homebrew/bin/gemini"),
-        PathBuf::from("/usr/local/bin/gemini"),
+    for (candidate, source) in [
+        (_home.join(".local/bin/gemini"), "home_local"),
+        (_home.join(".npm-global/bin/gemini"), "home_npm"),
+        (PathBuf::from("/opt/homebrew/bin/gemini"), "homebrew"),
+        (PathBuf::from("/usr/local/bin/gemini"), "usr_local"),
     ] {
         if candidate.is_file() {
-            return Some(candidate);
+            return Some(DiscoveredBinary {
+                path: candidate,
+                source,
+                shell_name: false,
+            });
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(appdata) = env::var_os("APPDATA").map(PathBuf::from) {
-            let npm = appdata.join("npm/gemini.cmd");
-            if npm.is_file() {
-                return Some(npm);
-            }
-        }
-        provider_cli_auth::find_executable_on_path(&["gemini.exe", "gemini.cmd", "gemini.bat"])
+        let path_candidate =
+            provider_cli_auth::find_executable_on_path(&["gemini.exe", "gemini.cmd", "gemini.bat"]);
+        let appdata_candidate = env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|appdata| appdata.join("npm/gemini.cmd"))
+            .filter(|candidate| candidate.is_file());
+        return choose_windows_candidate(path_candidate, appdata_candidate);
     }
 
     #[cfg(not(target_os = "windows"))]
-    provider_cli_auth::find_executable_on_path(&["gemini"])
+    provider_cli_auth::find_executable_on_path(&["gemini"]).map(|path| DiscoveredBinary {
+        path,
+        source: "path",
+        shell_name: false,
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn choose_windows_candidate(
+    path_candidate: Option<PathBuf>,
+    appdata_candidate: Option<PathBuf>,
+) -> Option<DiscoveredBinary> {
+    path_candidate
+        .map(|path| DiscoveredBinary {
+            path,
+            source: "path",
+            shell_name: true,
+        })
+        .or_else(|| {
+            appdata_candidate.map(|path| DiscoveredBinary {
+                path,
+                source: "appdata_npm",
+                shell_name: false,
+            })
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::classify_refresh_error;
+    use super::{choose_windows_candidate, classify_refresh_error};
+    use std::path::PathBuf;
 
     #[test]
     fn refresh_errors_are_sanitized_and_classified() {
@@ -123,5 +184,30 @@ mod tests {
             classify_refresh_error("Gemini CLI launch failed").0,
             "CLI_LAUNCH_FAILED"
         );
+    }
+    #[test]
+    fn windows_candidate_prefers_shell_path_over_appdata_fallback() {
+        let selected = choose_windows_candidate(
+            Some(PathBuf::from(r"C:\tools\gemini.cmd")),
+            Some(PathBuf::from(
+                r"C:\Users\user\AppData\Roaming\npm\gemini.cmd",
+            )),
+        )
+        .expect("Gemini candidate");
+        assert_eq!(selected.source, "path");
+        assert!(selected.shell_name);
+    }
+
+    #[test]
+    fn windows_candidate_uses_appdata_only_when_shell_path_is_absent() {
+        let selected = choose_windows_candidate(
+            None,
+            Some(PathBuf::from(
+                r"C:\Users\user\AppData\Roaming\npm\gemini.cmd",
+            )),
+        )
+        .expect("Gemini candidate");
+        assert_eq!(selected.source, "appdata_npm");
+        assert!(!selected.shell_name);
     }
 }

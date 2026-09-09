@@ -835,6 +835,7 @@ fn record_incident(trigger: RecoveryTrigger, result: &'static str, recovery: Inc
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
         discovery_code: recovery.discovery_code,
+        cli_source: None,
         retry_after_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: recovery.cooldown_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),

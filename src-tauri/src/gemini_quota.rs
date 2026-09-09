@@ -510,6 +510,7 @@ fn recover_auth_in_background(
                 cli_fallback: true,
                 recovery_code: Some("CLI_REFRESH_COOLDOWN"),
                 discovery_code,
+                cli_source: None,
                 cooldown_ms: None,
                 last_good_used: presentation.last_good_used(),
             },
@@ -522,18 +523,21 @@ fn recover_auth_in_background(
         let refresh = gemini_cli::refresh_credential_via_startup(&home, || {
             read_credential_snapshot(&home).map(|credential| credential.signature())
         });
-        match refresh {
+        let cli_source = refresh.cli_source;
+        match refresh.result {
             Ok(()) => {
                 AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
                 clear_auth_recovery();
                 record_incident(
                     failure_for_job,
-                    "cli_refresh_completed",
+                    "credential_change_observed",
                     GeminiIncidentRecovery {
                         credential_reread: true,
                         credential_changed: Some(true),
                         cli_fallback: true,
+                        recovery_code: Some("CLI_CREDENTIAL_CHANGE_OBSERVED"),
                         discovery_code,
+                        cli_source,
                         ..GeminiIncidentRecovery::default()
                     },
                 );
@@ -553,6 +557,7 @@ fn recover_auth_in_background(
                         cli_fallback: true,
                         recovery_code: Some(code),
                         discovery_code,
+                        cli_source,
                         ..GeminiIncidentRecovery::default()
                     },
                 );
@@ -585,6 +590,7 @@ fn recover_auth_in_background(
                 "CLI_REFRESH_IN_PROGRESS"
             }),
             discovery_code,
+            cli_source: None,
             cooldown_ms: None,
             last_good_used: presentation.last_good_used(),
         },
@@ -780,6 +786,7 @@ struct GeminiIncidentRecovery {
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
     discovery_code: Option<&'static str>,
+    cli_source: Option<&'static str>,
     cooldown_ms: Option<u64>,
     last_good_used: bool,
 }
@@ -798,6 +805,7 @@ fn record_incident(failure: GeminiFailure, result: &'static str, recovery: Gemin
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
         discovery_code: recovery.discovery_code,
+        cli_source: recovery.cli_source,
         retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: recovery.cooldown_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),
@@ -869,7 +877,7 @@ fn credential_discovery_code(home: &Path) -> &'static str {
     {
         if let Some(bytes) = read_windows_keychain_blob() {
             return if parse_keychain_snapshot(&bytes).is_some() {
-                "WINDOWS_CREDENTIAL_CHANGED_DURING_DISCOVERY"
+                "WINDOWS_CREDENTIAL_BECAME_AVAILABLE_DURING_DISCOVERY"
             } else {
                 "WINDOWS_CREDENTIAL_PARSE_FAILED"
             };
@@ -886,7 +894,7 @@ fn credential_discovery_code(home: &Path) -> &'static str {
                 return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
             };
             return if parse_file_keychain_snapshot(&text, &hostname, &username).is_some() {
-                "FILE_KEYCHAIN_CHANGED_DURING_DISCOVERY"
+                "FILE_KEYCHAIN_BECAME_AVAILABLE_DURING_DISCOVERY"
             } else {
                 "FILE_KEYCHAIN_PARSE_FAILED"
             };
@@ -902,7 +910,7 @@ fn credential_discovery_code(home: &Path) -> &'static str {
             .ok()
             .and_then(|raw| credential_snapshot(raw.access_token, raw.expiry_date));
         return if parsed.is_some() {
-            "OAUTH_FILE_CHANGED_DURING_DISCOVERY"
+            "OAUTH_FILE_BECAME_AVAILABLE_DURING_DISCOVERY"
         } else {
             "OAUTH_FILE_PARSE_FAILED"
         };

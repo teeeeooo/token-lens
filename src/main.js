@@ -54,6 +54,7 @@ const MONTH_PERIODS = ['month', 'week', 'last7', 'last30'];
 const AUTO_REFRESH_MS = 30 * 1000;
 const HISTORY_REFRESH_MS = 10 * 60 * 1000;
 const APP_BOOTSTRAP_STARTED_AT = performance.now();
+recordStartupTiming('renderer-bootstrap-start');
 const BUBBLE_LOGICAL_HEIGHT = 34;
 const BUBBLE_MAX_WIDTH = 240;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
@@ -236,10 +237,10 @@ root.innerHTML = `
         <div class="settings-group-header"><span data-i18n="settings.troubleshooting">Troubleshooting</span></div>
         <div class="settings-item">
           <span class="settings-item-text">
-            <span class="settings-item-title" data-i18n="settings.errorLogs">Error logs</span>
-            <span class="settings-note settings-item-desc" data-i18n="settings.errorLogsDesc">Only provider error incidents are kept for up to 3 days.</span>
+            <span class="settings-item-title" data-i18n="settings.errorLogs">Diagnostic logs</span>
+            <span class="settings-note settings-item-desc" data-i18n="settings.errorLogsDesc">Startup timing keeps the latest 10 runs; provider error incidents are kept for up to 3 days.</span>
           </span>
-          <div class="settings-actions"><button id="openErrorLogsButton" type="button" data-i18n="settings.openErrorLogs">Open error log folder</button></div>
+          <div class="settings-actions"><button id="openErrorLogsButton" type="button" data-i18n="settings.openErrorLogs">Open diagnostic log folder</button></div>
         </div>
       </div>
     </section>
@@ -314,6 +315,7 @@ function setStatus(message = '', error = false) {
 function recordStartupTiming(phase) {
   const elapsedMs = Math.round((performance.now() - APP_BOOTSTRAP_STARTED_AT) * 10) / 10;
   console.info('[Token Lens startup]', { phase, elapsedMs });
+  void window.tokenMonitor.recordStartupTiming(phase).catch(() => {});
 }
 
 function renderThemePresetControls() {
@@ -1841,6 +1843,7 @@ async function handleTrayAction(payload = {}) {
 
 async function runBootstrapBackground(generation) {
   const quotaTask = (async () => {
+    recordStartupTiming('quota-start');
     try {
       const patch = await window.tokenMonitor.getQuotaLimits();
       if (!mergeStatsPatch(patch, generation)) return;
@@ -1858,8 +1861,14 @@ async function runBootstrapBackground(generation) {
   })();
 
   const slowUsageTask = (async () => {
+    recordStartupTiming('slow-usage-start');
     try {
-      const patch = await window.tokenMonitor.preloadSlowUsage();
+      const patch = await window.tokenMonitor.preloadSlowUsage({
+        onProgress(period) {
+          if (period === 'month') recordStartupTiming('month-preload-ready');
+          if (period === 'allTime') recordStartupTiming('alltime-preload-ready');
+        },
+      });
       if (!mergeStatsPatch(patch, generation)) return;
       if (['month', 'allTime'].includes(state.period)) render();
       recordStartupTiming('slow-usage-ready');
@@ -1894,7 +1903,9 @@ async function bootstrapShell() {
   state.quotaLoading = true;
   setStatus(t('common.refreshing'));
   try {
+    recordStartupTiming('today-scan-start');
     const bootstrapStats = await window.tokenMonitor.getBootstrapStats();
+    recordStartupTiming('today-scan-ready');
     if (generation !== state.statsGeneration) return;
     state.stats = bootstrapStats;
     state.lastRefreshAt = Date.now();

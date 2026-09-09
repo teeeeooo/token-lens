@@ -326,8 +326,11 @@ export function createStatsLoader({
 
   async function preloadSlowUsage(options = {}) {
     const force = options?.force === true;
+    const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : () => {};
     const month = await loadUsagePeriod('month', force);
+    onProgress('month');
     const allTime = await loadUsagePeriod('allTime', force);
+    onProgress('allTime');
     const generatedAt = latestGeneratedAt([month, allTime]);
     return {
       updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),

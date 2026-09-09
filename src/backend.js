@@ -38,6 +38,10 @@ export function updateSettings(patch) {
   return invoke('update_settings', { patch });
 }
 
+export function recordStartupTiming(phase) {
+  return invoke('record_startup_timing', { phase });
+}
+
 export function openProviderErrorLogDirectory() {
   return invoke('open_provider_error_log_directory');
 }

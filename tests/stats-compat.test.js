@@ -132,8 +132,9 @@ test('background preload shares an in-flight Month scan with an early period req
     return report([], period === 'month' ? 2000 : 3000);
   };
   const getStats = createStatsLoader({ usage, quota: async () => ({ generatedAtMs: 1, providers: [] }) });
+  const progress = [];
 
-  const preload = getStats.preloadSlowUsage();
+  const preload = getStats.preloadSlowUsage({ onProgress: (period) => progress.push(period) });
   const requestedMonth = getStats.getPeriodStats('month');
   await Promise.resolve();
   assert.equal(calls.filter((period) => period === 'month').length, 1);
@@ -145,6 +146,7 @@ test('background preload shares an in-flight Month scan with an early period req
   assert.equal(calls.filter((period) => period === 'month').length, 1);
   assert.equal(calls.filter((period) => period === 'all_time').length, 1);
   assert.deepEqual(Object.keys(slow.periods), ['month', 'allTime']);
+  assert.deepEqual(progress, ['month', 'allTime']);
   assert.equal('limits' in slow, false);
 });
 

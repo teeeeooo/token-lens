@@ -68,6 +68,10 @@ impl TokscaleAdapter {
         }
     }
 
+    pub(crate) fn source(&self) -> &str {
+        &self.binary_source
+    }
+
     pub async fn status(&self) -> TokscaleStatus {
         match self.run(&["--version"]).await {
             Ok(output) => TokscaleStatus {

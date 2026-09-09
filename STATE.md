@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Token Lens v2 is promoted to `main`; the previous Electron-based v1 line remains preserved on `v1-legacy`. The current follow-up work is on `fix/nonblocking-provider-auth-refresh`, based on `4951f83`, after real Windows validation confirmed that provider-owned bare CLI startup can refresh Claude/Gemini credentials without Token Lens owning refresh tokens. The branch now also contains a progressive Today-first bootstrap, detached quota loading, background Month/All Time preload, the floating-bubble stale-state race fix, startup timing instrumentation, and a longer Gemini CLI startup bound. Local automated gates are green; the next release gate is packaged Windows timing/runtime validation before merge.
+Token Lens v2 is promoted to `main`; the previous Electron-based v1 line remains preserved on `v1-legacy`. The current follow-up work is on `fix/nonblocking-provider-auth-refresh`, based on `4951f83`, after real Windows validation confirmed that provider-owned bare CLI startup can refresh Claude/Gemini credentials without Token Lens owning refresh tokens. The branch now also contains a progressive Today-first bootstrap, detached quota loading, background Month/All Time preload, the floating-bubble stale-state race fix, persistent startup timing instrumentation, and a longer Gemini CLI startup bound. Local automated gates are green; the next release gate is packaged Windows timing/runtime validation before merge.
 
 ## Accepted baseline
 
@@ -48,7 +48,8 @@ Token Lens v2 is promoted to `main`; the previous Electron-based v1 line remains
 - Windows background subprocesses owned by Token Lens (tokScale, Codex App Server, and AGY/PowerShell discovery helpers) use `CREATE_NO_WINDOW`, preventing periodic refresh from flashing CMD/PowerShell windows;
 - macOS-hosted `x86_64-pc-windows-msvc` checks remain supplemental only: native C dependencies such as the bundled SQLite used for read-only Codex title metadata require a Windows CRT/SDK that is not present on the Mac host, so the authoritative Windows compile/build gate is the GitHub `windows-latest` native job;
 - local macOS native runtime smoke verifies the frameless main window plus actual collapse, native move, and expansion transitions; temporary smoke settings/source instrumentation were removed afterward;
-- the current local gate is green for the progressive-bootstrap/bubble follow-up: `npm run check` (71/71 frontend tests; 100 Rust tests passed with 9 live tests ignored), frontend production build, rustfmt, Clippy with `-D warnings`, and `git diff --check` all pass; targeted regression tests cover Today-first bootstrap, quota detachment, shared in-flight Month preload, and stale bubble-width state suppression;
+- startup profiling spans Rust process/tokScale/Tauri initialization plus renderer Today/quota/preload phases and persists one sanitized JSONL record per launch to `startup-timing.jsonl` in the normal app log directory. It retains only the latest 10 runs, allowlists renderer phase names, records no paths/accounts/credentials/provider payloads, buffers timings in memory during startup, and writes after `background-complete` (or on normal close) so the profiler does not add synchronous disk I/O to the measured first-render path;
+- the current local gate is green for the progressive-bootstrap/bubble follow-up: `npm run check` (71/71 frontend tests; 102 Rust tests passed with 9 live tests ignored), frontend production build, rustfmt, Clippy with `-D warnings`, and `git diff --check` all pass; targeted regression tests cover Today-first bootstrap, quota detachment, shared in-flight Month preload/progress timing, stale bubble-width state suppression, startup phase allowlisting, and 10-run timing retention;
 - commit `53315ae` is green in `Token Lens v2 CI` run `34078935973` on both macOS and Windows (Windows: 69 Rust tests passed with 9 live tests ignored), and `Build Token Lens v2 Windows` run `34078935933` completed packaging-helper checks, pinned tokScale 4.15.1 staging, unsigned NSIS/single-EXE build, and artifact upload successfully;
 - the retained native tray shell is restored with default-on visibility, the original macOS template icon, Today-token menu-bar title where supported, usage/cost tooltip, left-click focus/restore, Refresh Now, retained-view navigation, Settings, version, and Quit actions;
 - window controls now use explicit v2 semantics: minimize collapses to Floating Bubble when enabled, otherwise hides to the tray when available and finally falls back to OS minimize; close always quits, and ordinary focus loss no longer collapses the window;
@@ -83,13 +84,13 @@ Token Lens v2 is promoted to `main`; the previous Electron-based v1 line remains
 
 Validate the completed startup/interaction follow-up on the target Windows machine before merge.
 
-1. compare launch-to-first-Today-render timing against the previous package; startup timing records are emitted with the `[Token Lens startup]` prefix for `shell-settings-ready`, `today-first-render`, `quota-ready`, `slow-usage-ready`, and `background-complete` phases;
+1. compare launch-to-first-Today-render timing against the previous package using `startup-timing.jsonl` in the app log directory; inspect `process-start`, tokScale discovery / optional `portable-sidecar-ready`, `tauri-setup-ready`, renderer bootstrap/settings, Today scan/render, quota, Month/All Time preload, and `background-complete` elapsed times across several cold launches;
 2. confirm Home renders Today while Limits temporarily shows Loading, then quota fills independently without blocking Month/All Time preload;
 3. switch to MONTH and TOTAL both before and after preload completion and confirm there are no duplicate/stuck scans or zero-value regressions;
 4. repeatedly collapse to Bubble and click-expand around refresh completion to confirm the main window never remains in bubble-only DOM state;
 5. validate Claude/Gemini provider-owned CLI recovery again, including a Gemini startup that exceeds two minutes but completes within the new 240-second bound.
 
-If these checks pass, commit/push the follow-up, run native Windows CI/package gates, and merge to `main`. Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework.
+The follow-up branch should be committed/pushed and pass native Windows CI/package gates before this validation. If the target-Windows checks above pass, merge the validated branch to `main`. Antigravity remote OAuth remains conditional: wire it only if an Antigravity-owned credential source is independently confirmed; do not add a Token Lens-managed OAuth login/store framework.
 
 ## Known open items
 

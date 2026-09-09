@@ -13,6 +13,7 @@ use crate::gemini_quota;
 use crate::session_detail;
 use crate::session_metadata;
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
+use crate::startup_timing::StartupTiming;
 use crate::tokscale::TokscaleAdapter;
 use crate::tray::{self, TraySummary};
 use std::fs;
@@ -111,6 +112,14 @@ pub async fn get_session_metadata(
 #[tauri::command]
 pub fn get_settings(settings: State<'_, SettingsStore>) -> Result<AppSettings, String> {
     settings.get()
+}
+
+#[tauri::command]
+pub fn record_startup_timing(
+    timing: State<'_, StartupTiming>,
+    phase: String,
+) -> Result<f64, String> {
+    timing.record_renderer(&phase)
 }
 
 #[tauri::command]

@@ -1,4 +1,4 @@
-import { getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport } from './backend.js';
+import { getQuotaRecoveryReport, getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport } from './backend.js';
 
 const DISJOINT_REASONING_CLIENTS = new Set(['codex']);
 const DEFAULT_LIMIT_REFRESH_MS = 5 * 60 * 1000;
@@ -252,6 +252,7 @@ export function createStatsLoader({
   usage = getUsageReport,
   usageSince = getUsageSinceReport,
   quota = getQuotaReport,
+  quotaRecovery = getQuotaRecoveryReport,
   sessionMetadata = async () => ({ sessions: [] }),
   now = () => Date.now(),
 } = {}) {
@@ -282,13 +283,37 @@ export function createStatsLoader({
     throw new Error(`unsupported cached usage period: ${key}`);
   }
 
-  function loadQuotaReport(force = false) {
-    return cached(
-      'quota',
-      (current) => quotaAuthRefreshPending(current) ? AUTH_REFRESH_LIMIT_POLL_MS : DEFAULT_LIMIT_REFRESH_MS,
-      quota,
-      force,
-    );
+  async function loadQuotaReport(force = false) {
+    const before = cache.get('quota');
+    const report = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
+    const fullEntry = cache.get('quota');
+    const fullRefreshed = force || !before || fullEntry?.at !== before.at;
+
+    if (!quotaAuthRefreshPending(report)) {
+      cache.delete('quotaRecovery');
+      return report;
+    }
+
+    if (fullRefreshed) {
+      cache.set('quotaRecovery', { at: fullEntry?.at ?? now(), value: report });
+      return report;
+    }
+
+    try {
+      const recovered = await cached(
+        'quotaRecovery',
+        AUTH_REFRESH_LIMIT_POLL_MS,
+        quotaRecovery,
+        false,
+      );
+      const currentFull = cache.get('quota');
+      if (currentFull) cache.set('quota', { at: currentFull.at, value: recovered });
+      if (!quotaAuthRefreshPending(recovered)) cache.delete('quotaRecovery');
+      return recovered;
+    } catch (_) {
+      cache.set('quotaRecovery', { at: now(), value: report });
+      return report;
+    }
   }
 
   function partialStats(periods, reports, limitsReport = null) {

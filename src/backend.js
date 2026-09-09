@@ -22,6 +22,10 @@ export function getQuotaReport() {
   return invoke('get_quota_report');
 }
 
+export function getQuotaRecoveryReport() {
+  return invoke('get_quota_recovery_report');
+}
+
 export function getTokscaleStatus() {
   return invoke('get_tokscale_status');
 }

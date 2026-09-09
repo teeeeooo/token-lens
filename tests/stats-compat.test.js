@@ -196,41 +196,109 @@ test('getStats caches slower ranges and refreshes today independently', async ()
   ]);
 });
 
-test('getStats rechecks quota after 30s while provider CLI credential refresh is pending', async () => {
+test('getStats rechecks only recovering providers after 30s without rerunning full quota', async () => {
   let clock = 1_000_000;
   let quotaCalls = 0;
+  let recoveryCalls = 0;
   const usage = async () => report([], clock);
-  const quota = async () => {
-    quotaCalls += 1;
-    return quotaCalls === 1
-      ? {
-          generatedAtMs: clock,
-          providers: [{
-            provider: 'claude',
-            diagnostic: 'Claude credential is unavailable; Claude CLI credential refresh started in background',
-            windows: [],
-          }],
-        }
-      : { generatedAtMs: clock, providers: [{ provider: 'claude', diagnostic: null, windows: [] }] };
+  const pending = () => ({
+    generatedAtMs: clock,
+    providers: [{
+      provider: 'claude',
+      diagnostic: 'Claude credential is unavailable; Claude CLI credential refresh started in background',
+      windows: [],
+    }],
+  });
+  const quota = async () => { quotaCalls += 1; return pending(); };
+  const quotaRecovery = async () => {
+    recoveryCalls += 1;
+    return { generatedAtMs: clock, providers: [{ provider: 'claude', diagnostic: null, windows: [] }] };
   };
-  const getStats = createStatsLoader({ usage, quota, now: () => clock });
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
 
   const first = await getStats();
   assert.equal(first.limits.refreshMs, 30_000);
   assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 0);
 
   clock += 29_000;
   await getStats();
   assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 0);
 
   clock += 2_000;
   const recovered = await getStats();
-  assert.equal(quotaCalls, 2);
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
   assert.equal(recovered.limits.refreshMs, 5 * 60 * 1000);
 
   clock += 31_000;
   await getStats();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+});
+
+test('provider-only recovery does not postpone the five-minute full quota refresh', async () => {
+  let clock = 2_000_000;
+  let quotaCalls = 0;
+  let recoveryCalls = 0;
+  const usage = async () => report([], clock);
+  const pending = () => ({
+    generatedAtMs: clock,
+    providers: [{
+      provider: 'gemini',
+      diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
+      windows: [],
+    }],
+  });
+  const quota = async () => { quotaCalls += 1; return pending(); };
+  const quotaRecovery = async () => { recoveryCalls += 1; return pending(); };
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
+
+  await getStats.getQuotaLimits();
+  clock += 31_000;
+  await getStats.getQuotaLimits();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+
+  clock += 5 * 60 * 1000 - 31_000;
+  await getStats.getQuotaLimits();
   assert.equal(quotaCalls, 2);
+  assert.equal(recoveryCalls, 1);
+});
+
+test('failed provider-only recovery remains throttled to the 30s recovery cadence', async () => {
+  let clock = 3_000_000;
+  let quotaCalls = 0;
+  let recoveryCalls = 0;
+  const usage = async () => report([], clock);
+  const quota = async () => {
+    quotaCalls += 1;
+    return {
+      generatedAtMs: clock,
+      providers: [{
+        provider: 'claude',
+        diagnostic: 'Claude CLI credential refresh already in progress',
+        windows: [],
+      }],
+    };
+  };
+  const quotaRecovery = async () => { recoveryCalls += 1; throw new Error('transient recovery command failure'); };
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
+
+  await getStats.getQuotaLimits();
+  clock += 31_000;
+  await getStats.getQuotaLimits();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+
+  clock += 1_000;
+  await getStats.getQuotaLimits();
+  assert.equal(recoveryCalls, 1);
+
+  clock += 30_000;
+  await getStats.getQuotaLimits();
+  assert.equal(recoveryCalls, 2);
 });
 
 test('quota compatibility keeps 30s polling during CLI refresh backoff', () => {

@@ -46,6 +46,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(tokscale)
         .manage(startup_timing)
+        .manage(commands::QuotaSnapshotCache::default())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(|error| {
                 format!("failed to resolve Token Lens config directory: {error}")
@@ -90,6 +91,7 @@ pub fn run() {
             commands::get_dashboard_history,
             commands::get_session_detail,
             commands::get_quota_report,
+            commands::get_quota_recovery_report,
             commands::get_tokscale_status,
             commands::get_session_metadata,
             commands::get_settings,

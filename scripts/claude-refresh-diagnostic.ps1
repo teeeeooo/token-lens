@@ -11,7 +11,8 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
-    $ReportPath = Join-Path $PSScriptRoot "claude-refresh-diagnostic-report.txt"
+    $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmss")
+    $ReportPath = Join-Path $PSScriptRoot "claude-refresh-diagnostic-report-$stamp.txt"
 }
 
 $script:Report = [System.Collections.Generic.List[string]]::new()
@@ -327,7 +328,7 @@ Add-ReportLine "test1.tokenChanged=$(Compare-Snapshots $baseline $afterTest1)"
 
 Add-ReportLine ""
 Add-ReportLine "[Test2 bare-startup]"
-$test2Exit = Invoke-ClaudeInteractive "TEST 2: Wait until the normal Claude prompt is visible. Do not run /status or /usage. Type /exit to close Claude."
+$test2Exit = Invoke-ClaudeInteractive "TEST 2: Do NOT launch Claude separately. Press Enter here and this script will launch Claude. Wait for the normal Claude prompt, type /exit, and the diagnostic will resume automatically. Do not run /status or /usage."
 Start-Sleep -Milliseconds 750
 $afterTest2 = Get-ClaudeCredentialSnapshot
 Add-ReportLine "test2.exitCode=$test2Exit"
@@ -335,7 +336,7 @@ Add-SnapshotReport "test2.after" $afterTest2
 Add-ReportLine "test2.tokenChanged=$(Compare-Snapshots $afterTest1 $afterTest2)"
 Add-ReportLine ""
 Add-ReportLine "[Test3 status-touch]"
-$test3Exit = Invoke-ClaudeInteractive "TEST 3: In Claude, run /status. Wait for the status view, leave it if needed, then type /exit to close Claude. Do not send a model prompt."
+$test3Exit = Invoke-ClaudeInteractive "TEST 3: Do NOT launch Claude separately. Press Enter here and this script will launch Claude. In that Claude session run /status, wait for the status view, leave it if needed, then type /exit. The diagnostic will resume automatically. Do not send a model prompt."
 Start-Sleep -Milliseconds 750
 $afterTest3 = Get-ClaudeCredentialSnapshot
 Add-ReportLine "test3.exitCode=$test3Exit"

@@ -45,6 +45,7 @@ struct StartupRecord {
 #[derive(Debug)]
 struct StartupState {
     directory: Option<PathBuf>,
+    completed: bool,
     record: StartupRecord,
 }
 
@@ -61,6 +62,7 @@ impl StartupTiming {
             started: Instant::now(),
             state: Mutex::new(StartupState {
                 directory: None,
+                completed: false,
                 record: StartupRecord {
                     schema_version: SCHEMA_VERSION,
                     started_at,
@@ -91,6 +93,13 @@ impl StartupTiming {
         }
         let elapsed = self.record_phase(phase);
         if phase == "background-complete" {
+            {
+                let mut guard = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.completed = true;
+            }
             self.persist()?;
         }
         Ok(elapsed)
@@ -116,6 +125,14 @@ impl StartupTiming {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.completed {
+            return guard
+                .record
+                .marks
+                .iter()
+                .find(|mark| mark.phase == phase)
+                .map_or(elapsed_ms, |mark| mark.elapsed_ms);
+        }
         if let Some(mark) = guard
             .record
             .marks
@@ -227,6 +244,7 @@ mod tests {
         timing
             .record_renderer("renderer-bootstrap-start")
             .expect("renderer phase");
+        timing.record_internal("quota-claude-ready");
         assert!(timing.record_renderer("credential-value").is_err());
         timing
             .record_renderer("background-complete")
@@ -241,8 +259,19 @@ mod tests {
             .collect();
         assert!(phases.contains(&"process-start"));
         assert!(phases.contains(&"renderer-bootstrap-start"));
+        assert!(phases.contains(&"quota-claude-ready"));
         assert!(phases.contains(&"background-complete"));
         assert!(!phases.contains(&"credential-value"));
+
+        timing.record_internal("quota-late-refresh");
+        timing.persist().expect("persist frozen startup timing");
+        let records = read_records(&log_path(&directory));
+        let phases: Vec<_> = records[0]
+            .marks
+            .iter()
+            .map(|mark| mark.phase.as_str())
+            .collect();
+        assert!(!phases.contains(&"quota-late-refresh"));
         let _ = fs::remove_dir_all(directory);
     }
 }

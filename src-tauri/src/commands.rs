@@ -76,13 +76,24 @@ pub async fn get_quota_report(
         .as_deref()
         .and_then(codex_business::selected_workspace_id);
     let report = adapter.quota_report().await?;
+    app.state::<StartupTiming>()
+        .record_internal("quota-tokscale-ready");
     Ok(match home {
         Some(home) => {
             let report =
                 codex_business::enrich_quota_report(&home, expected_workspace_id, report).await;
+            app.state::<StartupTiming>()
+                .record_internal("quota-codex-ready");
             let report = claude_quota::enrich_quota_report(&home, report).await;
+            app.state::<StartupTiming>()
+                .record_internal("quota-claude-ready");
             let report = gemini_quota::enrich_quota_report(&home, report).await;
-            antigravity_quota::enrich_quota_report(&home, report).await
+            app.state::<StartupTiming>()
+                .record_internal("quota-gemini-ready");
+            let report = antigravity_quota::enrich_quota_report(&home, report).await;
+            app.state::<StartupTiming>()
+                .record_internal("quota-antigravity-ready");
+            report
         }
         None => report,
     })

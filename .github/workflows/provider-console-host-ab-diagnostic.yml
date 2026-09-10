@@ -1,0 +1,30 @@
+name: Provider Console Host A/B Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diag/claude-console-host-ab
+    paths:
+      - "scripts/provider-console-host-ab.ps1"
+      - "scripts/claude-console-host-ab.ps1"
+      - "scripts/gemini-console-host-ab.ps1"
+      - ".github/workflows/provider-console-host-ab-diagnostic.yml"
+  pull_request:
+    paths:
+      - "scripts/provider-console-host-ab.ps1"
+      - "scripts/claude-console-host-ab.ps1"
+      - "scripts/gemini-console-host-ab.ps1"
+      - ".github/workflows/provider-console-host-ab-diagnostic.yml"
+
+jobs:
+  powershell-51-selftest:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Claude diagnostic self-test
+        shell: powershell
+        run: .\scripts\claude-console-host-ab.ps1 -SelfTest
+      - name: Gemini diagnostic self-test
+        shell: powershell
+        run: .\scripts\gemini-console-host-ab.ps1 -SelfTest

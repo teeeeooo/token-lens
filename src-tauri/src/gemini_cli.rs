@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(any(target_os = "windows", test))]
+const AUTH_TOUCH_ARGUMENTS: &str = "--list-sessions -e none --skip-trust";
+#[cfg(not(target_os = "windows"))]
 const AUTH_TOUCH_ARGS: [&str; 4] = ["--list-sessions", "-e", "none", "--skip-trust"];
 
 #[derive(Debug)]
@@ -107,7 +110,7 @@ fn windows_provider_command(binary: &DiscoveredBinary) -> String {
     } else {
         format!("\"{}\"", binary.path.display())
     };
-    format!("{executable} --list-sessions -e none --skip-trust")
+    format!("{executable} {AUTH_TOUCH_ARGUMENTS}")
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -224,7 +227,8 @@ fn choose_windows_candidate(
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_probe_directory, choose_windows_candidate, classify_refresh_error, AUTH_TOUCH_ARGS,
+        auth_probe_directory, choose_windows_candidate, classify_refresh_error,
+        AUTH_TOUCH_ARGUMENTS,
     };
     use std::path::PathBuf;
 
@@ -245,10 +249,7 @@ mod tests {
     }
     #[test]
     fn auth_touch_uses_zero_inference_session_listing_in_isolated_temp_scope() {
-        assert_eq!(
-            AUTH_TOUCH_ARGS,
-            ["--list-sessions", "-e", "none", "--skip-trust"]
-        );
+        assert_eq!(AUTH_TOUCH_ARGUMENTS, "--list-sessions -e none --skip-trust");
         let probe = auth_probe_directory();
         assert!(probe.starts_with(std::env::temp_dir()));
         assert!(probe

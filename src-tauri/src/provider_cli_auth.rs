@@ -1,5 +1,7 @@
+#[cfg(not(target_os = "windows"))]
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::env;
+#[cfg(not(target_os = "windows"))]
 use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
 use std::path::Path;
@@ -136,10 +138,12 @@ where
     }
     let job = WinHandle(job);
 
-    let mut startup = STARTUPINFOW::default();
-    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    startup.dwFlags = STARTF_USESHOWWINDOW;
-    startup.wShowWindow = 0; // SW_HIDE
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTF_USESHOWWINDOW,
+        wShowWindow: 0, // SW_HIDE
+        ..Default::default()
+    };
     let mut process_info = PROCESS_INFORMATION::default();
     let created = unsafe {
         CreateProcessW(
@@ -280,12 +284,14 @@ where
     true
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PtyInputTouch {
     pub bytes: &'static [u8],
     pub after: Duration,
 }
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn run_until_credential_change<F>(
     provider: &'static str,
     command: CommandBuilder,
@@ -298,6 +304,7 @@ where
     run_until_credential_change_with_input(provider, command, timeout, None, read_signature)
 }
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn run_until_credential_change_with_input<F>(
     provider: &'static str,
     command: CommandBuilder,
@@ -418,10 +425,12 @@ fn credential_changed(before: Option<&str>, after: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{credential_changed, find_executable_in_paths, spawn_refresh_once};
+    #[cfg(not(target_os = "windows"))]
     use super::{
-        credential_changed, find_executable_in_paths, run_until_credential_change,
-        run_until_credential_change_with_input, spawn_refresh_once, PtyInputTouch,
+        run_until_credential_change, run_until_credential_change_with_input, PtyInputTouch,
     };
+    #[cfg(not(target_os = "windows"))]
     use portable_pty::CommandBuilder;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -484,10 +493,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
-    )]
+    #[cfg(not(target_os = "windows"))]
     fn pty_auth_touch_reports_clean_exit_without_credential_change() {
         let command = unchanged_exit_command();
         let result =
@@ -503,10 +509,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
-    )]
+    #[cfg(not(target_os = "windows"))]
     fn pty_auth_touch_returns_after_provider_owned_credential_change() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -527,10 +530,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        target_os = "windows",
-        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
-    )]
+    #[cfg(not(target_os = "windows"))]
     fn pty_input_touch_can_trigger_provider_owned_credential_change() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -590,13 +590,6 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
     }
 
-    #[cfg(target_os = "windows")]
-    fn unchanged_exit_command() -> CommandBuilder {
-        let mut command = CommandBuilder::new("cmd.exe");
-        command.args(["/d", "/s", "/c", "exit /b 0"]);
-        command
-    }
-
     #[cfg(not(target_os = "windows"))]
     fn credential_writer_command(path: &std::path::Path) -> CommandBuilder {
         let escaped = path.to_string_lossy().replace('\'', "'\\''");
@@ -612,25 +605,6 @@ mod tests {
         let script = format!("IFS= read -r _line; printf after > '{escaped}'; sleep 10");
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", &script]);
-        command
-    }
-
-    #[cfg(target_os = "windows")]
-    fn credential_writer_after_input_command(path: &std::path::Path) -> CommandBuilder {
-        let escaped = path.to_string_lossy();
-        let script =
-            format!("set /p line= & >\"{escaped}\" <nul set /p =after & ping -n 10 127.0.0.1 >nul");
-        let mut command = CommandBuilder::new("cmd.exe");
-        command.args(["/d", "/s", "/c", &script]);
-        command
-    }
-
-    #[cfg(target_os = "windows")]
-    fn credential_writer_command(path: &std::path::Path) -> CommandBuilder {
-        let escaped = path.to_string_lossy();
-        let script = format!(">\"{escaped}\" <nul set /p =after & ping -n 10 127.0.0.1 >nul");
-        let mut command = CommandBuilder::new("cmd.exe");
-        command.args(["/d", "/s", "/c", &script]);
         command
     }
 }

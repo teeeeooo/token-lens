@@ -20,7 +20,7 @@ if ($TimeoutSeconds -lt 10 -or $TimeoutSeconds -gt 300) {
 $script:Report = [System.Collections.Generic.List[string]]::new()
 function Add-ReportLine {
     param([string]$Line = "")
-    $script:Report.Add($Line)
+    [void]$script:Report.Add($Line)
     Write-Host $Line
 }
 function Get-Sha256Fingerprint {
@@ -183,12 +183,12 @@ function Get-ClaudeCredentialFileCandidates {
         return @([pscustomobject]@{ Path = (Join-Path $configDir ".credentials.json"); Source = "file-config" })
     }
     $items = [System.Collections.Generic.List[object]]::new()
-    $items.Add([pscustomobject]@{ Path = (Join-Path (Join-Path $HOME ".claude") ".credentials.json"); Source = "file-native" })
+    [void]$items.Add([pscustomobject]@{ Path = (Join-Path (Join-Path $HOME ".claude") ".credentials.json"); Source = "file-native" })
     try {
         Get-ChildItem '\\wsl$\' -Directory -ErrorAction Stop | ForEach-Object {
             try {
                 Get-ChildItem (Join-Path $_.FullName "home") -Directory -ErrorAction Stop | ForEach-Object {
-                    $items.Add([pscustomobject]@{
+                    [void]$items.Add([pscustomobject]@{
                         Path = (Join-Path (Join-Path $_.FullName ".claude") ".credentials.json")
                         Source = "file-wsl"
                     })
@@ -230,7 +230,7 @@ function Get-ClaudeCredentialSnapshot {
 function Add-GeminiStore {
     param($Stores, [string]$Source, [string]$Fingerprint, [string]$ExpiresAt)
     if (-not [string]::IsNullOrWhiteSpace($Fingerprint)) {
-        $Stores.Add([pscustomobject]@{ Source = $Source; Fingerprint = $Fingerprint; ExpiresAt = $ExpiresAt })
+        [void]$Stores.Add([pscustomobject]@{ Source = $Source; Fingerprint = $Fingerprint; ExpiresAt = $ExpiresAt })
     }
 }
 function Get-GeminiCredentialSnapshot {
@@ -340,7 +340,7 @@ function Get-ProviderRelatedProcesses {
                 $isMatch = $name -match '(?i)^gemini(\.exe)?$' -or $line -match '(?i)(@google[\\/]gemini-cli|[\\/]gemini(?:\.js|\.mjs|\.cjs)|(?:^|\s)gemini(?:\.cmd|\.exe)?(?:\s|$))'
             }
             if ($isMatch -and [int]$process.ProcessId -ne $PID) {
-                $matches.Add([pscustomobject]@{
+                [void]$matches.Add([pscustomobject]@{
                     Name = $name
                     ProcessId = [int]$process.ProcessId
                     ParentProcessId = [int]$process.ParentProcessId
@@ -374,7 +374,7 @@ function Get-ProviderCredentialFileState {
     foreach ($entry in $paths) {
         try {
             $item = Get-Item -LiteralPath $entry.Path -ErrorAction Stop
-            $states.Add([pscustomobject]@{ Name = $entry.Name; LastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o') })
+            [void]$states.Add([pscustomobject]@{ Name = $entry.Name; LastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o') })
         } catch { }
     }
     return @($states)
@@ -472,6 +472,15 @@ if ($SelfTest) {
     }
     if ((Get-TokenFingerprint "fixture").Length -ne 12) {
         throw "Self-test failed: SHA-256 fingerprint"
+    }
+    $candidateProbe = @(Get-ClaudeCredentialFileCandidates)
+    if (@($candidateProbe | Where-Object { $null -eq $_.PSObject.Properties["Path"] }).Count -ne 0) {
+        throw "Self-test failed: credential candidate helper leaked pipeline noise"
+    }
+    $storeProbe = [System.Collections.Generic.List[object]]::new()
+    $storeNoise = @(Add-GeminiStore $storeProbe "fixture" "abcdef123456" $null)
+    if ($storeNoise.Count -ne 0 -or $storeProbe.Count -ne 1) {
+        throw "Self-test failed: Gemini store helper leaked pipeline noise"
     }
     $line = New-ConsoleCommandLine "claude"
     if ($line -notmatch '/d /s /c "claude"$') {

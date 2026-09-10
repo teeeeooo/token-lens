@@ -2,6 +2,7 @@ use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, Su
 use crate::gemini_cli;
 use crate::google_code_assist::{self, CodeAssistError, LoadSnapshot, QuotaBucket};
 use crate::provider_error_log::{self, ProviderIncident};
+use crate::provider_rate_limit::{self, ProviderRateLimit};
 #[cfg(any(target_os = "windows", test))]
 use aes_gcm::{
     aead::{consts::U16, AeadInPlace, KeyInit},
@@ -15,15 +16,26 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "gemini-code-assist";
 const TOKEN_EXPIRY_SAFETY_MS: u64 = 30_000;
 const MAX_RATE_LIMIT_COOLDOWN_MS: u64 = 60 * 60 * 1000;
+const RATE_LIMIT_BACKOFF_STEPS_MS: [u64; 4] = [
+    5 * 60 * 1000,
+    15 * 60 * 1000,
+    30 * 60 * 1000,
+    60 * 60 * 1000,
+];
 const LAST_GOOD_TTL_MS: u64 = 30 * 60 * 1000;
 const STALE_DIAGNOSTIC_PREFIX: &str = "Stale Gemini quota";
+const AUTH_REFRESH_FAILURE_COOLDOWN_MS: u64 = 5 * 60 * 1000;
+static AUTH_REFRESH_RUNNING: AtomicBool = AtomicBool::new(false);
+static AUTH_REFRESH_RETRY_AFTER_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 struct StoredGeminiCredential {
@@ -57,15 +69,114 @@ struct CachedGeminiProvider {
     provider: QuotaProvider,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialBaseline {
+    Missing,
+    Present(u64),
+}
+
 #[derive(Debug, Default)]
 struct GeminiRuntimeState {
     cooldown_until_ms: u64,
+    rate_limit_streak: u32,
+    last_rate_limit_cooldown_ms: u64,
+    auth_recovery_baseline: Option<CredentialBaseline>,
     last_good: Option<CachedGeminiProvider>,
 }
 
 fn runtime_state() -> &'static Mutex<GeminiRuntimeState> {
     static STATE: OnceLock<Mutex<GeminiRuntimeState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(GeminiRuntimeState::default()))
+}
+
+fn credential_baseline(snapshot: Option<&CredentialSnapshot>) -> CredentialBaseline {
+    let Some(snapshot) = snapshot else {
+        return CredentialBaseline::Missing;
+    };
+    let mut hasher = DefaultHasher::new();
+    snapshot.access_token.hash(&mut hasher);
+    snapshot.expiry.hash(&mut hasher);
+    CredentialBaseline::Present(hasher.finish())
+}
+
+fn begin_auth_recovery(baseline: CredentialBaseline) {
+    let mut state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.auth_recovery_baseline = Some(baseline);
+}
+
+fn clear_auth_recovery() {
+    let mut state = runtime_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.auth_recovery_baseline = None;
+}
+
+fn credential_change_allows_probe(
+    baseline: CredentialBaseline,
+    current: CredentialBaseline,
+    current_usable: bool,
+) -> bool {
+    current_usable && matches!(current, CredentialBaseline::Present(_)) && current != baseline
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthRecoveryGuard {
+    Wait(String),
+    RetryCli { current_usable: bool },
+}
+
+fn auth_recovery_guard_decision(
+    baseline: CredentialBaseline,
+    current: CredentialBaseline,
+    current_usable: bool,
+    running: bool,
+    retry_after: u64,
+    now: u64,
+) -> Option<AuthRecoveryGuard> {
+    if credential_change_allows_probe(baseline, current, current_usable) {
+        return None;
+    }
+    if running {
+        return Some(AuthRecoveryGuard::Wait(
+            "Gemini CLI credential refresh already in progress".to_owned(),
+        ));
+    }
+    if retry_after > now {
+        return Some(AuthRecoveryGuard::Wait(format!(
+            "Gemini CLI credential refresh cooling down; retry in about {}s",
+            retry_after.saturating_sub(now).div_ceil(1000)
+        )));
+    }
+    Some(AuthRecoveryGuard::RetryCli { current_usable })
+}
+
+fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<AuthRecoveryGuard> {
+    let baseline = {
+        let state = runtime_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.auth_recovery_baseline
+    }?;
+    let running = AUTH_REFRESH_RUNNING.load(Ordering::Acquire);
+    let retry_after = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
+    let current_snapshot = read_credential_snapshot(home);
+    let current = credential_baseline(current_snapshot.as_ref());
+    let current_usable = current_snapshot
+        .clone()
+        .and_then(CredentialSnapshot::into_valid)
+        .is_some();
+    if credential_change_allows_probe(baseline, current, current_usable) {
+        let mut state = runtime_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.auth_recovery_baseline = Some(current);
+        drop(state);
+        AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
+        return None;
+    }
+    auth_recovery_guard_decision(baseline, current, current_usable, running, retry_after, now)
 }
 
 pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> QuotaReport {
@@ -82,10 +193,12 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         .providers
         .iter()
         .find(|provider| provider.provider == SupportedProvider::Gemini)
-        .is_some_and(provider_has_usable_quota)
+        .is_some_and(provider_has_authoritative_quota)
     {
         cache_last_good(&report, now);
-        clear_cooldown();
+        clear_runtime_rate_limit_state();
+        clear_auth_recovery();
+        AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return report;
     }
 
@@ -101,9 +214,29 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         return report;
     }
 
+    if let Some(guard) = auth_recovery_fetch_guard(home, now) {
+        match guard {
+            AuthRecoveryGuard::Wait(detail) => {
+                apply_failure_with_cache(&mut report, detail, now);
+                return report;
+            }
+            AuthRecoveryGuard::RetryCli { current_usable } => {
+                let failure = if current_usable {
+                    GeminiFailure::Unauthorized {
+                        stage: "credential_recovery",
+                    }
+                } else {
+                    GeminiFailure::MissingCredential
+                };
+                return recover_auth_in_background(home, report, failure, false, None);
+            }
+        }
+    }
+
     // Gemini quota remains API-backed. On missing/rejected OAuth credentials, Token Lens
-    // only starts the official Gemini CLI and waits for the CLI to refresh its own credential;
-    // it never sends a model prompt or scrapes `/stats` TUI output.
+    // runs the official CLI's zero-inference session-listing auth path in an isolated cwd and
+    // waits for the CLI to refresh its own credential; it never sends a model prompt or
+    // scrapes provider output.
     let attempt = read_provider_with_reloaded_credential(home);
     match attempt.result {
         Ok(provider) => {
@@ -121,7 +254,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             }
         }
         Err(DirectAttemptError::MissingCredential) => {
-            return recover_auth_with_cli(
+            return recover_auth_in_background(
                 home,
                 report,
                 GeminiFailure::MissingCredential,
@@ -130,7 +263,8 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             );
         }
         Err(DirectAttemptError::Fetch(error)) if error.is_unauthorized() => {
-            return recover_auth_with_cli(
+            clear_rate_limit_state();
+            return recover_auth_in_background(
                 home,
                 report,
                 error,
@@ -139,16 +273,28 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
             );
         }
         Err(DirectAttemptError::Fetch(error)) => {
-            if let Some(retry_after_ms) = error.retry_after_ms() {
-                set_cooldown(now, retry_after_ms);
-            }
-            let presentation = apply_failure_with_cache(&mut report, error.diagnostic(), now);
+            let cooldown_ms = if let Some(retry_after_ms) = error.retry_after_ms() {
+                clear_auth_recovery();
+                AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
+                Some(set_rate_limit_cooldown(now, retry_after_ms))
+            } else {
+                None
+            };
+            let detail = match (&error, cooldown_ms) {
+                (GeminiFailure::RateLimited { stage, .. }, Some(cooldown_ms)) => format!(
+                    "Gemini {stage} rate limited (HTTP 429); retry in about {}s",
+                    cooldown_ms.div_ceil(1000)
+                ),
+                _ => error.diagnostic(),
+            };
+            let presentation = apply_failure_with_cache(&mut report, detail, now);
             record_incident(
                 error,
                 presentation.result_label(),
                 GeminiIncidentRecovery {
                     credential_reread: attempt.credential_reread,
                     credential_changed: attempt.credential_changed,
+                    cooldown_ms,
                     last_good_used: presentation.last_good_used(),
                     ..GeminiIncidentRecovery::default()
                 },
@@ -355,7 +501,7 @@ fn fetch_provider(home: &Path, access_token: &str) -> Result<QuotaProvider, Gemi
     })
 }
 
-fn recover_auth_with_cli(
+fn recover_auth_in_background(
     home: &Path,
     mut report: QuotaReport,
     failure: GeminiFailure,
@@ -363,104 +509,114 @@ fn recover_auth_with_cli(
     credential_changed: Option<bool>,
 ) -> QuotaReport {
     let now = now_ms();
-    if read_credential_snapshot(home).is_none() {
-        let presentation = apply_failure_with_cache(&mut report, failure.diagnostic(), now);
+    let discovery_code = matches!(failure, GeminiFailure::MissingCredential)
+        .then(|| credential_discovery_code(home));
+    begin_auth_recovery(credential_baseline(read_credential_snapshot(home).as_ref()));
+    let retry_after_ms = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
+    if retry_after_ms > now {
+        let presentation = apply_failure_with_cache(
+            &mut report,
+            format!(
+                "{}; Gemini CLI credential refresh cooling down; retry in about {}s",
+                failure.diagnostic(),
+                retry_after_ms.saturating_sub(now).div_ceil(1000)
+            ),
+            now,
+        );
         record_incident(
             failure,
             presentation.result_label(),
             GeminiIncidentRecovery {
                 credential_reread,
                 credential_changed,
+                cli_fallback: true,
+                recovery_code: Some("CLI_REFRESH_COOLDOWN"),
+                discovery_code,
+                cli_source: None,
+                cooldown_ms: None,
                 last_good_used: presentation.last_good_used(),
-                ..GeminiIncidentRecovery::default()
             },
         );
         return report;
     }
-    let refresh = gemini_cli::refresh_credential_via_startup(home, || {
-        read_credential_snapshot(home).map(|credential| credential.signature())
-    });
-    match refresh {
-        Ok(()) => {
-            let Some(credential) = read_valid_credential(home) else {
-                let presentation = apply_failure_with_cache(
-                    &mut report,
-                    "Gemini CLI refreshed but no readable non-expired access token was found",
-                    now,
-                );
+    let home = home.to_path_buf();
+    let failure_for_job = failure.clone();
+    let started = crate::provider_cli_auth::spawn_refresh_once(&AUTH_REFRESH_RUNNING, move || {
+        let refresh = gemini_cli::refresh_credential_via_startup(&home, || {
+            read_credential_snapshot(&home).map(|credential| credential.signature())
+        });
+        let cli_source = refresh.cli_source;
+        match refresh.result {
+            Ok(()) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
+                clear_auth_recovery();
                 record_incident(
-                    failure,
-                    presentation.result_label(),
+                    failure_for_job,
+                    "credential_change_observed",
                     GeminiIncidentRecovery {
                         credential_reread: true,
                         credential_changed: Some(true),
                         cli_fallback: true,
-                        recovery_code: Some("CLI_REFRESH_NO_CREDENTIAL"),
-                        last_good_used: presentation.last_good_used(),
+                        recovery_code: Some("CLI_CREDENTIAL_CHANGE_OBSERVED"),
+                        discovery_code,
+                        cli_source,
+                        ..GeminiIncidentRecovery::default()
                     },
                 );
-                return report;
-            };
-            match fetch_provider(home, &credential.access_token) {
-                Ok(provider) => {
-                    apply_success(&mut report, provider, now);
-                    record_incident(
-                        failure,
-                        "recovered_api_after_cli",
-                        GeminiIncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            ..GeminiIncidentRecovery::default()
-                        },
-                    );
-                    return report;
-                }
-                Err(error) => {
-                    if let Some(retry_after_ms) = error.retry_after_ms() {
-                        set_cooldown(now, retry_after_ms);
-                    }
-                    let recovery_code = if error.retry_after_ms().is_some() {
-                        "POST_CLI_RATE_LIMITED"
-                    } else {
-                        "POST_CLI_API_FAILED"
-                    };
-                    let presentation =
-                        apply_failure_with_cache(&mut report, error.diagnostic(), now);
-                    record_incident(
-                        error,
-                        presentation.result_label(),
-                        GeminiIncidentRecovery {
-                            credential_reread: true,
-                            credential_changed: Some(true),
-                            cli_fallback: true,
-                            recovery_code: Some(recovery_code),
-                            last_good_used: presentation.last_good_used(),
-                        },
-                    );
-                }
+            }
+            Err(error) => {
+                AUTH_REFRESH_RETRY_AFTER_MS.store(
+                    now_ms().saturating_add(AUTH_REFRESH_FAILURE_COOLDOWN_MS),
+                    Ordering::Release,
+                );
+                let (code, _) = gemini_cli::classify_refresh_error(&error);
+                record_incident(
+                    failure_for_job,
+                    "cli_refresh_failed",
+                    GeminiIncidentRecovery {
+                        credential_reread,
+                        credential_changed: credential_changed.or(Some(false)),
+                        cli_fallback: true,
+                        recovery_code: Some(code),
+                        discovery_code,
+                        cli_source,
+                        ..GeminiIncidentRecovery::default()
+                    },
+                );
             }
         }
-        Err(error) => {
-            let (code, diagnostic) = gemini_cli::classify_refresh_error(&error);
-            let presentation = apply_failure_with_cache(
-                &mut report,
-                format!("{}; {diagnostic}", failure.diagnostic()),
-                now,
-            );
-            record_incident(
-                failure,
-                presentation.result_label(),
-                GeminiIncidentRecovery {
-                    credential_reread,
-                    credential_changed: credential_changed.or(Some(false)),
-                    cli_fallback: true,
-                    recovery_code: Some(code),
-                    last_good_used: presentation.last_good_used(),
-                },
-            );
-        }
-    }
+    });
+
+    let detail = if started {
+        format!(
+            "{}; Gemini CLI credential refresh started in background",
+            failure.diagnostic()
+        )
+    } else {
+        format!(
+            "{}; Gemini CLI credential refresh already in progress",
+            failure.diagnostic()
+        )
+    };
+    let presentation = apply_failure_with_cache(&mut report, detail, now);
+    record_incident(
+        failure,
+        presentation.result_label(),
+        GeminiIncidentRecovery {
+            credential_reread,
+            credential_changed,
+            cli_fallback: true,
+            recovery_code: Some(if started {
+                "CLI_REFRESH_STARTED"
+            } else {
+                "CLI_REFRESH_IN_PROGRESS"
+            }),
+            discovery_code,
+            cli_source: None,
+            cooldown_ms: None,
+            last_good_used: presentation.last_good_used(),
+        },
+    );
     report
 }
 
@@ -474,7 +630,9 @@ fn apply_success(report: &mut QuotaReport, provider: QuotaProvider, now: u64) {
     } else {
         report.providers.push(provider);
     }
-    clear_cooldown();
+    clear_rate_limit_state();
+    clear_auth_recovery();
+    AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
     cache_last_good(report, now);
 }
 
@@ -485,6 +643,14 @@ fn provider_has_usable_quota(provider: &QuotaProvider) -> bool {
             || window.remaining.is_some()
             || window.used.is_some()
     })
+}
+
+fn provider_has_authoritative_quota(provider: &QuotaProvider) -> bool {
+    provider_has_usable_quota(provider)
+        && !provider
+            .diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.starts_with(STALE_DIAGNOSTIC_PREFIX))
 }
 
 fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
@@ -511,7 +677,7 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
 
 fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
     let Some(provider) = report.providers.iter().find(|provider| {
-        provider.provider == SupportedProvider::Gemini && provider_has_usable_quota(provider)
+        provider.provider == SupportedProvider::Gemini && provider_has_authoritative_quota(provider)
     }) else {
         return;
     };
@@ -527,25 +693,70 @@ fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
 }
 
 fn active_cooldown_remaining_ms(now: u64) -> Option<u64> {
-    let state = runtime_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    (state.cooldown_until_ms > now).then_some(state.cooldown_until_ms - now)
+    let runtime_remaining = {
+        let state = runtime_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (state.cooldown_until_ms > now).then_some(state.cooldown_until_ms - now)
+    };
+    let persisted_remaining = provider_rate_limit::remaining_ms(ProviderRateLimit::Gemini, now);
+    match (runtime_remaining, persisted_remaining) {
+        (Some(runtime), Some(persisted)) => Some(runtime.max(persisted)),
+        (Some(runtime), None) => Some(runtime),
+        (None, Some(persisted)) => Some(persisted),
+        (None, None) => None,
+    }
 }
 
-fn set_cooldown(now: u64, retry_after_ms: u64) {
-    let retry_after_ms = retry_after_ms.clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS);
+fn rate_limit_backoff_floor_ms(streak: u32) -> u64 {
+    let index = streak
+        .saturating_sub(1)
+        .min((RATE_LIMIT_BACKOFF_STEPS_MS.len() - 1) as u32) as usize;
+    RATE_LIMIT_BACKOFF_STEPS_MS[index]
+}
+
+fn effective_rate_limit_cooldown_ms(
+    streak: u32,
+    retry_after_ms: u64,
+    previous_cooldown_ms: u64,
+) -> u64 {
+    retry_after_ms
+        .clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS)
+        .max(rate_limit_backoff_floor_ms(streak))
+        .max(previous_cooldown_ms.min(MAX_RATE_LIMIT_COOLDOWN_MS))
+}
+
+fn set_rate_limit_cooldown(now: u64, retry_after_ms: u64) -> u64 {
     let mut state = runtime_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.cooldown_until_ms = now.saturating_add(retry_after_ms);
+    state.rate_limit_streak = state.rate_limit_streak.saturating_add(1);
+    let cooldown_ms = effective_rate_limit_cooldown_ms(
+        state.rate_limit_streak,
+        retry_after_ms,
+        state.last_rate_limit_cooldown_ms,
+    );
+    state.last_rate_limit_cooldown_ms = cooldown_ms;
+    state.cooldown_until_ms = state.cooldown_until_ms.max(now.saturating_add(cooldown_ms));
+    drop(state);
+    let provider_retry_until =
+        now.saturating_add(retry_after_ms.clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS));
+    provider_rate_limit::persist_until(ProviderRateLimit::Gemini, provider_retry_until);
+    cooldown_ms
 }
 
-fn clear_cooldown() {
+fn clear_runtime_rate_limit_state() {
     let mut state = runtime_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.cooldown_until_ms = 0;
+    state.rate_limit_streak = 0;
+    state.last_rate_limit_cooldown_ms = 0;
+}
+
+fn clear_rate_limit_state() {
+    clear_runtime_rate_limit_state();
+    provider_rate_limit::clear(ProviderRateLimit::Gemini);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -622,6 +833,9 @@ struct GeminiIncidentRecovery {
     credential_changed: Option<bool>,
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
+    discovery_code: Option<&'static str>,
+    cli_source: Option<&'static str>,
+    cooldown_ms: Option<u64>,
     last_good_used: bool,
 }
 
@@ -638,8 +852,10 @@ fn record_incident(failure: GeminiFailure, result: &'static str, recovery: Gemin
         credential_changed: recovery.credential_changed,
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
+        discovery_code: recovery.discovery_code,
+        cli_source: recovery.cli_source,
         retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
-        cooldown_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
+        cooldown_seconds: recovery.cooldown_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),
     });
 }
@@ -659,14 +875,14 @@ impl CredentialSnapshot {
         format!("{}:{}", self.access_token, self.expiry.unwrap_or_default())
     }
 
-    fn into_valid(self) -> Option<ValidCredential> {
-        if self
+    fn is_usable_at(&self, now: u64) -> bool {
+        !self
             .expiry
-            .is_some_and(|value| value <= now_ms().saturating_add(TOKEN_EXPIRY_SAFETY_MS))
-        {
-            return None;
-        }
-        Some(ValidCredential {
+            .is_some_and(|value| value <= now.saturating_add(TOKEN_EXPIRY_SAFETY_MS))
+    }
+
+    fn into_valid(self) -> Option<ValidCredential> {
+        self.is_usable_at(now_ms()).then_some(ValidCredential {
             access_token: self.access_token,
         })
     }
@@ -684,24 +900,93 @@ fn credential_snapshot(
 }
 
 fn read_credential_snapshot(home: &Path) -> Option<CredentialSnapshot> {
+    let mut candidates = Vec::new();
     #[cfg(target_os = "windows")]
     {
         if let Some(credential) = read_windows_keychain_snapshot() {
-            return Some(credential);
+            candidates.push(credential);
         }
         if let Some(credential) = read_windows_file_keychain_snapshot(home) {
-            return Some(credential);
+            candidates.push(credential);
         }
     }
 
     let path = gemini_home(home).join("oauth_creds.json");
-    let bytes = fs::read(path).ok()?;
-    let raw = serde_json::from_slice::<StoredGeminiCredential>(&bytes).ok()?;
-    credential_snapshot(raw.access_token, raw.expiry_date)
+    if let Ok(bytes) = fs::read(path) {
+        if let Ok(raw) = serde_json::from_slice::<StoredGeminiCredential>(&bytes) {
+            if let Some(credential) = credential_snapshot(raw.access_token, raw.expiry_date) {
+                candidates.push(credential);
+            }
+        }
+    }
+    select_credential_snapshot(candidates, now_ms())
+}
+
+fn select_credential_snapshot(
+    candidates: Vec<CredentialSnapshot>,
+    now: u64,
+) -> Option<CredentialSnapshot> {
+    let fallback = candidates.first().cloned();
+    candidates
+        .into_iter()
+        .find(|credential| credential.is_usable_at(now))
+        .or(fallback)
 }
 
 fn read_valid_credential(home: &Path) -> Option<ValidCredential> {
     read_credential_snapshot(home)?.into_valid()
+}
+
+fn credential_discovery_code(home: &Path) -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(bytes) = read_windows_keychain_blob() {
+            return match parse_keychain_snapshot(&bytes) {
+                Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                    "WINDOWS_CREDENTIAL_BECAME_USABLE_DURING_DISCOVERY"
+                }
+                Some(_) => "WINDOWS_CREDENTIAL_EXPIRED_OR_NEAR_EXPIRY",
+                None => "WINDOWS_CREDENTIAL_PARSE_FAILED",
+            };
+        }
+        let file_keychain = gemini_home(home).join("gemini-credentials.json");
+        if file_keychain.exists() {
+            let Ok(text) = fs::read_to_string(file_keychain) else {
+                return "FILE_KEYCHAIN_READ_FAILED";
+            };
+            let Some(hostname) = env::var("COMPUTERNAME").ok() else {
+                return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
+            };
+            let Some(username) = env::var("USERNAME").ok().or_else(|| env::var("USER").ok()) else {
+                return "FILE_KEYCHAIN_ENV_UNAVAILABLE";
+            };
+            return match parse_file_keychain_snapshot(&text, &hostname, &username) {
+                Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                    "FILE_KEYCHAIN_BECAME_USABLE_DURING_DISCOVERY"
+                }
+                Some(_) => "FILE_KEYCHAIN_EXPIRED_OR_NEAR_EXPIRY",
+                None => "FILE_KEYCHAIN_PARSE_FAILED",
+            };
+        }
+    }
+
+    let oauth_file = gemini_home(home).join("oauth_creds.json");
+    if oauth_file.exists() {
+        let Ok(bytes) = fs::read(oauth_file) else {
+            return "OAUTH_FILE_READ_FAILED";
+        };
+        let parsed = serde_json::from_slice::<StoredGeminiCredential>(&bytes)
+            .ok()
+            .and_then(|raw| credential_snapshot(raw.access_token, raw.expiry_date));
+        return match parsed {
+            Some(snapshot) if snapshot.is_usable_at(now_ms()) => {
+                "OAUTH_FILE_BECAME_USABLE_DURING_DISCOVERY"
+            }
+            Some(_) => "OAUTH_FILE_EXPIRED_OR_NEAR_EXPIRY",
+            None => "OAUTH_FILE_PARSE_FAILED",
+        };
+    }
+    "STORE_NOT_FOUND"
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -718,6 +1003,11 @@ fn parse_keychain_credential(bytes: &[u8]) -> Option<ValidCredential> {
 
 #[cfg(target_os = "windows")]
 fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
+    read_windows_keychain_blob().and_then(|bytes| parse_keychain_snapshot(&bytes))
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_keychain_blob() -> Option<Vec<u8>> {
     use std::ffi::OsStr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
@@ -726,9 +1016,6 @@ fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
         CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
     };
 
-    // Current Gemini CLI (OAuthCredentialStorage + keytar) stores the main
-    // account as service/account => `gemini-cli-oauth/main-account`. Token Lens
-    // reads only access-token/expiry metadata; the official CLI owns refresh.
     let target = OsStr::new("gemini-cli-oauth/main-account")
         .encode_wide()
         .chain(once(0))
@@ -743,7 +1030,7 @@ fn read_windows_keychain_snapshot() -> Option<CredentialSnapshot> {
         std::slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize).to_vec()
     };
     unsafe { CredFree(credential.cast()) };
-    parse_keychain_snapshot(&bytes)
+    Some(bytes)
 }
 
 #[cfg(target_os = "windows")]
@@ -1097,12 +1384,125 @@ mod tests {
     }
 
     #[test]
-    fn gemini_rate_limit_sets_bounded_provider_cooldown() {
+    fn gemini_rate_limit_uses_sticky_adaptive_provider_cooldown() {
         let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        clear_cooldown();
-        set_cooldown(1_000, 120_000);
-        assert_eq!(active_cooldown_remaining_ms(2_000), Some(119_000));
-        clear_cooldown();
+        clear_rate_limit_state();
+        assert_eq!(set_rate_limit_cooldown(1_000, 1_000), 5 * 60 * 1000);
+        assert_eq!(
+            active_cooldown_remaining_ms(2_000),
+            Some(5 * 60 * 1000 - 1_000)
+        );
+        clear_rate_limit_state();
+        assert_eq!(
+            set_rate_limit_cooldown(1_000, 60 * 60 * 1000),
+            60 * 60 * 1000
+        );
+        assert_eq!(
+            set_rate_limit_cooldown(60 * 60 * 1000 + 2_000, 1_000),
+            60 * 60 * 1000
+        );
+        clear_rate_limit_state();
+    }
+
+    #[test]
+    fn gemini_auth_recovery_probe_requires_a_usable_credential_change() {
+        let missing = CredentialBaseline::Missing;
+        let token_a = credential_baseline(Some(&CredentialSnapshot {
+            access_token: "token-a".to_owned(),
+            expiry: Some(u64::MAX),
+        }));
+        let token_b = credential_baseline(Some(&CredentialSnapshot {
+            access_token: "token-b".to_owned(),
+            expiry: Some(u64::MAX),
+        }));
+        assert!(!credential_change_allows_probe(missing, missing, false));
+        assert!(credential_change_allows_probe(missing, token_a, true));
+        assert!(!credential_change_allows_probe(token_a, token_a, true));
+        assert!(credential_change_allows_probe(token_a, token_b, true));
+        assert!(!credential_change_allows_probe(token_a, token_b, false));
+    }
+
+    #[test]
+    fn gemini_auth_recovery_never_reprobes_an_unchanged_rejected_credential() {
+        let token_a = credential_baseline(Some(&CredentialSnapshot {
+            access_token: "token-a".to_owned(),
+            expiry: Some(u64::MAX),
+        }));
+        let token_b = credential_baseline(Some(&CredentialSnapshot {
+            access_token: "token-b".to_owned(),
+            expiry: Some(u64::MAX),
+        }));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, true, 0, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, false, 301_000, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
+        assert!(
+            auth_recovery_guard_decision(token_a, token_b, true, true, 301_000, 1_000).is_none()
+        );
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, false, 1_000, 301_000),
+            Some(AuthRecoveryGuard::RetryCli {
+                current_usable: true
+            })
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_b, false, false, 1_000, 301_000),
+            Some(AuthRecoveryGuard::RetryCli {
+                current_usable: false
+            })
+        ));
+    }
+
+    #[test]
+    fn gemini_repeated_429_backoff_does_not_collapse_to_tiny_retry_after_values() {
+        assert_eq!(effective_rate_limit_cooldown_ms(1, 1_000, 0), 5 * 60 * 1000);
+        assert_eq!(
+            effective_rate_limit_cooldown_ms(2, 1_000, 5 * 60 * 1000),
+            15 * 60 * 1000
+        );
+        assert_eq!(
+            effective_rate_limit_cooldown_ms(3, 1_000, 15 * 60 * 1000),
+            30 * 60 * 1000
+        );
+        assert_eq!(
+            effective_rate_limit_cooldown_ms(4, 1_000, 30 * 60 * 1000),
+            60 * 60 * 1000
+        );
+        assert_eq!(
+            effective_rate_limit_cooldown_ms(2, 1_000, 60 * 60 * 1000),
+            60 * 60 * 1000
+        );
+    }
+
+    #[test]
+    fn expired_higher_priority_store_does_not_shadow_usable_credential() {
+        let now = 1_000_000;
+        let expired = CredentialSnapshot {
+            access_token: "expired-keychain".to_owned(),
+            expiry: Some(now),
+        };
+        let usable = CredentialSnapshot {
+            access_token: "fresh-oauth-file".to_owned(),
+            expiry: Some(now + TOKEN_EXPIRY_SAFETY_MS + 60_000),
+        };
+        let selected = select_credential_snapshot(vec![expired, usable], now)
+            .expect("usable fallback credential");
+        assert_eq!(selected.access_token, "fresh-oauth-file");
+    }
+
+    #[test]
+    fn stale_gemini_quota_is_not_authoritative() {
+        let mut provider = provider_fixture("2099-01-01T00:00:00Z");
+        assert!(provider_has_authoritative_quota(&provider));
+        provider.diagnostic = Some(format!(
+            "{STALE_DIAGNOSTIC_PREFIX} · Gemini CLI credential refresh already in progress"
+        ));
+        assert!(provider_has_usable_quota(&provider));
+        assert!(!provider_has_authoritative_quota(&provider));
     }
 
     #[test]
@@ -1116,6 +1516,7 @@ mod tests {
                     captured_at_ms: 1_000,
                     provider: provider_fixture("2099-01-01T00:00:00Z"),
                 }),
+                ..GeminiRuntimeState::default()
             };
         }
         let mut report = QuotaReport {

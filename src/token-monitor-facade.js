@@ -10,20 +10,32 @@ import {
   moveFloatingBubble,
   openProviderErrorLogDirectory,
   peekFloatingBubble,
+  recordStartupTiming,
   setFloatingBubbleWidth,
   updateSettings,
   updateTraySummary,
 } from './backend.js';
-import { getStats } from './stats-compat.js';
+import {
+  getBootstrapStats,
+  getPeriodStats,
+  getQuotaLimits,
+  getStats,
+  preloadSlowUsage,
+} from './stats-compat.js';
 
 export function installTokenMonitorFacade(target = window) {
   const facade = Object.freeze({
     getStats,
+    getBootstrapStats,
+    getPeriodStats,
+    getQuotaLimits,
+    preloadSlowUsage,
     getDashboardHistory,
     getSessionDetail,
     getTokscaleStatus,
     getSettings,
     updateSettings,
+    recordStartupTiming,
     openProviderErrorLogDirectory,
     updateTraySummary,
     getFloatingBubbleState,

@@ -1,7 +1,8 @@
-import { getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport } from './backend.js';
+import { getQuotaRecoveryReport, getQuotaReport, getSessionMetadata, getUsageReport, getUsageSinceReport } from './backend.js';
 
 const DISJOINT_REASONING_CLIENTS = new Set(['codex']);
 const DEFAULT_LIMIT_REFRESH_MS = 5 * 60 * 1000;
+const AUTH_REFRESH_LIMIT_POLL_MS = 30 * 1000;
 const TODAY_CACHE_MS = 30 * 1000;
 const MONTH_CACHE_MS = 2 * 60 * 1000;
 const ALL_TIME_CACHE_MS = 5 * 60 * 1000;
@@ -202,11 +203,18 @@ function compatibilityWindow(window) {
   };
 }
 
+function quotaAuthRefreshPending(report) {
+  return (report?.providers || []).some((provider) =>
+    /CLI credential refresh (?:started in background|already in progress|cooling down)/.test(
+      String(provider?.diagnostic || ''),
+    ));
+}
+
 export function quotaReportToCompatLimits(report) {
   const generatedAt = finite(report?.generatedAtMs);
   return {
     updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
-    refreshMs: DEFAULT_LIMIT_REFRESH_MS,
+    refreshMs: quotaAuthRefreshPending(report) ? AUTH_REFRESH_LIMIT_POLL_MS : DEFAULT_LIMIT_REFRESH_MS,
     providers: (report?.providers || []).map((provider) => {
       const diagnostic = String(provider.diagnostic || '');
       const windows = provider.windows || [];
@@ -244,36 +252,131 @@ export function createStatsLoader({
   usage = getUsageReport,
   usageSince = getUsageSinceReport,
   quota = getQuotaReport,
+  quotaRecovery = getQuotaRecoveryReport,
   sessionMetadata = async () => ({ sessions: [] }),
   now = () => Date.now(),
 } = {}) {
   const cache = new Map();
+  const inFlight = new Map();
 
   async function cached(key, ttlMs, loader, force) {
     const current = cache.get(key);
     const timestamp = now();
-    if (!force && current && timestamp - current.at < ttlMs) return current.value;
-    const value = await loader();
-    cache.set(key, { at: timestamp, value });
-    return value;
+    const ttl = typeof ttlMs === 'function' ? ttlMs(current?.value) : ttlMs;
+    if (!force && current && timestamp - current.at < ttl) return current.value;
+    if (!force && inFlight.has(key)) return inFlight.get(key);
+    const pending = Promise.resolve().then(loader);
+    if (!force) inFlight.set(key, pending);
+    try {
+      const value = await pending;
+      cache.set(key, { at: now(), value });
+      return value;
+    } finally {
+      if (!force && inFlight.get(key) === pending) inFlight.delete(key);
+    }
   }
 
-  return async function getStats(options = {}) {
+  function loadUsagePeriod(key, force = false) {
+    if (key === 'today') return cached('today', TODAY_CACHE_MS, () => usage('today', 'client_session_model'), force);
+    if (key === 'month') return cached('month', MONTH_CACHE_MS, () => usage('month', 'client_session_model'), force);
+    if (key === 'allTime') return cached('allTime', ALL_TIME_CACHE_MS, () => usage('all_time', 'client_session_model'), force);
+    throw new Error(`unsupported cached usage period: ${key}`);
+  }
+
+  async function loadQuotaReport(force = false) {
+    const before = cache.get('quota');
+    const report = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
+    const fullEntry = cache.get('quota');
+    const fullRefreshed = force || !before || fullEntry?.at !== before.at;
+
+    if (!quotaAuthRefreshPending(report)) {
+      cache.delete('quotaRecovery');
+      return report;
+    }
+
+    if (fullRefreshed) {
+      cache.set('quotaRecovery', { at: fullEntry?.at ?? now(), value: report });
+      return report;
+    }
+
+    try {
+      const recovered = await cached(
+        'quotaRecovery',
+        AUTH_REFRESH_LIMIT_POLL_MS,
+        quotaRecovery,
+        false,
+      );
+      const currentFull = cache.get('quota');
+      if (currentFull) cache.set('quota', { at: currentFull.at, value: recovered });
+      if (!quotaAuthRefreshPending(recovered)) cache.delete('quotaRecovery');
+      return recovered;
+    } catch (_) {
+      cache.set('quotaRecovery', { at: now(), value: report });
+      return report;
+    }
+  }
+
+  function partialStats(periods, reports, limitsReport = null) {
+    const generatedAt = latestGeneratedAt(reports.filter(Boolean));
+    return {
+      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
+      periods,
+      limits: quotaReportToCompatLimits(limitsReport || { generatedAtMs: 0, providers: [] }),
+      devices: [],
+      historyAvailable: true,
+    };
+  }
+
+  async function getBootstrapStats(options = {}) {
+    const today = await loadUsagePeriod('today', options?.force === true);
+    return partialStats({ today: usageReportToCompatPeriod(today) }, [today]);
+  }
+
+  async function getPeriodStats(period, options = {}) {
+    const raw = await loadUsagePeriod(period, options?.force === true);
+    return {
+      period,
+      value: usageReportToCompatPeriod(raw),
+      updatedAt: raw?.generatedAtMs > 0 ? new Date(raw.generatedAtMs).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  async function getQuotaLimits(options = {}) {
+    const raw = await loadQuotaReport(options?.force === true);
+    return {
+      limits: quotaReportToCompatLimits(raw),
+      updatedAt: raw?.generatedAtMs > 0 ? new Date(raw.generatedAtMs).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  async function preloadSlowUsage(options = {}) {
+    const force = options?.force === true;
+    const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : () => {};
+    const month = await loadUsagePeriod('month', force);
+    onProgress('month');
+    const allTime = await loadUsagePeriod('allTime', force);
+    onProgress('allTime');
+    const generatedAt = latestGeneratedAt([month, allTime]);
+    return {
+      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
+      periods: { month: usageReportToCompatPeriod(month), allTime: usageReportToCompatPeriod(allTime) },
+    };
+  }
+
+  async function getStats(options = {}) {
     const force = options?.force === true;
     const includeSessionMetadata = options?.includeSessionMetadata === true;
     const derived = options?.derived && typeof options.derived === 'object' ? options.derived : null;
-    // Keep native scans serial. Cache slower-changing ranges so the renderer can poll cheaply.
-    const today = await cached('today', TODAY_CACHE_MS, () => usage('today', 'client_session_model'), force);
-    const month = await cached('month', MONTH_CACHE_MS, () => usage('month', 'client_session_model'), force);
-    const allTime = await cached('allTime', ALL_TIME_CACHE_MS, () => usage('all_time', 'client_session_model'), force);
+    // Full refresh preserves the established serial scan order; bootstrap uses the phased helpers below.
+    const today = await loadUsagePeriod('today', force);
+    const month = await loadUsagePeriod('month', force);
+    const allTime = await loadUsagePeriod('allTime', force);
     let derivedReport = null;
     if (derived?.key && derived?.since) {
       const cacheKey = `derived:${derived.key}:${derived.since}`;
       derivedReport = await cached(cacheKey, DERIVED_CACHE_MS, () => usageSince(derived.since, 'client_session_model'), force);
     }
-    const limitsReport = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
-    const reports = [today, month, allTime, limitsReport, derivedReport].filter(Boolean);
-    const generatedAt = latestGeneratedAt(reports);
+    const limitsReport = await loadQuotaReport(force);
     const periods = {
       today: usageReportToCompatPeriod(today),
       month: usageReportToCompatPeriod(month),
@@ -297,14 +400,19 @@ export function createStatsLoader({
       }
     }
 
-    return {
-      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
-      periods,
-      limits: quotaReportToCompatLimits(limitsReport),
-      devices: [],
-      historyAvailable: true,
-    };
-  };
+    return partialStats(periods, [today, month, allTime, limitsReport, derivedReport], limitsReport);
+  }
+
+  getStats.getBootstrapStats = getBootstrapStats;
+  getStats.getPeriodStats = getPeriodStats;
+  getStats.getQuotaLimits = getQuotaLimits;
+  getStats.preloadSlowUsage = preloadSlowUsage;
+  return getStats;
 }
 
-export const getStats = createStatsLoader({ sessionMetadata: getSessionMetadata });
+const statsLoader = createStatsLoader({ sessionMetadata: getSessionMetadata });
+export const getStats = statsLoader;
+export const getBootstrapStats = statsLoader.getBootstrapStats;
+export const getPeriodStats = statsLoader.getPeriodStats;
+export const getQuotaLimits = statsLoader.getQuotaLimits;
+export const preloadSlowUsage = statsLoader.preloadSlowUsage;

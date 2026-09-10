@@ -3,8 +3,9 @@ use crate::appearance;
 use crate::claude_quota;
 use crate::codex_business;
 use crate::domain::{
-    HistoryReport, QuotaReport, SessionDetailReport, SessionMetadataRef, SessionMetadataReport,
-    TokscaleStatus, UsageGrouping, UsagePeriod, UsageReport,
+    HistoryReport, QuotaProvider, QuotaReport, SessionDetailReport, SessionMetadataRef,
+    SessionMetadataReport, SupportedProvider, TokscaleStatus, UsageGrouping, UsagePeriod,
+    UsageReport,
 };
 use crate::floating_bubble::{
     self, BubbleDragOffset, FloatingBubbleController, FloatingBubblePayload,
@@ -13,12 +14,76 @@ use crate::gemini_quota;
 use crate::session_detail;
 use crate::session_metadata;
 use crate::settings::{AppSettings, SettingsPatch, SettingsStore};
+use crate::startup_timing::StartupTiming;
 use crate::tokscale::TokscaleAdapter;
 use crate::tray::{self, TraySummary};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
+
+#[derive(Default)]
+pub(crate) struct QuotaSnapshotCache {
+    operation: tokio::sync::Mutex<()>,
+    report: Mutex<Option<QuotaReport>>,
+}
+
+impl QuotaSnapshotCache {
+    fn load(&self) -> Option<QuotaReport> {
+        self.report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn store(&self, report: QuotaReport) {
+        *self
+            .report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(report);
+    }
+}
+
+fn provider_auth_recovery_pending(provider: &QuotaProvider) -> bool {
+    provider.diagnostic.as_deref().is_some_and(|diagnostic| {
+        diagnostic.contains("CLI credential refresh started in background")
+            || diagnostic.contains("CLI credential refresh already in progress")
+            || diagnostic.contains("CLI credential refresh cooling down")
+    })
+}
+
+fn report_provider_recovery_pending(report: &QuotaReport, provider: SupportedProvider) -> bool {
+    report
+        .providers
+        .iter()
+        .find(|item| item.provider == provider)
+        .is_some_and(provider_auth_recovery_pending)
+}
+
+fn merge_provider_result(
+    report: &mut QuotaReport,
+    enriched: QuotaReport,
+    provider: SupportedProvider,
+) {
+    let Some(provider_result) = enriched
+        .providers
+        .into_iter()
+        .find(|item| item.provider == provider)
+    else {
+        return;
+    };
+    if let Some(existing) = report
+        .providers
+        .iter_mut()
+        .find(|item| item.provider == provider)
+    {
+        *existing = provider_result;
+    } else {
+        report.providers.push(provider_result);
+    }
+}
 
 #[tauri::command]
 pub async fn get_usage_report(
@@ -69,22 +134,97 @@ pub async fn get_session_detail(
 pub async fn get_quota_report(
     app: AppHandle,
     adapter: State<'_, TokscaleAdapter>,
+    quota_cache: State<'_, QuotaSnapshotCache>,
 ) -> Result<QuotaReport, String> {
+    let _operation = quota_cache.operation.lock().await;
     let home = app.path().home_dir().ok();
     let expected_workspace_id = home
         .as_deref()
         .and_then(codex_business::selected_workspace_id);
     let report = adapter.quota_report().await?;
-    Ok(match home {
+    app.state::<StartupTiming>()
+        .record_internal("quota-tokscale-ready");
+    let report = match home {
         Some(home) => {
-            let report =
-                codex_business::enrich_quota_report(&home, expected_workspace_id, report).await;
-            let report = claude_quota::enrich_quota_report(&home, report).await;
-            let report = gemini_quota::enrich_quota_report(&home, report).await;
-            antigravity_quota::enrich_quota_report(&home, report).await
+            let base = report;
+            let (codex, claude, gemini, antigravity) = tokio::join!(
+                async {
+                    let enriched = codex_business::enrich_quota_report(
+                        &home,
+                        expected_workspace_id,
+                        base.clone(),
+                    )
+                    .await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-codex-ready");
+                    enriched
+                },
+                async {
+                    let enriched = claude_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-claude-ready");
+                    enriched
+                },
+                async {
+                    let enriched = gemini_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-gemini-ready");
+                    enriched
+                },
+                async {
+                    let enriched =
+                        antigravity_quota::enrich_quota_report(&home, base.clone()).await;
+                    app.state::<StartupTiming>()
+                        .record_internal("quota-antigravity-ready");
+                    enriched
+                },
+            );
+            let mut merged = base;
+            merge_provider_result(&mut merged, codex, SupportedProvider::Codex);
+            merge_provider_result(&mut merged, claude, SupportedProvider::Claude);
+            merge_provider_result(&mut merged, gemini, SupportedProvider::Gemini);
+            merge_provider_result(&mut merged, antigravity, SupportedProvider::Antigravity);
+            app.state::<StartupTiming>()
+                .record_internal("quota-enrichment-ready");
+            merged
         }
         None => report,
-    })
+    };
+    quota_cache.store(report.clone());
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn get_quota_recovery_report(
+    app: AppHandle,
+    quota_cache: State<'_, QuotaSnapshotCache>,
+) -> Result<QuotaReport, String> {
+    let _operation = quota_cache.operation.lock().await;
+    let mut report = quota_cache
+        .load()
+        .ok_or_else(|| "quota recovery requested before a full quota report".to_owned())?;
+    let Some(home) = app.path().home_dir().ok() else {
+        return Ok(report);
+    };
+
+    let mut attempted = false;
+    if report_provider_recovery_pending(&report, SupportedProvider::Claude) {
+        attempted = true;
+        report = claude_quota::enrich_quota_report(&home, report).await;
+    }
+    if report_provider_recovery_pending(&report, SupportedProvider::Gemini) {
+        attempted = true;
+        report = gemini_quota::enrich_quota_report(&home, report).await;
+    }
+    if attempted {
+        report.generated_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+    }
+
+    quota_cache.store(report.clone());
+    Ok(report)
 }
 
 #[tauri::command]
@@ -111,6 +251,14 @@ pub async fn get_session_metadata(
 #[tauri::command]
 pub fn get_settings(settings: State<'_, SettingsStore>) -> Result<AppSettings, String> {
     settings.get()
+}
+
+#[tauri::command]
+pub fn record_startup_timing(
+    timing: State<'_, StartupTiming>,
+    phase: String,
+) -> Result<f64, String> {
+    timing.record_renderer(&phase)
 }
 
 #[tauri::command]
@@ -253,6 +401,94 @@ pub fn move_floating_bubble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quota_provider(provider: SupportedProvider, diagnostic: &str) -> QuotaProvider {
+        QuotaProvider {
+            provider,
+            plan: None,
+            account_email: None,
+            diagnostic: Some(diagnostic.to_owned()),
+            windows: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        }
+    }
+
+    #[test]
+    fn parallel_quota_merge_replaces_only_the_target_provider() {
+        let mut base = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "base-codex"),
+                quota_provider(SupportedProvider::Claude, "base-claude"),
+            ],
+            source: "test",
+        };
+        let enriched = QuotaReport {
+            generated_at_ms: 2,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "wrong-codex"),
+                quota_provider(SupportedProvider::Claude, "parallel-claude"),
+            ],
+            source: "test",
+        };
+        merge_provider_result(&mut base, enriched, SupportedProvider::Claude);
+        assert_eq!(base.generated_at_ms, 1);
+        assert_eq!(base.providers[0].diagnostic.as_deref(), Some("base-codex"));
+        assert_eq!(
+            base.providers[1].diagnostic.as_deref(),
+            Some("parallel-claude")
+        );
+    }
+
+    #[test]
+    fn parallel_quota_merge_appends_a_provider_missing_from_tokscale_base() {
+        let mut base = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![quota_provider(SupportedProvider::Codex, "base-codex")],
+            source: "test",
+        };
+        let enriched = QuotaReport {
+            generated_at_ms: 1,
+            providers: vec![
+                quota_provider(SupportedProvider::Codex, "base-codex"),
+                quota_provider(SupportedProvider::Gemini, "parallel-gemini"),
+            ],
+            source: "test",
+        };
+        merge_provider_result(&mut base, enriched, SupportedProvider::Gemini);
+        assert_eq!(base.providers.len(), 2);
+        assert_eq!(base.providers[1].provider, SupportedProvider::Gemini);
+        assert_eq!(
+            base.providers[1].diagnostic.as_deref(),
+            Some("parallel-gemini")
+        );
+    }
+
+    #[test]
+    fn quota_recovery_detection_is_limited_to_cli_recovery_diagnostics() {
+        let provider = |diagnostic: Option<&str>| QuotaProvider {
+            provider: SupportedProvider::Claude,
+            plan: None,
+            account_email: None,
+            diagnostic: diagnostic.map(str::to_owned),
+            windows: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        };
+        assert!(provider_auth_recovery_pending(&provider(Some(
+            "Stale Claude quota · Claude CLI credential refresh already in progress",
+        ))));
+        assert!(provider_auth_recovery_pending(&provider(Some(
+            "Claude CLI credential refresh cooling down; retry in about 120s",
+        ))));
+        assert!(!provider_auth_recovery_pending(&provider(Some(
+            "Claude usage rate-limit cooldown; retry in about 300s",
+        ))));
+        assert!(!provider_auth_recovery_pending(&provider(None)));
+    }
 
     #[test]
     fn minimize_policy_prefers_bubble_then_tray_then_os() {

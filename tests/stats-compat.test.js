@@ -100,6 +100,56 @@ test('stale quota keeps last-good windows visible with an explicit stale status'
   assert.equal(limits.providers[0].windows[0].remainingPercent, 62);
 });
 
+test('progressive bootstrap returns Today before quota and slower ranges', async () => {
+  const calls = [];
+  const usage = async (period) => {
+    calls.push(`usage:${period}`);
+    return report([], period === 'today' ? 1000 : 2000);
+  };
+  const quota = async () => {
+    calls.push('quota');
+    return { generatedAtMs: 3000, providers: [], source: 'tokscale' };
+  };
+  const getStats = createStatsLoader({ usage, quota });
+
+  const bootstrap = await getStats.getBootstrapStats();
+  assert.deepEqual(calls, ['usage:today']);
+  assert.deepEqual(Object.keys(bootstrap.periods), ['today']);
+  assert.equal(bootstrap.limits.providers.length, 0);
+
+  const quotaPatch = await getStats.getQuotaLimits();
+  assert.deepEqual(calls, ['usage:today', 'quota']);
+  assert.equal(quotaPatch.limits.providers.length, 0);
+});
+
+test('background preload shares an in-flight Month scan with an early period request', async () => {
+  const calls = [];
+  let releaseMonth;
+  const monthGate = new Promise((resolve) => { releaseMonth = resolve; });
+  const usage = async (period) => {
+    calls.push(period);
+    if (period === 'month') await monthGate;
+    return report([], period === 'month' ? 2000 : 3000);
+  };
+  const getStats = createStatsLoader({ usage, quota: async () => ({ generatedAtMs: 1, providers: [] }) });
+  const progress = [];
+
+  const preload = getStats.preloadSlowUsage({ onProgress: (period) => progress.push(period) });
+  const requestedMonth = getStats.getPeriodStats('month');
+  await Promise.resolve();
+  assert.equal(calls.filter((period) => period === 'month').length, 1);
+  releaseMonth();
+
+  const month = await requestedMonth;
+  const slow = await preload;
+  assert.equal(month.period, 'month');
+  assert.equal(calls.filter((period) => period === 'month').length, 1);
+  assert.equal(calls.filter((period) => period === 'all_time').length, 1);
+  assert.deepEqual(Object.keys(slow.periods), ['month', 'allTime']);
+  assert.deepEqual(progress, ['month', 'allTime']);
+  assert.equal('limits' in slow, false);
+});
+
 test('getStats compatibility loader keeps tokScale scans serial and exposes v1 period keys', async () => {
   const calls = [];
   const usage = async (period, grouping) => {
@@ -144,6 +194,123 @@ test('getStats caches slower ranges and refreshes today independently', async ()
     'usage:today', 'usage:month', 'usage:all_time', 'quota',
     'usage:today',
   ]);
+});
+
+test('getStats rechecks only recovering providers after 30s without rerunning full quota', async () => {
+  let clock = 1_000_000;
+  let quotaCalls = 0;
+  let recoveryCalls = 0;
+  const usage = async () => report([], clock);
+  const pending = () => ({
+    generatedAtMs: clock,
+    providers: [{
+      provider: 'claude',
+      diagnostic: 'Claude credential is unavailable; Claude CLI credential refresh started in background',
+      windows: [],
+    }],
+  });
+  const quota = async () => { quotaCalls += 1; return pending(); };
+  const quotaRecovery = async () => {
+    recoveryCalls += 1;
+    return { generatedAtMs: clock, providers: [{ provider: 'claude', diagnostic: null, windows: [] }] };
+  };
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
+
+  const first = await getStats();
+  assert.equal(first.limits.refreshMs, 30_000);
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 0);
+
+  clock += 29_000;
+  await getStats();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 0);
+
+  clock += 2_000;
+  const recovered = await getStats();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(recovered.limits.refreshMs, 5 * 60 * 1000);
+
+  clock += 31_000;
+  await getStats();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+});
+
+test('provider-only recovery does not postpone the five-minute full quota refresh', async () => {
+  let clock = 2_000_000;
+  let quotaCalls = 0;
+  let recoveryCalls = 0;
+  const usage = async () => report([], clock);
+  const pending = () => ({
+    generatedAtMs: clock,
+    providers: [{
+      provider: 'gemini',
+      diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
+      windows: [],
+    }],
+  });
+  const quota = async () => { quotaCalls += 1; return pending(); };
+  const quotaRecovery = async () => { recoveryCalls += 1; return pending(); };
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
+
+  await getStats.getQuotaLimits();
+  clock += 31_000;
+  await getStats.getQuotaLimits();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+
+  clock += 5 * 60 * 1000 - 31_000;
+  await getStats.getQuotaLimits();
+  assert.equal(quotaCalls, 2);
+  assert.equal(recoveryCalls, 1);
+});
+
+test('failed provider-only recovery remains throttled to the 30s recovery cadence', async () => {
+  let clock = 3_000_000;
+  let quotaCalls = 0;
+  let recoveryCalls = 0;
+  const usage = async () => report([], clock);
+  const quota = async () => {
+    quotaCalls += 1;
+    return {
+      generatedAtMs: clock,
+      providers: [{
+        provider: 'claude',
+        diagnostic: 'Claude CLI credential refresh already in progress',
+        windows: [],
+      }],
+    };
+  };
+  const quotaRecovery = async () => { recoveryCalls += 1; throw new Error('transient recovery command failure'); };
+  const getStats = createStatsLoader({ usage, quota, quotaRecovery, now: () => clock });
+
+  await getStats.getQuotaLimits();
+  clock += 31_000;
+  await getStats.getQuotaLimits();
+  assert.equal(quotaCalls, 1);
+  assert.equal(recoveryCalls, 1);
+
+  clock += 1_000;
+  await getStats.getQuotaLimits();
+  assert.equal(recoveryCalls, 1);
+
+  clock += 30_000;
+  await getStats.getQuotaLimits();
+  assert.equal(recoveryCalls, 2);
+});
+
+test('quota compatibility keeps 30s polling during CLI refresh backoff', () => {
+  const limits = quotaReportToCompatLimits({
+    generatedAtMs: 1_700_000_000_000,
+    providers: [{
+      provider: 'gemini',
+      diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
+      windows: [],
+    }],
+  });
+  assert.equal(limits.refreshMs, 30_000);
 });
 
 test('getStats exposes a cached derived period from an explicit since date', async () => {

@@ -22,6 +22,10 @@ export function getQuotaReport() {
   return invoke('get_quota_report');
 }
 
+export function getQuotaRecoveryReport() {
+  return invoke('get_quota_recovery_report');
+}
+
 export function getTokscaleStatus() {
   return invoke('get_tokscale_status');
 }
@@ -36,6 +40,10 @@ export function getSettings() {
 
 export function updateSettings(patch) {
   return invoke('update_settings', { patch });
+}
+
+export function recordStartupTiming(phase) {
+  return invoke('record_startup_timing', { phase });
 }
 
 export function openProviderErrorLogDirectory() {

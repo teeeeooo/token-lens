@@ -326,6 +326,68 @@ function Stop-ProcessTree {
     return -not (Test-ProcessAlive $ProcessId)
 }
 
+function Get-ProviderRelatedProcesses {
+    $matches = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+            $name = [string]$process.Name
+            $line = [string]$process.CommandLine
+            $isMatch = $false
+            if ($Provider -eq "Claude") {
+                $isMatch = $name -match '(?i)^claude(\.exe)?$' -or $line -match '(?i)(^|[\\/\s])claude(?:\.exe|\.cmd)?(?:\s|$)'
+            }
+            else {
+                $isMatch = $name -match '(?i)^gemini(\.exe)?$' -or $line -match '(?i)(@google[\\/]gemini-cli|[\\/]gemini(?:\.js|\.mjs|\.cjs)|(?:^|\s)gemini(?:\.cmd|\.exe)?(?:\s|$))'
+            }
+            if ($isMatch -and [int]$process.ProcessId -ne $PID) {
+                $matches.Add([pscustomobject]@{
+                    Name = $name
+                    ProcessId = [int]$process.ProcessId
+                    ParentProcessId = [int]$process.ParentProcessId
+                })
+            }
+        }
+    } catch { }
+    return @($matches | Sort-Object ProcessId -Unique)
+}
+
+function Add-ProviderProcessReport {
+    param([string]$Label)
+    $items = @(Get-ProviderRelatedProcesses)
+    Add-ReportLine "$Label.count=$($items.Count)"
+    foreach ($item in $items) {
+        Add-ReportLine "$Label.pid.$($item.ProcessId)=name:$($item.Name),parent:$($item.ParentProcessId)"
+    }
+    return $items
+}
+
+function Get-ProviderCredentialFileState {
+    $states = [System.Collections.Generic.List[object]]::new()
+    $paths = if ($Provider -eq "Gemini") {
+        @(
+            [pscustomobject]@{ Name = 'oauth-file'; Path = (Join-Path (Join-Path $HOME '.gemini') 'oauth_creds.json') },
+            [pscustomobject]@{ Name = 'file-keychain'; Path = (Join-Path (Join-Path $HOME '.gemini') 'gemini-credentials.json') }
+        )
+    } else {
+        @(Get-ClaudeCredentialFileCandidates | ForEach-Object { [pscustomobject]@{ Name = $_.Source; Path = $_.Path } })
+    }
+    foreach ($entry in $paths) {
+        try {
+            $item = Get-Item -LiteralPath $entry.Path -ErrorAction Stop
+            $states.Add([pscustomobject]@{ Name = $entry.Name; LastWriteTimeUtc = $item.LastWriteTimeUtc.ToString('o') })
+        } catch { }
+    }
+    return @($states)
+}
+
+function Add-CredentialFileStateReport {
+    param([string]$Label)
+    $states = @(Get-ProviderCredentialFileState)
+    foreach ($state in $states) {
+        Add-ReportLine "$Label.file.$($state.Name).lastWriteTimeUtc=$($state.LastWriteTimeUtc)"
+    }
+}
+
 function New-ConsoleCommandLine {
     param([string]$ProviderCommand)
     $comspec = if ([string]::IsNullOrWhiteSpace($env:ComSpec)) { "$env:SystemRoot\System32\cmd.exe" } else { $env:ComSpec }
@@ -340,16 +402,22 @@ function Invoke-ConsoleProbe {
         [string]$ProviderCommand
     )
 
+    Add-CredentialFileStateReport "$Label.before"
     $commandLine = New-ConsoleCommandLine $ProviderCommand
     $startedAt = [DateTime]::UtcNow
     $processId = [ProviderConsoleHostNative]::StartNewConsole($commandLine, $WorkingDirectory, $Hidden)
     $reason = "timeout"
     $changed = "false"
     $after = $Before
+    $processSampled = $false
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 500
+        if (-not $processSampled) {
+            [void](Add-ProviderProcessReport "$Label.processDuring")
+            $processSampled = $true
+        }
         $after = Get-ProviderCredentialSnapshot
         $changed = Compare-Snapshots $Before $after
         if ($changed -eq "true") { $reason = "credential-changed"; break }
@@ -364,6 +432,8 @@ function Invoke-ConsoleProbe {
 
     $cleanupOk = Stop-ProcessTree $processId
     Start-Sleep -Milliseconds 750
+    [void](Add-ProviderProcessReport "$Label.processAfterCleanup")
+    Add-CredentialFileStateReport "$Label.after"
     $final = Get-ProviderCredentialSnapshot
     $finalChanged = Compare-Snapshots $Before $final
     if ($finalChanged -eq "true" -and $changed -ne "true") {
@@ -379,7 +449,7 @@ function Invoke-ConsoleProbe {
     Add-ReportLine "$Label.elapsedSeconds=$elapsed"
     Add-ReportLine "$Label.exitReason=$reason"
     Add-ReportLine "$Label.credentialChanged=$changed"
-    Add-ReportLine "$Label.cleanupOk=$([string]$cleanupOk).ToLowerInvariant()"
+    Add-ReportLine "$Label.cleanupOk=$(([string]$cleanupOk).ToLowerInvariant())"
     Add-SnapshotReport "$Label.after" $after
 
     return [pscustomobject]@{
@@ -419,6 +489,8 @@ if ($SelfTest) {
             throw "Self-test failed: real-console smoke process did not exit"
         }
     }
+    $null = @(Get-ProviderRelatedProcesses)
+    $null = @(Get-ProviderCredentialFileState)
     Write-Host "$Provider console-host A/B diagnostic self-test: PASS"
     exit 0
 }
@@ -439,6 +511,12 @@ $tokenLensProcesses = @(Get-Process -ErrorAction SilentlyContinue | Where-Object
 })
 if ($tokenLensProcesses.Count -gt 0) {
     throw "Close Token Lens before running this diagnostic so background polling cannot affect the experiment."
+}
+
+$preExistingProviderProcesses = @(Get-ProviderRelatedProcesses)
+if ($preExistingProviderProcesses.Count -gt 0) {
+    $ids = ($preExistingProviderProcesses | ForEach-Object { $_.ProcessId }) -join ','
+    throw "Close other $Provider CLI activity before running this diagnostic. Provider-related process PIDs detected: $ids"
 }
 
 if ([string]::IsNullOrWhiteSpace($ReportPath)) {
@@ -468,6 +546,8 @@ Add-ReportLine ""
 $baseline = Get-ProviderCredentialSnapshot
 Add-ReportLine "[Baseline]"
 Add-SnapshotReport "baseline" $baseline
+Add-CredentialFileStateReport "baseline"
+Add-ReportLine "baseline.preExistingProviderProcessCount=$($preExistingProviderProcesses.Count)"
 if ($Provider -eq "Claude" -and $baseline.Source -eq "env") {
     Add-ReportLine "warning=CLAUDE_CODE_OAUTH_TOKEN is inherited by children but cannot be updated in this parent process."
 }

@@ -407,6 +407,18 @@ if ($SelfTest) {
     if ($line -notmatch '/d /s /c "claude"$') {
         throw "Self-test failed: console command line"
     }
+    foreach ($hidden in @($true, $false)) {
+        $smokeLine = New-ConsoleCommandLine "exit 0"
+        $smokePid = [ProviderConsoleHostNative]::StartNewConsole($smokeLine, $HOME, $hidden)
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while ((Test-ProcessAlive $smokePid) -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (Test-ProcessAlive $smokePid) {
+            [void](Stop-ProcessTree $smokePid)
+            throw "Self-test failed: real-console smoke process did not exit"
+        }
+    }
     Write-Host "$Provider console-host A/B diagnostic self-test: PASS"
     exit 0
 }

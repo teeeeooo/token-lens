@@ -21,7 +21,7 @@ jobs:
   powershell-51-selftest:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Claude diagnostic self-test
         shell: powershell
         run: .\scripts\claude-console-host-ab.ps1 -SelfTest

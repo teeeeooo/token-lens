@@ -326,29 +326,47 @@ function Stop-ProcessTree {
     return -not (Test-ProcessAlive $ProcessId)
 }
 
+function Get-ObjectPropertyValue {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Convert-ToProviderProcessRecord {
+    param($ProcessObject)
+    $nameValue = Get-ObjectPropertyValue $ProcessObject "Name"
+    $pidValue = Get-ObjectPropertyValue $ProcessObject "ProcessId"
+    $parentValue = Get-ObjectPropertyValue $ProcessObject "ParentProcessId"
+    $lineValue = Get-ObjectPropertyValue $ProcessObject "CommandLine"
+    if ($null -eq $pidValue) { return $null }
+
+    $name = [string]$nameValue
+    $line = [string]$lineValue
+    $isMatch = if ($Provider -eq "Claude") {
+        $name -match '(?i)^claude(\.exe)?$' -or $line -match '(?i)(^|[\\/\s])claude(?:\.exe|\.cmd)?(?:\s|$)'
+    } else {
+        $name -match '(?i)^gemini(\.exe)?$' -or $line -match '(?i)(@google[\\/]gemini-cli|[\\/]gemini(?:\.js|\.mjs|\.cjs)|(?:^|\s)gemini(?:\.cmd|\.exe)?(?:\s|$))'
+    }
+    if (-not $isMatch -or [int]$pidValue -eq $PID) { return $null }
+
+    return [pscustomobject]@{
+        Name = $name
+        Pid = [int]$pidValue
+        ParentPid = if ($null -eq $parentValue) { 0 } else { [int]$parentValue }
+    }
+}
+
 function Get-ProviderRelatedProcesses {
     $matches = [System.Collections.Generic.List[object]]::new()
     try {
-        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
-            $name = [string]$process.Name
-            $line = [string]$process.CommandLine
-            $isMatch = $false
-            if ($Provider -eq "Claude") {
-                $isMatch = $name -match '(?i)^claude(\.exe)?$' -or $line -match '(?i)(^|[\\/\s])claude(?:\.exe|\.cmd)?(?:\s|$)'
-            }
-            else {
-                $isMatch = $name -match '(?i)^gemini(\.exe)?$' -or $line -match '(?i)(@google[\\/]gemini-cli|[\\/]gemini(?:\.js|\.mjs|\.cjs)|(?:^|\s)gemini(?:\.cmd|\.exe)?(?:\s|$))'
-            }
-            if ($isMatch -and [int]$process.ProcessId -ne $PID) {
-                [void]$matches.Add([pscustomobject]@{
-                    Name = $name
-                    ProcessId = [int]$process.ProcessId
-                    ParentProcessId = [int]$process.ParentProcessId
-                })
-            }
+        foreach ($process in @(Get-CimInstance Win32_Process -Property Name,ProcessId,ParentProcessId,CommandLine -ErrorAction Stop)) {
+            $record = Convert-ToProviderProcessRecord $process
+            if ($null -ne $record) { [void]$matches.Add($record) }
         }
     } catch { }
-    return @($matches | Sort-Object ProcessId -Unique)
+    return @($matches | Sort-Object Pid -Unique)
 }
 
 function Add-ProviderProcessReport {
@@ -356,7 +374,7 @@ function Add-ProviderProcessReport {
     $items = @(Get-ProviderRelatedProcesses)
     Add-ReportLine "$Label.count=$($items.Count)"
     foreach ($item in $items) {
-        Add-ReportLine "$Label.pid.$($item.ProcessId)=name:$($item.Name),parent:$($item.ParentProcessId)"
+        Add-ReportLine "$Label.pid.$($item.Pid)=name:$($item.Name),parent:$($item.ParentPid)"
     }
     return $items
 }
@@ -482,6 +500,17 @@ if ($SelfTest) {
     if ($storeNoise.Count -ne 0 -or $storeProbe.Count -ne 1) {
         throw "Self-test failed: Gemini store helper leaked pipeline noise"
     }
+    $invalidProcess = Convert-ToProviderProcessRecord ([pscustomobject]@{ Name = "noise" })
+    if ($null -ne $invalidProcess) {
+        throw "Self-test failed: invalid process object was not ignored"
+    }
+    $fixtureLine = if ($Provider -eq "Claude") { "claude" } else { "gemini --list-sessions" }
+    $fixtureProcess = Convert-ToProviderProcessRecord ([pscustomobject]@{
+        Name = "node.exe"; ProcessId = 424242; ParentProcessId = 31337; CommandLine = $fixtureLine
+    })
+    if ($null -eq $fixtureProcess -or $fixtureProcess.Pid -ne 424242 -or $fixtureProcess.ParentPid -ne 31337) {
+        throw "Self-test failed: provider process normalization"
+    }
     $line = New-ConsoleCommandLine "claude"
     if ($line -notmatch '/d /s /c "claude"$') {
         throw "Self-test failed: console command line"
@@ -524,7 +553,7 @@ if ($tokenLensProcesses.Count -gt 0) {
 
 $preExistingProviderProcesses = @(Get-ProviderRelatedProcesses)
 if ($preExistingProviderProcesses.Count -gt 0) {
-    $ids = ($preExistingProviderProcesses | ForEach-Object { $_.ProcessId }) -join ','
+    $ids = ($preExistingProviderProcesses | ForEach-Object { $_.Pid }) -join ','
     throw "Close other $Provider CLI activity before running this diagnostic. Provider-related process PIDs detected: $ids"
 }
 

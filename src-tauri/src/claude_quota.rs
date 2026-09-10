@@ -1,6 +1,7 @@
 use crate::claude_cli;
 use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, SupportedProvider};
 use crate::provider_error_log::{self, ProviderIncident};
+use crate::provider_rate_limit::{self, ProviderRateLimit};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 use std::env;
@@ -173,7 +174,7 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         .map_or(true, provider_needs_enrichment);
     if !needs {
         cache_last_good(&report, now_ms());
-        clear_rate_limit_state();
+        clear_runtime_rate_limit_state();
         clear_auth_recovery();
         AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return report;
@@ -711,10 +712,19 @@ fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
 }
 
 fn active_cooldown_remaining_ms(now: u64) -> Option<u64> {
-    let state = runtime_state()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    (state.cooldown_until_ms > now).then_some(state.cooldown_until_ms - now)
+    let runtime_remaining = {
+        let state = runtime_state()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (state.cooldown_until_ms > now).then_some(state.cooldown_until_ms - now)
+    };
+    let persisted_remaining = provider_rate_limit::remaining_ms(ProviderRateLimit::Claude, now);
+    match (runtime_remaining, persisted_remaining) {
+        (Some(runtime), Some(persisted)) => Some(runtime.max(persisted)),
+        (Some(runtime), None) => Some(runtime),
+        (None, Some(persisted)) => Some(persisted),
+        (None, None) => None,
+    }
 }
 
 fn rate_limit_backoff_floor_ms(streak: u32) -> u64 {
@@ -747,16 +757,25 @@ fn set_rate_limit_cooldown(now: u64, retry_after_ms: u64) -> u64 {
     );
     state.last_rate_limit_cooldown_ms = cooldown_ms;
     state.cooldown_until_ms = state.cooldown_until_ms.max(now.saturating_add(cooldown_ms));
+    drop(state);
+    let provider_retry_until =
+        now.saturating_add(retry_after_ms.clamp(1_000, MAX_RATE_LIMIT_COOLDOWN_MS));
+    provider_rate_limit::persist_until(ProviderRateLimit::Claude, provider_retry_until);
     cooldown_ms
 }
 
-fn clear_rate_limit_state() {
+fn clear_runtime_rate_limit_state() {
     let mut state = runtime_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.cooldown_until_ms = 0;
     state.rate_limit_streak = 0;
     state.last_rate_limit_cooldown_ms = 0;
+}
+
+fn clear_rate_limit_state() {
+    clear_runtime_rate_limit_state();
+    provider_rate_limit::clear(ProviderRateLimit::Claude);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

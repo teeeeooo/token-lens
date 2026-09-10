@@ -15,6 +15,7 @@ mod http_diagnostic;
 mod portable_sidecar;
 mod provider_cli_auth;
 mod provider_error_log;
+mod provider_rate_limit;
 mod session_detail;
 mod session_metadata;
 mod settings;
@@ -55,6 +56,7 @@ pub fn run() {
                 app.state::<StartupTiming>().initialize(log_dir.clone());
                 provider_error_log::initialize(log_dir);
             }
+            provider_rate_limit::initialize(config_dir.clone());
             let settings_store = SettingsStore::load(config_dir)?;
             let initial_settings = settings_store.get()?;
             app.manage(settings_store);

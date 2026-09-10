@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(60);
-const AUTH_TOUCH_ARGS: [&str; 3] = ["--list-sessions", "-e", "none"];
+const AUTH_TOUCH_ARGS: [&str; 4] = ["--list-sessions", "-e", "none", "--skip-trust"];
 
 #[derive(Debug)]
 pub(crate) struct RefreshAttempt {
@@ -88,7 +88,12 @@ fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
     #[cfg(target_os = "windows")]
     if binary.shell_name {
         let mut command = CommandBuilder::new("cmd.exe");
-        command.args(["/d", "/s", "/c", "gemini --list-sessions -e none"]);
+        command.args([
+            "/d",
+            "/s",
+            "/c",
+            "gemini --list-sessions -e none --skip-trust",
+        ]);
         return command;
     }
     bare_command_builder(&binary.path)
@@ -101,7 +106,10 @@ fn bare_command_builder(binary: &Path) -> CommandBuilder {
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat"))
     {
-        let line = format!("\"{}\" --list-sessions -e none", binary.display());
+        let line = format!(
+            "\"{}\" --list-sessions -e none --skip-trust",
+            binary.display()
+        );
         let mut command = CommandBuilder::new("cmd.exe");
         command.args(["/d", "/s", "/c", &line]);
         return command;
@@ -209,7 +217,10 @@ mod tests {
     }
     #[test]
     fn auth_touch_uses_zero_inference_session_listing_in_isolated_temp_scope() {
-        assert_eq!(AUTH_TOUCH_ARGS, ["--list-sessions", "-e", "none"]);
+        assert_eq!(
+            AUTH_TOUCH_ARGS,
+            ["--list-sessions", "-e", "none", "--skip-trust"]
+        );
         let probe = auth_probe_directory();
         assert!(probe.starts_with(std::env::temp_dir()));
         assert!(probe

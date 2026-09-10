@@ -104,39 +104,45 @@ fn credential_change_allows_probe(
     matches!(current, CredentialBaseline::Present(_)) && current != baseline
 }
 
-fn auth_recovery_wait_detail(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthRecoveryGuard {
+    Wait(String),
+    RetryCli(CredentialBaseline),
+}
+
+fn auth_recovery_guard_decision(
     baseline: CredentialBaseline,
     current: CredentialBaseline,
     running: bool,
     retry_after: u64,
     now: u64,
-) -> Option<String> {
+) -> Option<AuthRecoveryGuard> {
     if credential_change_allows_probe(baseline, current) {
         return None;
     }
     if running {
-        return Some("Claude CLI credential refresh already in progress".to_owned());
+        return Some(AuthRecoveryGuard::Wait(
+            "Claude CLI credential refresh already in progress".to_owned(),
+        ));
     }
-    (retry_after > now).then(|| {
-        format!(
+    if retry_after > now {
+        return Some(AuthRecoveryGuard::Wait(format!(
             "Claude CLI credential refresh cooling down; retry in about {}s",
             retry_after.saturating_sub(now).div_ceil(1000)
-        )
-    })
+        )));
+    }
+    Some(AuthRecoveryGuard::RetryCli(current))
 }
 
-fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<String> {
-    let running = AUTH_REFRESH_RUNNING.load(Ordering::Acquire);
-    let retry_after = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
-    if !running && retry_after <= now {
-        return None;
-    }
+fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<AuthRecoveryGuard> {
     let baseline = {
         let state = runtime_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.auth_recovery_baseline
     }?;
+    let running = AUTH_REFRESH_RUNNING.load(Ordering::Acquire);
+    let retry_after = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
     let current_token = read_access_token(home);
     let current = credential_baseline(current_token.as_deref());
     if credential_change_allows_probe(baseline, current) {
@@ -148,7 +154,7 @@ fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<String> {
         AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return None;
     }
-    auth_recovery_wait_detail(baseline, current, running, retry_after, now)
+    auth_recovery_guard_decision(baseline, current, running, retry_after, now)
 }
 
 pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> QuotaReport {
@@ -186,9 +192,21 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         return report;
     }
 
-    if let Some(detail) = auth_recovery_fetch_guard(home, now) {
-        apply_failure_with_cache(&mut report, detail, now);
-        return report;
+    if let Some(guard) = auth_recovery_fetch_guard(home, now) {
+        match guard {
+            AuthRecoveryGuard::Wait(detail) => {
+                apply_failure_with_cache(&mut report, detail, now);
+                return report;
+            }
+            AuthRecoveryGuard::RetryCli(current) => {
+                let trigger = if matches!(current, CredentialBaseline::Missing) {
+                    RecoveryTrigger::MissingCredential
+                } else {
+                    RecoveryTrigger::Unauthorized
+                };
+                return recover_auth_in_background(home, report, trigger, false, None, current);
+            }
+        }
     }
 
     let direct = read_usage_with_reloaded_credential(home);
@@ -482,18 +500,21 @@ fn recover_auth_in_background(
     let started = crate::provider_cli_auth::spawn_refresh_once(&AUTH_REFRESH_RUNNING, move || {
         let refresh =
             claude_cli::refresh_credential_via_startup(&home, || read_access_token(&home));
-        match refresh {
+        let cli_source = refresh.cli_source;
+        match refresh.result {
             Ok(()) => {
                 AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
                 clear_auth_recovery();
                 record_incident(
                     trigger,
-                    "cli_refresh_completed",
+                    "credential_change_observed",
                     IncidentRecovery {
                         credential_reread: true,
                         credential_changed: Some(true),
                         cli_fallback: true,
+                        recovery_code: Some("CLI_CREDENTIAL_CHANGE_OBSERVED"),
                         discovery_code,
+                        cli_source,
                         ..IncidentRecovery::default()
                     },
                 );
@@ -513,6 +534,7 @@ fn recover_auth_in_background(
                         cli_fallback: true,
                         recovery_code: Some(code),
                         discovery_code,
+                        cli_source,
                         ..IncidentRecovery::default()
                     },
                 );
@@ -832,6 +854,7 @@ struct IncidentRecovery {
     cli_fallback: bool,
     recovery_code: Option<&'static str>,
     discovery_code: Option<&'static str>,
+    cli_source: Option<&'static str>,
     retry_after_ms: Option<u64>,
     cooldown_ms: Option<u64>,
     last_good_used: bool,
@@ -850,7 +873,7 @@ fn record_incident(trigger: RecoveryTrigger, result: &'static str, recovery: Inc
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
         discovery_code: recovery.discovery_code,
-        cli_source: None,
+        cli_source: recovery.cli_source,
         retry_after_seconds: recovery.retry_after_ms.map(|value| value.div_ceil(1000)),
         cooldown_seconds: recovery.cooldown_ms.map(|value| value.div_ceil(1000)),
         last_good_used: recovery.last_good_used.then_some(true),
@@ -1381,20 +1404,32 @@ mod tests {
     }
 
     #[test]
-    fn auth_recovery_waits_without_reprobing_an_unchanged_credential() {
+    fn auth_recovery_never_reprobes_an_unchanged_rejected_credential() {
         let token_a = credential_baseline(Some("token-a"));
         let token_b = credential_baseline(Some("token-b"));
-        assert!(auth_recovery_wait_detail(token_a, token_a, true, 0, 1_000).is_some());
-        assert!(auth_recovery_wait_detail(token_a, token_a, false, 301_000, 1_000).is_some());
-        assert!(auth_recovery_wait_detail(token_a, token_b, true, 301_000, 1_000).is_none());
-        assert!(auth_recovery_wait_detail(
-            CredentialBaseline::Missing,
-            CredentialBaseline::Missing,
-            false,
-            301_000,
-            1_000,
-        )
-        .is_some());
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, 0, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, false, 301_000, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
+        assert!(auth_recovery_guard_decision(token_a, token_b, true, 301_000, 1_000).is_none());
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, false, 1_000, 301_000),
+            Some(AuthRecoveryGuard::RetryCli(current)) if current == token_a
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(
+                CredentialBaseline::Missing,
+                CredentialBaseline::Missing,
+                false,
+                1_000,
+                301_000,
+            ),
+            Some(AuthRecoveryGuard::RetryCli(CredentialBaseline::Missing))
+        ));
     }
 
     #[test]

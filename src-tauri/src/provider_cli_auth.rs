@@ -1,6 +1,6 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::env;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -49,10 +49,29 @@ where
     true
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PtyInputTouch {
+    pub bytes: &'static [u8],
+    pub after: Duration,
+}
+
 pub(crate) fn run_until_credential_change<F>(
     provider: &'static str,
     command: CommandBuilder,
     timeout: Duration,
+    read_signature: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Option<String>,
+{
+    run_until_credential_change_with_input(provider, command, timeout, None, read_signature)
+}
+
+pub(crate) fn run_until_credential_change_with_input<F>(
+    provider: &'static str,
+    command: CommandBuilder,
+    timeout: Duration,
+    input_touch: Option<PtyInputTouch>,
     mut read_signature: F,
 ) -> Result<(), String>
 where
@@ -72,6 +91,15 @@ where
         .master
         .try_clone_reader()
         .map_err(|error| format!("{provider} CLI PTY reader unavailable: {error}"))?;
+    let mut writer = if input_touch.is_some() {
+        Some(
+            pair.master
+                .take_writer()
+                .map_err(|error| format!("{provider} CLI PTY writer unavailable: {error}"))?,
+        )
+    } else {
+        None
+    };
     let mut child = pair
         .slave
         .spawn_command(command)
@@ -90,7 +118,22 @@ where
     });
 
     let started = Instant::now();
+    let mut input_sent = false;
     let result = loop {
+        if !input_sent {
+            if let Some(touch) = input_touch {
+                if started.elapsed() >= touch.after {
+                    let Some(writer) = writer.as_mut() else {
+                        break Err(format!("{provider} CLI PTY writer unavailable"));
+                    };
+                    if let Err(error) = writer.write_all(touch.bytes).and_then(|_| writer.flush()) {
+                        break Err(format!("{provider} CLI PTY input failed: {error}"));
+                    }
+                    input_sent = true;
+                }
+            }
+        }
+
         let after = read_signature();
         if credential_changed(before.as_deref(), after.as_deref()) {
             let remaining = timeout.saturating_sub(started.elapsed());
@@ -128,6 +171,7 @@ where
 
     let _ = child.kill();
     let _ = child.wait();
+    drop(writer);
     drop(pair.master);
     let _ = reader_thread.join();
     result
@@ -145,7 +189,7 @@ fn credential_changed(before: Option<&str>, after: Option<&str>) -> bool {
 mod tests {
     use super::{
         credential_changed, find_executable_in_paths, run_until_credential_change,
-        spawn_refresh_once,
+        run_until_credential_change_with_input, spawn_refresh_once, PtyInputTouch,
     };
     use portable_pty::CommandBuilder;
     use std::fs;
@@ -251,6 +295,36 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
     }
 
+    #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "GitHub Actions Windows runners do not provide a reliable interactive ConPTY session"
+    )]
+    fn pty_input_touch_can_trigger_provider_owned_credential_change() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "token-lens-auth-input-touch-{}-{nonce}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "before").expect("write auth-touch fixture");
+        let command = credential_writer_after_input_command(&path);
+        let result = run_until_credential_change_with_input(
+            "Fixture",
+            command,
+            Duration::from_secs(5),
+            Some(PtyInputTouch {
+                bytes: b"/status\r",
+                after: Duration::from_millis(100),
+            }),
+            || fs::read_to_string(&path).ok(),
+        );
+        let _ = fs::remove_file(&path);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[cfg(not(target_os = "windows"))]
     fn unchanged_exit_command() -> CommandBuilder {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -271,6 +345,25 @@ mod tests {
         let script = format!("sleep 0.2; printf after > '{escaped}'; sleep 10");
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", &script]);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn credential_writer_after_input_command(path: &std::path::Path) -> CommandBuilder {
+        let escaped = path.to_string_lossy().replace('\'', "'\\''");
+        let script = format!("IFS= read -r _line; printf after > '{escaped}'; sleep 10");
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", &script]);
+        command
+    }
+
+    #[cfg(target_os = "windows")]
+    fn credential_writer_after_input_command(path: &std::path::Path) -> CommandBuilder {
+        let escaped = path.to_string_lossy();
+        let script =
+            format!("set /p line= & >\"{escaped}\" <nul set /p =after & ping -n 10 127.0.0.1 >nul");
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/s", "/c", &script]);
         command
     }
 

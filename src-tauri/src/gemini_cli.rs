@@ -1,10 +1,12 @@
 use crate::provider_cli_auth;
 use portable_pty::CommandBuilder;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(240);
+const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(60);
+const AUTH_TOUCH_ARGS: [&str; 3] = ["--list-sessions", "-e", "none"];
 
 #[derive(Debug)]
 pub(crate) struct RefreshAttempt {
@@ -59,9 +61,18 @@ where
             cli_source: None,
         };
     };
+    let probe_dir = auth_probe_directory();
+    if let Err(error) = fs::create_dir_all(&probe_dir) {
+        return RefreshAttempt {
+            result: Err(format!(
+                "Gemini CLI auth probe directory unavailable: {error}"
+            )),
+            cli_source: Some(binary.source),
+        };
+    }
     let mut command = discovered_command_builder(&binary);
-    command.cwd(home);
-    command.env("PWD", home);
+    command.cwd(&probe_dir);
+    command.env("PWD", &probe_dir);
     RefreshAttempt {
         result: provider_cli_auth::run_until_credential_change(
             "Gemini",
@@ -77,7 +88,7 @@ fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
     #[cfg(target_os = "windows")]
     if binary.shell_name {
         let mut command = CommandBuilder::new("cmd.exe");
-        command.args(["/d", "/s", "/c", "gemini"]);
+        command.args(["/d", "/s", "/c", "gemini --list-sessions -e none"]);
         return command;
     }
     bare_command_builder(&binary.path)
@@ -90,12 +101,21 @@ fn bare_command_builder(binary: &Path) -> CommandBuilder {
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat"))
     {
-        let line = format!("\"{}\"", binary.display());
+        let line = format!("\"{}\" --list-sessions -e none", binary.display());
         let mut command = CommandBuilder::new("cmd.exe");
         command.args(["/d", "/s", "/c", &line]);
         return command;
     }
-    CommandBuilder::new(binary)
+    let mut command = CommandBuilder::new(binary);
+    command.args(AUTH_TOUCH_ARGS);
+    command
+}
+
+fn auth_probe_directory() -> PathBuf {
+    env::temp_dir().join(format!(
+        "token-lens-gemini-auth-probe-{}",
+        std::process::id()
+    ))
 }
 
 fn discover_binary(_home: &Path) -> Option<DiscoveredBinary> {
@@ -167,13 +187,15 @@ fn choose_windows_candidate(
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_windows_candidate, classify_refresh_error};
+    use super::{
+        auth_probe_directory, choose_windows_candidate, classify_refresh_error, AUTH_TOUCH_ARGS,
+    };
     use std::path::PathBuf;
 
     #[test]
     fn refresh_errors_are_sanitized_and_classified() {
         assert_eq!(
-            classify_refresh_error("Gemini CLI auth refresh timed out after 240s").0,
+            classify_refresh_error("Gemini CLI auth refresh timed out after 60s").0,
             "CLI_TIMEOUT"
         );
         assert_eq!(
@@ -185,6 +207,17 @@ mod tests {
             "CLI_LAUNCH_FAILED"
         );
     }
+    #[test]
+    fn auth_touch_uses_zero_inference_session_listing_in_isolated_temp_scope() {
+        assert_eq!(AUTH_TOUCH_ARGS, ["--list-sessions", "-e", "none"]);
+        let probe = auth_probe_directory();
+        assert!(probe.starts_with(std::env::temp_dir()));
+        assert!(probe
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("token-lens-gemini-auth-probe-")));
+    }
+
     #[test]
     fn windows_candidate_prefers_shell_path_over_appdata_fallback() {
         let selected = choose_windows_candidate(

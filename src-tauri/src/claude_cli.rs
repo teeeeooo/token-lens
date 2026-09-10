@@ -7,6 +7,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(60);
+const STATUS_TOUCH_DELAY: Duration = Duration::from_secs(5);
+const STATUS_TOUCH_INPUT: &[u8] = b"/status\r";
+
+#[derive(Debug)]
+pub(crate) struct RefreshAttempt {
+    pub result: Result<(), String>,
+    pub cli_source: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredBinary {
+    path: PathBuf,
+    source: &'static str,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    shell_name: bool,
+}
 
 pub(crate) fn classify_refresh_error(error: &str) -> (&'static str, &'static str) {
     let lower = error.to_ascii_lowercase();
@@ -37,16 +53,17 @@ pub(crate) fn classify_refresh_error(error: &str) -> (&'static str, &'static str
     ("CLI_REFRESH_FAILED", "Claude CLI auth refresh failed")
 }
 
-pub(crate) fn refresh_credential_via_startup<F>(
-    home: &Path,
-    read_signature: F,
-) -> Result<(), String>
+pub(crate) fn refresh_credential_via_startup<F>(home: &Path, read_signature: F) -> RefreshAttempt
 where
     F: FnMut() -> Option<String>,
 {
-    let binary = discover_binary(home)
-        .ok_or_else(|| "Claude CLI is not installed or discoverable".to_owned())?;
-    let mut command = bare_command_builder(&binary);
+    let Some(binary) = discover_binary(home) else {
+        return RefreshAttempt {
+            result: Err("Claude CLI is not installed or discoverable".to_owned()),
+            cli_source: None,
+        };
+    };
+    let mut command = discovered_command_builder(&binary);
     command.cwd(home);
     command.env("PWD", home);
     command.env("DISABLE_AUTOUPDATER", "1");
@@ -56,12 +73,29 @@ where
             command.env_remove(key);
         }
     }
-    provider_cli_auth::run_until_credential_change(
-        "Claude",
-        command,
-        AUTH_TOUCH_TIMEOUT,
-        read_signature,
-    )
+    RefreshAttempt {
+        result: provider_cli_auth::run_until_credential_change_with_input(
+            "Claude",
+            command,
+            AUTH_TOUCH_TIMEOUT,
+            Some(provider_cli_auth::PtyInputTouch {
+                bytes: STATUS_TOUCH_INPUT,
+                after: STATUS_TOUCH_DELAY,
+            }),
+            read_signature,
+        ),
+        cli_source: Some(binary.source),
+    }
+}
+
+fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
+    #[cfg(target_os = "windows")]
+    if binary.shell_name {
+        let mut command = CommandBuilder::new("cmd.exe");
+        command.args(["/d", "/s", "/c", "claude"]);
+        return command;
+    }
+    bare_command_builder(&binary.path)
 }
 
 fn bare_command_builder(binary: &Path) -> CommandBuilder {
@@ -79,45 +113,84 @@ fn bare_command_builder(binary: &Path) -> CommandBuilder {
     CommandBuilder::new(binary)
 }
 
-fn discover_binary(home: &Path) -> Option<PathBuf> {
+fn discover_binary(home: &Path) -> Option<DiscoveredBinary> {
     if let Some(path) = env::var_os("TOKEN_LENS_CLAUDE_BIN") {
         let path = PathBuf::from(path);
         if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    for candidate in [
-        home.join(".local/bin/claude"),
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-    ] {
-        if candidate.is_file() {
-            return Some(candidate);
+            return Some(DiscoveredBinary {
+                path,
+                source: "override",
+                shell_name: false,
+            });
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let local = home.join(".local/bin/claude.exe");
-        if local.is_file() {
-            return Some(local);
-        }
-        if let Some(appdata) = env::var_os("APPDATA").map(PathBuf::from) {
-            let npm = appdata.join("npm/claude.cmd");
-            if npm.is_file() {
-                return Some(npm);
-            }
-        }
-        if let Some(binary) = discover_windows_winget_binary() {
-            return Some(binary);
-        }
-        provider_cli_auth::find_executable_on_path(&["claude.exe", "claude.cmd", "claude.bat"])
+        let path_candidate =
+            provider_cli_auth::find_executable_on_path(&["claude.exe", "claude.cmd", "claude.bat"]);
+        let local_candidate = home
+            .join(".local/bin/claude.exe")
+            .is_file()
+            .then(|| home.join(".local/bin/claude.exe"));
+        let appdata_candidate = env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|root| root.join("npm/claude.cmd"))
+            .filter(|path| path.is_file());
+        choose_windows_candidate(
+            path_candidate,
+            local_candidate,
+            appdata_candidate,
+            discover_windows_winget_binary(),
+        )
     }
 
     #[cfg(not(target_os = "windows"))]
-    provider_cli_auth::find_executable_on_path(&["claude"])
+    {
+        #[cfg(target_os = "macos")]
+        for (candidate, source) in [
+            (home.join(".local/bin/claude"), "home_local"),
+            (PathBuf::from("/opt/homebrew/bin/claude"), "homebrew"),
+            (PathBuf::from("/usr/local/bin/claude"), "usr_local"),
+        ] {
+            if candidate.is_file() {
+                return Some(DiscoveredBinary {
+                    path: candidate,
+                    source,
+                    shell_name: false,
+                });
+            }
+        }
+        provider_cli_auth::find_executable_on_path(&["claude"]).map(|path| DiscoveredBinary {
+            path,
+            source: "path",
+            shell_name: false,
+        })
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn choose_windows_candidate(
+    path_candidate: Option<PathBuf>,
+    local_candidate: Option<PathBuf>,
+    appdata_candidate: Option<PathBuf>,
+    winget_candidate: Option<PathBuf>,
+) -> Option<DiscoveredBinary> {
+    for (candidate, source, shell_name) in [
+        (path_candidate, "path", true),
+        (local_candidate, "home_local", false),
+        (appdata_candidate, "appdata_npm", false),
+        (winget_candidate, "winget", false),
+    ] {
+        if let Some(path) = candidate {
+            return Some(DiscoveredBinary {
+                path,
+                source,
+                shell_name,
+            });
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -139,7 +212,8 @@ fn discover_windows_winget_binary() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_refresh_error;
+    use super::{choose_windows_candidate, classify_refresh_error, STATUS_TOUCH_INPUT};
+    use std::path::PathBuf;
 
     #[test]
     fn refresh_errors_are_sanitized_and_classified() {
@@ -155,5 +229,25 @@ mod tests {
             classify_refresh_error("Claude CLI launch failed").0,
             "CLI_LAUNCH_FAILED"
         );
+    }
+
+    #[test]
+    fn auth_touch_uses_status_slash_command() {
+        assert_eq!(STATUS_TOUCH_INPUT, b"/status\r");
+    }
+
+    #[test]
+    fn windows_candidate_prefers_shell_path_before_fallbacks() {
+        let selected = choose_windows_candidate(
+            Some(PathBuf::from(r"C:\tools\claude.cmd")),
+            Some(PathBuf::from(r"C:\Users\user\.local\bin\claude.exe")),
+            Some(PathBuf::from(
+                r"C:\Users\user\AppData\Roaming\npm\claude.cmd",
+            )),
+            Some(PathBuf::from(r"C:\WinGet\claude.exe")),
+        )
+        .expect("Claude candidate");
+        assert_eq!(selected.source, "path");
+        assert!(selected.shell_name);
     }
 }

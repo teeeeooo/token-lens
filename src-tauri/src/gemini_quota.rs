@@ -120,40 +120,46 @@ fn credential_change_allows_probe(
     current_usable && matches!(current, CredentialBaseline::Present(_)) && current != baseline
 }
 
-fn auth_recovery_wait_detail(
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthRecoveryGuard {
+    Wait(String),
+    RetryCli { current_usable: bool },
+}
+
+fn auth_recovery_guard_decision(
     baseline: CredentialBaseline,
     current: CredentialBaseline,
     current_usable: bool,
     running: bool,
     retry_after: u64,
     now: u64,
-) -> Option<String> {
+) -> Option<AuthRecoveryGuard> {
     if credential_change_allows_probe(baseline, current, current_usable) {
         return None;
     }
     if running {
-        return Some("Gemini CLI credential refresh already in progress".to_owned());
+        return Some(AuthRecoveryGuard::Wait(
+            "Gemini CLI credential refresh already in progress".to_owned(),
+        ));
     }
-    (retry_after > now).then(|| {
-        format!(
+    if retry_after > now {
+        return Some(AuthRecoveryGuard::Wait(format!(
             "Gemini CLI credential refresh cooling down; retry in about {}s",
             retry_after.saturating_sub(now).div_ceil(1000)
-        )
-    })
+        )));
+    }
+    Some(AuthRecoveryGuard::RetryCli { current_usable })
 }
 
-fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<String> {
-    let running = AUTH_REFRESH_RUNNING.load(Ordering::Acquire);
-    let retry_after = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
-    if !running && retry_after <= now {
-        return None;
-    }
+fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<AuthRecoveryGuard> {
     let baseline = {
         let state = runtime_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.auth_recovery_baseline
     }?;
+    let running = AUTH_REFRESH_RUNNING.load(Ordering::Acquire);
+    let retry_after = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
     let current_snapshot = read_credential_snapshot(home);
     let current = credential_baseline(current_snapshot.as_ref());
     let current_usable = current_snapshot
@@ -169,7 +175,7 @@ fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<String> {
         AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
         return None;
     }
-    auth_recovery_wait_detail(baseline, current, current_usable, running, retry_after, now)
+    auth_recovery_guard_decision(baseline, current, current_usable, running, retry_after, now)
 }
 
 pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> QuotaReport {
@@ -207,14 +213,29 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
         return report;
     }
 
-    if let Some(detail) = auth_recovery_fetch_guard(home, now) {
-        apply_failure_with_cache(&mut report, detail, now);
-        return report;
+    if let Some(guard) = auth_recovery_fetch_guard(home, now) {
+        match guard {
+            AuthRecoveryGuard::Wait(detail) => {
+                apply_failure_with_cache(&mut report, detail, now);
+                return report;
+            }
+            AuthRecoveryGuard::RetryCli { current_usable } => {
+                let failure = if current_usable {
+                    GeminiFailure::Unauthorized {
+                        stage: "credential_recovery",
+                    }
+                } else {
+                    GeminiFailure::MissingCredential
+                };
+                return recover_auth_in_background(home, report, failure, false, None);
+            }
+        }
     }
 
     // Gemini quota remains API-backed. On missing/rejected OAuth credentials, Token Lens
-    // only starts the official Gemini CLI and waits for the CLI to refresh its own credential;
-    // it never sends a model prompt or scrapes `/stats` TUI output.
+    // runs the official CLI's zero-inference session-listing auth path in an isolated cwd and
+    // waits for the CLI to refresh its own credential; it never sends a model prompt or
+    // scrapes provider output.
     let attempt = read_provider_with_reloaded_credential(home);
     match attempt.result {
         Ok(provider) => {
@@ -1383,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_auth_recovery_waits_without_reprobing_an_unchanged_credential() {
+    fn gemini_auth_recovery_never_reprobes_an_unchanged_rejected_credential() {
         let token_a = credential_baseline(Some(&CredentialSnapshot {
             access_token: "token-a".to_owned(),
             expiry: Some(u64::MAX),
@@ -1392,12 +1413,29 @@ mod tests {
             access_token: "token-b".to_owned(),
             expiry: Some(u64::MAX),
         }));
-        assert!(auth_recovery_wait_detail(token_a, token_a, true, true, 0, 1_000).is_some());
-        assert!(auth_recovery_wait_detail(token_a, token_a, true, false, 301_000, 1_000).is_some());
-        assert!(auth_recovery_wait_detail(token_a, token_b, true, true, 301_000, 1_000).is_none());
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, true, 0, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, false, 301_000, 1_000),
+            Some(AuthRecoveryGuard::Wait(_))
+        ));
         assert!(
-            auth_recovery_wait_detail(token_a, token_b, false, false, 301_000, 1_000).is_some()
+            auth_recovery_guard_decision(token_a, token_b, true, true, 301_000, 1_000).is_none()
         );
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_a, true, false, 1_000, 301_000),
+            Some(AuthRecoveryGuard::RetryCli {
+                current_usable: true
+            })
+        ));
+        assert!(matches!(
+            auth_recovery_guard_decision(token_a, token_b, false, false, 1_000, 301_000),
+            Some(AuthRecoveryGuard::RetryCli {
+                current_usable: false
+            })
+        ));
     }
 
     #[test]

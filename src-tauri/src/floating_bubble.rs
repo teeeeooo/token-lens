@@ -7,7 +7,7 @@ use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow}
 
 const BUBBLE_LOGICAL_HEIGHT: f64 = 34.0;
 const BUBBLE_LOGICAL_MIN_WIDTH: f64 = 34.0;
-const BUBBLE_LOGICAL_MAX_WIDTH: f64 = 240.0;
+const BUBBLE_LOGICAL_MAX_WIDTH: f64 = 320.0;
 const EXPANDED_MARGIN: i32 = 8;
 const COLLAPSED_Y_MARGIN: i32 = 8;
 
@@ -747,9 +747,9 @@ mod tests {
     #[test]
     fn collapsed_resize_preserves_the_users_edge_gap() {
         assert_eq!(normalized_logical_width(10.0, 1.0), 34.0);
-        assert_eq!(normalized_logical_width(500.0, 1.0), 240.0);
+        assert_eq!(normalized_logical_width(500.0, 1.0), 320.0);
         assert_eq!(normalized_logical_width(10.0, 1.5), 51.0);
-        assert_eq!(normalized_logical_width(500.0, 1.5), 360.0);
+        assert_eq!(normalized_logical_width(500.0, 1.5), 480.0);
         let current = Bounds {
             x: 1386,
             y: 508,

@@ -48,6 +48,7 @@ pub struct AppSettings {
     pub floating_bubble_enabled: bool,
     pub floating_bubble_trigger: FloatingBubbleTrigger,
     pub floating_bubble_content: String,
+    pub floating_bubble_providers: Vec<String>,
     pub floating_bubble_scale: f64,
     pub theme_preset: ThemePreset,
     pub zoom_factor: f64,
@@ -65,6 +66,7 @@ impl Default for AppSettings {
             floating_bubble_enabled: true,
             floating_bubble_trigger: FloatingBubbleTrigger::Click,
             floating_bubble_content: "limitsAllSessions".to_owned(),
+            floating_bubble_providers: Vec::new(),
             floating_bubble_scale: 1.0,
             theme_preset: ThemePreset::Default,
             zoom_factor: 1.0,
@@ -83,6 +85,7 @@ pub struct SettingsPatch {
     pub floating_bubble_enabled: Option<bool>,
     pub floating_bubble_trigger: Option<FloatingBubbleTrigger>,
     pub floating_bubble_content: Option<String>,
+    pub floating_bubble_providers: Option<Vec<String>>,
     pub floating_bubble_scale: Option<f64>,
     pub theme_preset: Option<ThemePreset>,
     pub zoom_factor: Option<f64>,
@@ -144,6 +147,9 @@ impl SettingsStore {
         if let Some(content) = patch.floating_bubble_content {
             value.floating_bubble_content = content;
         }
+        if let Some(providers) = patch.floating_bubble_providers {
+            value.floating_bubble_providers = providers;
+        }
         if let Some(scale) = patch.floating_bubble_scale {
             value.floating_bubble_scale = scale;
         }
@@ -183,6 +189,21 @@ fn normalize_settings(mut value: AppSettings) -> AppSettings {
     if !BUBBLE_CONTENT_VALUES.contains(&value.floating_bubble_content.as_str()) {
         value.floating_bubble_content = "limitsAllSessions".to_owned();
     }
+    const BUBBLE_PROVIDER_VALUES: [&str; 4] = ["codex", "claude", "gemini", "antigravity"];
+    let requested_providers = value
+        .floating_bubble_providers
+        .iter()
+        .map(|provider| provider.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    value.floating_bubble_providers = BUBBLE_PROVIDER_VALUES
+        .iter()
+        .filter(|provider| {
+            requested_providers
+                .iter()
+                .any(|requested| requested == **provider)
+        })
+        .map(|provider| (*provider).to_owned())
+        .collect();
     if !value.floating_bubble_scale.is_finite() {
         value.floating_bubble_scale = 1.0;
     }
@@ -240,6 +261,7 @@ mod tests {
             FloatingBubbleTrigger::Click
         );
         assert_eq!(settings.floating_bubble_content, "limitsAllSessions");
+        assert!(settings.floating_bubble_providers.is_empty());
         assert_eq!(settings.floating_bubble_scale, 1.0);
         assert_eq!(settings.theme_preset, ThemePreset::Default);
         assert_eq!(settings.zoom_factor, 1.0);
@@ -261,6 +283,30 @@ mod tests {
             ..AppSettings::default()
         });
         assert_eq!(retired.floating_bubble_content, "limitsAllSessions");
+    }
+
+    #[test]
+    fn bubble_provider_selection_is_allowlisted_deduplicated_and_keeps_provider_order() {
+        let settings = normalize_settings(AppSettings {
+            floating_bubble_providers: vec![
+                "antigravity".to_owned(),
+                " GEMINI ".to_owned(),
+                "codex".to_owned(),
+                "gemini".to_owned(),
+                "unsupported".to_owned(),
+                "claude".to_owned(),
+            ],
+            ..AppSettings::default()
+        });
+        assert_eq!(
+            settings.floating_bubble_providers,
+            vec![
+                "codex".to_owned(),
+                "claude".to_owned(),
+                "gemini".to_owned(),
+                "antigravity".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -297,6 +343,7 @@ mod tests {
             r#"{"showTrayIcon":false,"floatingBubbleEnabled":true,"floatingBubbleTrigger":"hover","floatingBubbleContent":"icon"}"#,
         )
         .expect("older v2 settings should deserialize");
+        assert!(settings.floating_bubble_providers.is_empty());
         assert_eq!(settings.floating_bubble_scale, 1.0);
         assert_eq!(settings.theme_preset, ThemePreset::Default);
         assert_eq!(settings.zoom_factor, 1.0);

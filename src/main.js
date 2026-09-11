@@ -36,6 +36,7 @@ import {
   bubblePercentLabel,
   floatingBubbleModel,
   normalizeBubbleContent,
+  normalizeBubbleProviders,
   normalizeBubbleScale,
 } from './floating-bubble-model.js';
 import { THEME_PRESETS, applyThemePreset, normalizeThemePreset, normalizeZoomFactor } from './appearance-model.js';
@@ -56,7 +57,7 @@ const HISTORY_REFRESH_MS = 10 * 60 * 1000;
 const APP_BOOTSTRAP_STARTED_AT = performance.now();
 recordStartupTiming('renderer-bootstrap-start');
 const BUBBLE_LOGICAL_HEIGHT = 34;
-const BUBBLE_MAX_WIDTH = 240;
+const BUBBLE_MAX_WIDTH = 320;
 const VIEW_ORDER = ['home', 'tool', 'model', 'session', 'limits'];
 const PROVIDER_FILTER_ORDER = ['codex', 'claude', 'gemini', 'antigravity'];
 const VIEW_META = Object.freeze({
@@ -100,6 +101,7 @@ const state = {
     floatingBubbleEnabled: true,
     floatingBubbleTrigger: 'click',
     floatingBubbleContent: 'limitsAllSessions',
+    floatingBubbleProviders: [],
     floatingBubbleScale: 1,
     themePreset: 'default',
     zoomFactor: 1,
@@ -191,6 +193,13 @@ root.innerHTML = `
               <option value="bars" data-i18n="settings.bubble.lowestRemaining">Lowest remaining</option>
             </select>
           </label>
+          <div id="floatingBubbleProvidersRow" class="settings-item bubble-provider-settings hidden">
+            <span class="settings-item-text">
+              <span class="settings-item-title" data-i18n="settings.bubbleProviders">Displayed providers</span>
+              <span class="settings-note settings-item-desc" data-i18n="settings.bubbleProvidersDesc">Choose any providers to show. Auto keeps the first two available providers.</span>
+            </span>
+            <div id="floatingBubbleProviderChips" class="bubble-provider-chips" role="group" aria-label="Displayed providers"></div>
+          </div>
           <div class="settings-item settings-slider-item">
             <span class="settings-item-text"><span class="settings-item-title" data-i18n="settings.bubbleSize">Bubble size</span></span>
             <input id="floatingBubbleScaleInput" type="range" min="70" max="150" step="10" value="100" aria-label="Bubble size percentage" />
@@ -290,6 +299,8 @@ const els = {
   floatingBubbleOptions: document.querySelector('#floatingBubbleOptions'),
   floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')),
   floatingBubbleContentInput: document.querySelector('#floatingBubbleContentInput'),
+  floatingBubbleProvidersRow: document.querySelector('#floatingBubbleProvidersRow'),
+  floatingBubbleProviderChips: document.querySelector('#floatingBubbleProviderChips'),
   floatingBubbleScaleInput: document.querySelector('#floatingBubbleScaleInput'),
   floatingBubbleScaleValue: document.querySelector('#floatingBubbleScaleValue'),
   floatingBubbleContent: document.querySelector('#floatingBubbleContent'),
@@ -337,6 +348,39 @@ function renderThemePresetControls() {
   }));
 }
 
+function renderFloatingBubbleProviderControls() {
+  const providers = normalizeBubbleProviders(state.settings.floatingBubbleProviders);
+  const selected = new Set(providers);
+  const auto = providers.length === 0;
+  els.floatingBubbleProvidersRow.classList.toggle(
+    'hidden',
+    state.settings.floatingBubbleContent !== 'limitsAllSessions',
+  );
+  els.floatingBubbleProviderChips.setAttribute('aria-label', t('settings.bubbleProviders'));
+  const options = [
+    { id: '', label: t('settings.bubbleProvidersAuto'), active: auto },
+    ...PROVIDER_FILTER_ORDER.map((id) => ({ id, label: clientLabel(id), active: selected.has(id) })),
+  ];
+  els.floatingBubbleProviderChips.replaceChildren(...options.map((option) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `bubble-provider-chip${option.active ? ' active' : ''}`;
+    chip.setAttribute('aria-pressed', String(option.active));
+    chip.textContent = option.label;
+    chip.addEventListener('click', () => {
+      if (!option.id) {
+        void saveSettings({ floatingBubbleProviders: [] });
+        return;
+      }
+      const next = selected.has(option.id)
+        ? providers.filter((id) => id !== option.id)
+        : [...providers, option.id];
+      void saveSettings({ floatingBubbleProviders: normalizeBubbleProviders(next) });
+    });
+    return chip;
+  }));
+}
+
 function applySettings(settings = {}) {
   state.settings = {
     ...state.settings,
@@ -345,6 +389,7 @@ function applySettings(settings = {}) {
     floatingBubbleEnabled: settings.floatingBubbleEnabled !== false,
     floatingBubbleTrigger: settings.floatingBubbleTrigger === 'hover' ? 'hover' : 'click',
     floatingBubbleContent: normalizeBubbleContent(settings.floatingBubbleContent ?? state.settings.floatingBubbleContent),
+    floatingBubbleProviders: normalizeBubbleProviders(settings.floatingBubbleProviders ?? state.settings.floatingBubbleProviders),
     floatingBubbleScale: normalizeBubbleScale(settings.floatingBubbleScale ?? state.settings.floatingBubbleScale),
     themePreset: normalizeThemePreset(settings.themePreset ?? state.settings.themePreset),
     zoomFactor: normalizeZoomFactor(settings.zoomFactor ?? state.settings.zoomFactor),
@@ -378,6 +423,7 @@ function applySettings(settings = {}) {
   els.windowsBackdropRow.classList.toggle('hidden', !isWindows);
   for (const input of els.floatingBubbleTriggerInputs) input.checked = input.value === state.settings.floatingBubbleTrigger;
   for (const input of els.windowsBackdropInputs) input.checked = input.value === state.settings.windowsBackdrop;
+  renderFloatingBubbleProviderControls();
   renderThemePresetControls();
   if (state.stats) renderHeadline();
 }
@@ -403,7 +449,11 @@ function bubbleBar(percent) {
 
 function renderFloatingBubbleContent() {
   const content = els.floatingBubbleContent;
-  const model = floatingBubbleModel(state.stats?.limits, state.settings.floatingBubbleContent);
+  const model = floatingBubbleModel(
+    state.stats?.limits,
+    state.settings.floatingBubbleContent,
+    state.settings.floatingBubbleProviders,
+  );
   content.className = `floating-bubble-content is-${model.kind}`;
   if (model.kind === 'icon') {
     const mark = document.createElement('span');

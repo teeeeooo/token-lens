@@ -1,5 +1,7 @@
 import { quotaRows } from './renderer-model.js';
 
+export const BUBBLE_PROVIDER_IDS = Object.freeze(['codex', 'claude', 'gemini', 'antigravity']);
+
 export const BUBBLE_CONTENT_MODES = Object.freeze([
   'limitsAllSessions',
   'icon',
@@ -11,6 +13,12 @@ export const BUBBLE_CONTENT_MODES = Object.freeze([
 
 export function normalizeBubbleContent(value) {
   return BUBBLE_CONTENT_MODES.includes(value) ? value : 'limitsAllSessions';
+}
+
+export function normalizeBubbleProviders(value) {
+  if (!Array.isArray(value)) return [];
+  const selected = new Set(value.map((provider) => String(provider || '').trim().toLowerCase()));
+  return BUBBLE_PROVIDER_IDS.filter((provider) => selected.has(provider));
 }
 
 export function normalizeBubbleScale(value) {
@@ -73,8 +81,20 @@ function compactSelection(row) {
   };
 }
 
+function allBubbleSelections(limits) {
+  return quotaRows(limits).map(compactSelection).filter(Boolean);
+}
+
 export function configuredBubbleSelections(limits) {
-  return quotaRows(limits).map(compactSelection).filter(Boolean).slice(0, 2);
+  return allBubbleSelections(limits).slice(0, 2);
+}
+
+export function selectedBubbleLimitSelections(limits, rawProviders) {
+  const providers = normalizeBubbleProviders(rawProviders);
+  const selections = allBubbleSelections(limits);
+  if (!providers.length) return selections.slice(0, 2);
+  const selected = new Set(providers);
+  return selections.filter((selection) => selected.has(selection.providerId));
 }
 
 function pickWorst(limits, kind = '') {
@@ -113,15 +133,16 @@ function providerBars(selection) {
   };
 }
 
-export function floatingBubbleModel(limits, rawMode) {
+export function floatingBubbleModel(limits, rawMode, rawProviders = []) {
   const mode = normalizeBubbleContent(rawMode);
   if (mode === 'icon') return { kind: 'icon' };
   const configured = configuredBubbleSelections(limits);
   if (mode === 'limitsAllSessions') {
-    if (!configured.length) return { kind: 'icon' };
-    const entries = configured.length === 1
-      ? [{ ...configured[0], percents: [configured[0].primaryPercent, configured[0].secondaryPercent].filter((value) => value != null) }]
-      : configured.map((selection) => ({ ...selection, percents: [selection.primaryPercent] }));
+    const selectedLimits = selectedBubbleLimitSelections(limits, rawProviders);
+    if (!selectedLimits.length) return { kind: 'icon' };
+    const entries = selectedLimits.length === 1
+      ? [{ ...selectedLimits[0], percents: [selectedLimits[0].primaryPercent, selectedLimits[0].secondaryPercent].filter((value) => value != null) }]
+      : selectedLimits.map((selection) => ({ ...selection, percents: [selection.primaryPercent] }));
     return { kind: 'limits', entries };
   }
   if (mode === 'barsAllSessions') {

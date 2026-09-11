@@ -1,4 +1,5 @@
 use crate::provider_cli_auth;
+#[cfg(not(target_os = "windows"))]
 use portable_pty::CommandBuilder;
 use std::env;
 #[cfg(target_os = "windows")]
@@ -7,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const AUTH_TOUCH_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(target_os = "windows"))]
 const STATUS_TOUCH_DELAY: Duration = Duration::from_secs(5);
+#[cfg(not(target_os = "windows"))]
 const STATUS_TOUCH_INPUT: &[u8] = b"/status\r";
 
 #[derive(Debug)]
@@ -63,18 +66,29 @@ where
             cli_source: None,
         };
     };
-    let mut command = discovered_command_builder(&binary);
-    command.cwd(home);
-    command.env("PWD", home);
-    command.env("DISABLE_AUTOUPDATER", "1");
-    command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
-    for key in env::vars_os().map(|(key, _)| key) {
-        if key.to_string_lossy().starts_with("ANTHROPIC_") {
-            command.env_remove(key);
+    #[cfg(target_os = "windows")]
+    let result = provider_cli_auth::run_hidden_console_until_credential_change(
+        "Claude",
+        &windows_provider_command(&binary),
+        home,
+        AUTH_TOUCH_TIMEOUT,
+        provider_cli_auth::WindowsConsoleEnvironment::ClaudeSanitized,
+        read_signature,
+    );
+
+    #[cfg(not(target_os = "windows"))]
+    let result = {
+        let mut command = discovered_command_builder(&binary);
+        command.cwd(home);
+        command.env("PWD", home);
+        command.env("DISABLE_AUTOUPDATER", "1");
+        command.env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+        for key in env::vars_os().map(|(key, _)| key) {
+            if key.to_string_lossy().starts_with("ANTHROPIC_") {
+                command.env_remove(key);
+            }
         }
-    }
-    RefreshAttempt {
-        result: provider_cli_auth::run_until_credential_change_with_input(
+        provider_cli_auth::run_until_credential_change_with_input(
             "Claude",
             command,
             AUTH_TOUCH_TIMEOUT,
@@ -83,11 +97,25 @@ where
                 after: STATUS_TOUCH_DELAY,
             }),
             read_signature,
-        ),
+        )
+    };
+
+    RefreshAttempt {
+        result,
         cli_source: Some(binary.source),
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_provider_command(binary: &DiscoveredBinary) -> String {
+    if binary.shell_name {
+        "claude".to_owned()
+    } else {
+        format!("\"{}\"", binary.path.display())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
     #[cfg(target_os = "windows")]
     if binary.shell_name {
@@ -98,6 +126,7 @@ fn discovered_command_builder(binary: &DiscoveredBinary) -> CommandBuilder {
     bare_command_builder(&binary.path)
 }
 
+#[cfg(not(target_os = "windows"))]
 fn bare_command_builder(binary: &Path) -> CommandBuilder {
     #[cfg(target_os = "windows")]
     if binary
@@ -212,7 +241,9 @@ fn discover_windows_winget_binary() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_windows_candidate, classify_refresh_error, STATUS_TOUCH_INPUT};
+    #[cfg(not(target_os = "windows"))]
+    use super::STATUS_TOUCH_INPUT;
+    use super::{choose_windows_candidate, classify_refresh_error};
     use std::path::PathBuf;
 
     #[test]
@@ -232,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn auth_touch_uses_status_slash_command() {
         assert_eq!(STATUS_TOUCH_INPUT, b"/status\r");
     }

@@ -30,6 +30,10 @@ pub(crate) struct ProviderIncident {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_stage: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub discovery_code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_source: Option<&'static str>,
@@ -121,13 +125,15 @@ pub(crate) fn record(incident: ProviderIncident) {
 
 fn incident_signature(incident: &ProviderIncident) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         incident.provider,
         incident.category,
         incident.code,
         incident.stage,
         incident.result,
         incident.recovery_code.unwrap_or(""),
+        incident.trigger_code.unwrap_or(""),
+        incident.trigger_stage.unwrap_or(""),
         incident.discovery_code.unwrap_or(""),
         incident.cli_source.unwrap_or("")
     )
@@ -241,6 +247,8 @@ mod tests {
             credential_changed: Some(false),
             cli_fallback: Some(true),
             recovery_code: None,
+            trigger_code: None,
+            trigger_stage: None,
             discovery_code: None,
             cli_source: Some("path"),
             retry_after_seconds: None,
@@ -258,6 +266,33 @@ mod tests {
         assert!(!text.contains("accessToken"));
         assert!(!text.contains("refreshToken"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovery_trigger_fields_serialize_separately_from_recovery_identity() {
+        let incident = ProviderIncident {
+            provider: "claude",
+            category: "auth",
+            code: "CREDENTIAL_RECOVERY",
+            stage: "credential_recovery",
+            result: "credential_change_observed",
+            credential_reread: Some(true),
+            credential_changed: Some(true),
+            cli_fallback: Some(true),
+            recovery_code: Some("CLI_CREDENTIAL_CHANGE_OBSERVED"),
+            trigger_code: Some("HTTP_401"),
+            trigger_stage: Some("oauth_usage"),
+            discovery_code: None,
+            cli_source: Some("path"),
+            retry_after_seconds: None,
+            cooldown_seconds: None,
+            last_good_used: None,
+        };
+        let json = serde_json::to_string(&incident).expect("serialize incident");
+        assert!(json.contains("\"code\":\"CREDENTIAL_RECOVERY\""));
+        assert!(json.contains("\"stage\":\"credential_recovery\""));
+        assert!(json.contains("\"triggerCode\":\"HTTP_401\""));
+        assert!(json.contains("\"triggerStage\":\"oauth_usage\""));
     }
 
     #[test]

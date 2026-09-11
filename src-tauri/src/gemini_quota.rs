@@ -523,7 +523,7 @@ fn recover_auth_in_background(
             ),
             now,
         );
-        record_incident(
+        record_recovery_incident(
             failure,
             presentation.result_label(),
             GeminiIncidentRecovery {
@@ -550,7 +550,7 @@ fn recover_auth_in_background(
             Ok(()) => {
                 AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
                 clear_auth_recovery();
-                record_incident(
+                record_recovery_incident(
                     failure_for_job,
                     "credential_change_observed",
                     GeminiIncidentRecovery {
@@ -570,7 +570,7 @@ fn recover_auth_in_background(
                     Ordering::Release,
                 );
                 let (code, _) = gemini_cli::classify_refresh_error(&error);
-                record_incident(
+                record_recovery_incident(
                     failure_for_job,
                     "cli_refresh_failed",
                     GeminiIncidentRecovery {
@@ -599,7 +599,7 @@ fn recover_auth_in_background(
         )
     };
     let presentation = apply_failure_with_cache(&mut report, detail, now);
-    record_incident(
+    record_recovery_incident(
         failure,
         presentation.result_label(),
         GeminiIncidentRecovery {
@@ -852,6 +852,54 @@ fn record_incident(failure: GeminiFailure, result: &'static str, recovery: Gemin
         credential_changed: recovery.credential_changed,
         cli_fallback: recovery.cli_fallback.then_some(true),
         recovery_code: recovery.recovery_code,
+        trigger_code: None,
+        trigger_stage: None,
+        discovery_code: recovery.discovery_code,
+        cli_source: recovery.cli_source,
+        retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
+        cooldown_seconds: recovery.cooldown_ms.map(|value| value.div_ceil(1000)),
+        last_good_used: recovery.last_good_used.then_some(true),
+    });
+}
+
+fn recovery_log_fields(
+    failure: &GeminiFailure,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    let (_, trigger_code, trigger_stage) = failure.log_fields();
+    (
+        "auth",
+        "CREDENTIAL_RECOVERY",
+        "credential_recovery",
+        trigger_code,
+        trigger_stage,
+    )
+}
+
+fn record_recovery_incident(
+    failure: GeminiFailure,
+    result: &'static str,
+    recovery: GeminiIncidentRecovery,
+) {
+    let retry_after_ms = failure.retry_after_ms();
+    let (category, code, stage, trigger_code, trigger_stage) = recovery_log_fields(&failure);
+    provider_error_log::record(ProviderIncident {
+        provider: "gemini",
+        category,
+        code,
+        stage,
+        result,
+        credential_reread: recovery.credential_reread.then_some(true),
+        credential_changed: recovery.credential_changed,
+        cli_fallback: recovery.cli_fallback.then_some(true),
+        recovery_code: recovery.recovery_code,
+        trigger_code: Some(trigger_code),
+        trigger_stage: Some(trigger_stage),
         discovery_code: recovery.discovery_code,
         cli_source: recovery.cli_source,
         retry_after_seconds: retry_after_ms.map(|value| value.div_ceil(1000)),
@@ -1226,6 +1274,32 @@ mod tests {
     use super::*;
 
     static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cli_recovery_logs_use_recovery_identity_and_preserve_trigger() {
+        assert_eq!(
+            recovery_log_fields(&GeminiFailure::Unauthorized {
+                stage: "loadCodeAssist",
+            }),
+            (
+                "auth",
+                "CREDENTIAL_RECOVERY",
+                "credential_recovery",
+                "HTTP_401",
+                "loadCodeAssist",
+            )
+        );
+        assert_eq!(
+            recovery_log_fields(&GeminiFailure::MissingCredential),
+            (
+                "auth",
+                "CREDENTIAL_RECOVERY",
+                "credential_recovery",
+                "CREDENTIAL_UNAVAILABLE",
+                "credential_discovery",
+            )
+        );
+    }
 
     fn bucket(model: &str, fraction: f64, amount: Option<&str>) -> QuotaBucket {
         QuotaBucket {

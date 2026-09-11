@@ -68,6 +68,34 @@ html, body, #app {
   height: calc(34px * var(--bubble-scale, 1));
 }
 
+
+.bubble-provider-settings {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 7px;
+}
+.bubble-provider-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.bubble-provider-chip {
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--line-rgb), 0.14);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--token-lens-font-size-body);
+  cursor: pointer;
+}
+.bubble-provider-chip:hover { border-color: var(--line-strong); color: var(--text); }
+.bubble-provider-chip.active {
+  border-color: rgba(var(--accent-rgb), 0.58);
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent);
+}
+.bubble-provider-chip:focus-visible { outline: 1px solid rgba(var(--accent-rgb), 0.72); }
+
 .icon-button.active {
   border-color: rgba(var(--accent-rgb), 0.58);
   color: var(--accent);

@@ -5,6 +5,7 @@ import {
   configuredBubbleSelections,
   floatingBubbleModel,
   normalizeBubbleContent,
+  normalizeBubbleProviders,
   normalizeBubbleScale,
 } from '../src/floating-bubble-model.js';
 
@@ -51,6 +52,44 @@ test('provider limits use fixed v2 provider order and primary quota semantics', 
     ['codex', [62]],
     ['claude', [41]],
   ]);
+});
+
+
+test('provider limits can show one through four explicitly selected providers in fixed order', () => {
+  const value = limits([
+    provider('antigravity', [{ kind: 'session', label: '5h', remainingPercent: 44 }]),
+    provider('gemini', [{ kind: 'other', label: 'Gemini Pro', remainingPercent: 55 }]),
+    provider('claude', [{ kind: 'session', label: '5h', remainingPercent: 66 }]),
+    provider('codex', [{ kind: 'session', label: '5h', remainingPercent: 77 }]),
+  ]);
+  const four = floatingBubbleModel(value, 'limitsAllSessions', ['antigravity', 'gemini', 'claude', 'codex']);
+  assert.equal(four.kind, 'limits');
+  assert.deepEqual(four.entries.map((entry) => entry.providerId), ['codex', 'claude', 'gemini', 'antigravity']);
+  const three = floatingBubbleModel(value, 'limitsAllSessions', ['antigravity', 'gemini', 'claude']);
+  assert.deepEqual(three.entries.map((entry) => entry.providerId), ['claude', 'gemini', 'antigravity']);
+  const one = floatingBubbleModel(value, 'limitsAllSessions', ['gemini']);
+  assert.deepEqual(one.entries.map((entry) => entry.providerId), ['gemini']);
+});
+
+test('provider selection applies only to provider limits and unavailable selections are not substituted', () => {
+  const value = limits([
+    provider('codex', [{ kind: 'session', label: '5h', remainingPercent: 66 }]),
+    provider('claude', [{ kind: 'session', label: '5h', remainingPercent: 33 }]),
+    provider('gemini', [{ kind: 'other', label: 'Gemini Pro', remainingPercent: 22 }]),
+  ]);
+  const selected = floatingBubbleModel(value, 'limitsAllSessions', ['gemini', 'antigravity']);
+  assert.deepEqual(selected.entries.map((entry) => entry.providerId), ['gemini']);
+  const bars = floatingBubbleModel(value, 'barsAllSessions', ['gemini']);
+  assert.equal(bars.kind, 'barsPair');
+  assert.deepEqual(bars.percents, [66, 33]);
+});
+
+test('bubble provider normalization is allowlisted and fixed-order without a count cap', () => {
+  assert.deepEqual(
+    normalizeBubbleProviders(['antigravity', 'gemini', 'codex', 'claude', 'gemini', 'invalid']),
+    ['codex', 'claude', 'gemini', 'antigravity'],
+  );
+  assert.deepEqual(normalizeBubbleProviders(null), []);
 });
 
 test('single-provider limits show its primary and secondary quotas', () => {

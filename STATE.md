@@ -46,6 +46,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Floating Bubble defaults on. Retained modes are `limitsAllSessions`, `icon`, `barsSession`, `barsWeekly`, `barsAllSessions`, and `bars`.
 - `limitsAllSessions` supports an independent provider selection. Empty selection keeps Auto (first two usable providers); explicit selection shows any 1–4 supported providers in stable Codex → Claude → Gemini → Antigravity order. Other bubble modes keep their prior semantics.
 - Bubble height is fixed at 34 logical px and width is content-driven up to 320 logical px. Docking, dragging, resizing, and cross-monitor movement are DPI-aware.
+- On Windows, Bubble may intentionally overlap the taskbar/reserved monitor area. While collapsed in that area, a narrow Win32 z-order keeper reasserts `HWND_TOPMOST` without moving/resizing/activating the window; recent Token Lens drag movement suppresses that keeper briefly so the existing pointer-driven drag path remains authoritative.
 - Minimize uses Bubble → tray → OS-minimize fallback. Close always quits. Tray restore reconciles native/renderer bubble state before focusing the main window.
 - Windows Acrylic is disabled while collapsed and restored on expansion when enabled. Token Lens-owned background subprocesses that should remain invisible use no-window hosting; Claude/Gemini auth-touch intentionally use hidden real consoles because ConPTY failed to refresh reliably on the validated Windows machine.
 

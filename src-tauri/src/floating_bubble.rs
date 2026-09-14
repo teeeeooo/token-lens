@@ -2,8 +2,16 @@ use crate::appearance;
 use crate::settings::SettingsStore;
 use crate::window_state;
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tauri::{LogicalSize, Monitor, PhysicalPosition, PhysicalSize, WebviewWindow};
+
+#[cfg(windows)]
+use std::{thread, time::Duration};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+};
 
 const BUBBLE_LOGICAL_HEIGHT: f64 = 34.0;
 const BUBBLE_LOGICAL_MIN_WIDTH: f64 = 34.0;
@@ -70,6 +78,8 @@ struct BubbleState {
     expanded: Option<ExpandedState>,
     last_collapsed: Option<CollapsedState>,
     collapsed_logical_width: f64,
+    z_order_generation: u64,
+    last_drag_move: Option<Instant>,
 }
 
 impl Default for BubbleState {
@@ -80,13 +90,15 @@ impl Default for BubbleState {
             expanded: None,
             last_collapsed: None,
             collapsed_logical_width: BUBBLE_LOGICAL_MIN_WIDTH,
+            z_order_generation: 0,
+            last_drag_move: None,
         }
     }
 }
 
 #[derive(Default)]
 pub struct FloatingBubbleController {
-    state: Mutex<BubbleState>,
+    state: Arc<Mutex<BubbleState>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
@@ -152,6 +164,111 @@ fn collapsed_area(monitor: &Monitor, policy: PlatformPolicy) -> Bounds {
         monitor_work_area(monitor),
         policy,
     )
+}
+
+#[cfg(any(windows, test))]
+fn overlaps_reserved_area(bounds: Bounds, full_area: Bounds, work_area: Bounds) -> bool {
+    let left = bounds.x as i64;
+    let top = bounds.y as i64;
+    let right = left + bounds.width as i64;
+    let bottom = top + bounds.height as i64;
+    let full_left = full_area.x as i64;
+    let full_top = full_area.y as i64;
+    let full_right = full_left + full_area.width as i64;
+    let full_bottom = full_top + full_area.height as i64;
+    let intersects_full =
+        left < full_right && right > full_left && top < full_bottom && bottom > full_top;
+    if !intersects_full {
+        return false;
+    }
+    let work_left = work_area.x as i64;
+    let work_top = work_area.y as i64;
+    let work_right = work_left + work_area.width as i64;
+    let work_bottom = work_top + work_area.height as i64;
+    left < work_left || top < work_top || right > work_right || bottom > work_bottom
+}
+
+#[cfg(windows)]
+fn refresh_taskbar_z_order(window: &WebviewWindow) -> Result<(), String> {
+    let bounds = Bounds::from_window(window)?;
+    let center_x = bounds.x as f64 + bounds.width as f64 / 2.0;
+    let center_y = bounds.y as f64 + bounds.height as f64 / 2.0;
+    let Some(monitor) = window
+        .monitor_from_point(center_x, center_y)
+        .map_err(window_error)?
+        .or_else(|| window.current_monitor().ok().flatten())
+    else {
+        return Ok(());
+    };
+    if !overlaps_reserved_area(
+        bounds,
+        monitor_full_area(&monitor),
+        monitor_work_area(&monitor),
+    ) {
+        return Ok(());
+    }
+    let hwnd = window.hwnd().map_err(window_error)?;
+    let result = unsafe {
+        SetWindowPos(
+            hwnd.0,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    };
+    if result == 0 {
+        return Err(format!(
+            "failed to keep floating bubble above taskbar: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn refresh_taskbar_z_order(_window: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_taskbar_z_order_keeper(
+    window: WebviewWindow,
+    state: Arc<Mutex<BubbleState>>,
+    generation: u64,
+) {
+    thread::spawn(move || loop {
+        let (keep_running, recent_drag) = state
+            .lock()
+            .map(|state| {
+                let recent_drag = state
+                    .last_drag_move
+                    .map(|last| last.elapsed() < Duration::from_millis(500))
+                    .unwrap_or(false);
+                (
+                    state.collapsed && state.z_order_generation == generation,
+                    recent_drag,
+                )
+            })
+            .unwrap_or((false, false));
+        if !keep_running {
+            break;
+        }
+        if !recent_drag {
+            let _ = refresh_taskbar_z_order(&window);
+        }
+        thread::sleep(Duration::from_millis(250));
+    });
+}
+
+#[cfg(not(windows))]
+fn start_taskbar_z_order_keeper(
+    _window: WebviewWindow,
+    _state: Arc<Mutex<BubbleState>>,
+    _generation: u64,
+) {
 }
 
 fn physical_length(logical: f64, scale: f64) -> u32 {
@@ -382,6 +499,9 @@ fn collapse_impl(
         always_on_top: window.is_always_on_top().map_err(window_error)?,
     });
     state.collapsed = true;
+    state.z_order_generation = state.z_order_generation.wrapping_add(1);
+    state.last_drag_move = None;
+    let generation = state.z_order_generation;
     let side = side_for(target, area);
     state.side = Some(side);
     state.last_collapsed = Some(CollapsedState {
@@ -390,7 +510,11 @@ fn collapse_impl(
     });
     apply_collapsed_window(window, target)?;
     appearance::apply_backdrop(window, &settings.get()?, true);
-    payload(settings, &state)
+    let result = payload(settings, &state)?;
+    drop(state);
+    refresh_taskbar_z_order(window)?;
+    start_taskbar_z_order_keeper(window.clone(), controller.state.clone(), generation);
+    Ok(result)
 }
 
 pub fn collapse(
@@ -447,6 +571,8 @@ pub fn expand(
     let expanded = state
         .expanded
         .ok_or_else(|| "floating bubble has no expanded bounds to restore".to_owned())?;
+    state.z_order_generation = state.z_order_generation.wrapping_add(1);
+    state.last_drag_move = None;
     let current = Bounds::from_window(window)?;
     let center_x = current.x as f64 + current.width as f64 / 2.0;
     let center_y = current.y as f64 + current.height as f64 / 2.0;
@@ -557,6 +683,7 @@ pub fn set_collapsed_width(
         bounds: target,
         side,
     });
+    refresh_taskbar_z_order(window)?;
     payload(settings, &state)
 }
 
@@ -574,6 +701,7 @@ pub fn move_to_cursor(
     if !state.collapsed {
         return payload(settings, &state);
     }
+    state.last_drag_move = Some(Instant::now());
     let cursor = window.cursor_position().map_err(window_error)?;
     let monitor = window
         .monitor_from_point(cursor.x, cursor.y)
@@ -685,6 +813,59 @@ mod tests {
         assert_eq!(selected, full);
         assert_eq!(result.x, 1406);
         assert_eq!(result.y, 866);
+    }
+
+    #[test]
+    fn reserved_area_detection_only_flags_bounds_outside_the_work_area() {
+        let full = Bounds {
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 900,
+        };
+        let work = Bounds {
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 860,
+        };
+        let desktop = Bounds {
+            x: 1200,
+            y: 800,
+            width: 120,
+            height: 34,
+        };
+        let taskbar = Bounds {
+            x: 1200,
+            y: 866,
+            width: 120,
+            height: 34,
+        };
+        assert!(!overlaps_reserved_area(desktop, full, work));
+        assert!(overlaps_reserved_area(taskbar, full, work));
+    }
+
+    #[test]
+    fn reserved_area_detection_supports_side_taskbars() {
+        let full = Bounds {
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 900,
+        };
+        let work = Bounds {
+            x: 48,
+            y: 0,
+            width: 1392,
+            height: 900,
+        };
+        let bubble = Bounds {
+            x: 0,
+            y: 300,
+            width: 120,
+            height: 34,
+        };
+        assert!(overlaps_reserved_area(bubble, full, work));
     }
 
     #[test]

@@ -112,7 +112,7 @@ Window controls are explicit and predictable: the minimize button collapses the 
 
 The expanded window defaults to 380x720 logical pixels on first launch, with a 300x140 minimum and 1200x1400 maximum. The last normal expanded size and position are persisted after move/resize and restored on launch; if the saved position no longer intersects an available monitor, restore the saved size but let the operating system choose a visible position. Floating-bubble geometry must never overwrite the persisted expanded bounds.
 
-The collapsed native window has a fixed 34px logical height and a content-driven logical width bounded to a compact range. Resizing, edge docking, dragging, and movement between monitors must recompute physical dimensions for the destination DPI while preserving the current left/right dock side. Windows continues to suspend Acrylic while collapsed and restore it on expansion.
+The collapsed native window has a fixed 34px logical height and a content-driven logical width bounded to a compact range. Resizing, edge docking, dragging, and movement between monitors must recompute physical dimensions for the destination DPI while preserving the current left/right dock side. Windows may place the collapsed Bubble in reserved monitor space such as the taskbar; when it overlaps that space, Token Lens may reassert the native window's `HWND_TOPMOST` z-order without moving, resizing, or activating it. That z-order maintenance must not replace or compete with the existing pointer-driven drag path and should be suppressed briefly around active drag movement. Windows continues to suspend Acrylic while collapsed and restore it on expansion.
 
 ## Primary data engine
 

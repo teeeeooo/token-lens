@@ -26,7 +26,7 @@ It currently supports **Codex, Claude Code, Gemini CLI, and Antigravity (AGY)**.
 
 ## ✨ Key Features
 
-- 🪟 **Floating Monitor & System Tray** — minimize Token Lens into a draggable provider-quota bubble, or reopen it from the native tray. The default bubble shows provider icons with remaining quota percentages.
+- 🪟 **Floating Monitor & System Tray** — minimize Token Lens into a draggable provider-quota bubble, choose which supported providers appear in the default quota view, or reopen the app from the native tray.
 - ⏱️ **Quota & Reset Visibility** — monitor available short-window, weekly, reset, credit, and provider-specific limits with periodic background refresh, bounded stale-data fallback, and provider-level rate-limit cooldowns.
 - 📊 **Usage & Cost Analytics** — inspect Day, Week, Month, Last 7 Days, Last 30 Days, and All-Time usage with model/session breakdowns, token categories, and cost where available.
 - 🧭 **Session Exploration** — identify sessions using provider-owned metadata and inspect per-turn usage/tool metadata for supported providers without turning Token Lens into a transcript viewer.
@@ -67,9 +67,9 @@ The provider set is an explicit runtime allowlist, not a permanent architectural
 
 ### Quota recovery behavior
 
-- **Claude Code** — normal tokScale/direct OAuth quota collection remains the primary path. After HTTP 401 Token Lens re-reads the provider-owned credential and retries once if it already changed. If the credential is missing or remains rejected, Token Lens schedules one bounded bare `claude` startup in the background and returns the current stale/unavailable quota immediately; Claude Code owns any refresh/write, and the next quota poll consumes the provider-owned credential. Only one Claude refresh may run at a time. Claude TUI output is discarded and is never quota data.
-- **Gemini CLI** — Token Lens uses the existing read-only Gemini Code Assist adapter. When a Gemini OAuth credential is missing, expired, or rejected with HTTP 401, Token Lens schedules one bounded bare `gemini` startup in the background and returns the current stale/unavailable quota immediately; Gemini CLI owns any refresh/write, and the next quota poll consumes the provider-owned credential. Only one Gemini refresh may run at a time. `/stats model` subprocess/PTY output is never scraped or treated as quota data.
-- **Rate limits and transient failures** — HTTP 429 respects `Retry-After` with a provider-level cooldown. Failed CLI auth-refresh attempts back off for 5 minutes to prevent launch loops, while quota is still rechecked every 30 seconds so an externally refreshed credential can recover promptly. A recent last-good quota may be shown explicitly as **Stale** for a bounded period; expired/reset-past windows are not silently reused.
+- **Claude Code** — normal tokScale/read-only OAuth quota collection remains the primary path. If a rejected credential has already changed, Token Lens may retry once with the new provider-owned token. Otherwise it schedules one bounded provider-owned auth-touch and returns stale/unavailable quota immediately. On Windows this is a hidden real-console bare `claude` launch with full process-tree cleanup; non-Windows retains the PTY `/status` touch. Token Lens never parses Claude TUI output as quota data.
+- **Gemini CLI** — quota uses the read-only Google Code Assist path. For a missing, expired, or rejected credential, Token Lens schedules `gemini --list-sessions -e none --skip-trust` from an isolated temporary working directory and watches only for provider-owned credential change. On Windows the command runs in a hidden real console. No model prompt is sent and CLI output is never scraped as quota data.
+- **Rate limits and transient failures** — provider `Retry-After` deadlines survive app restart, while repeated Claude/Gemini 429s additionally use a bounded in-process 5/15/30/60-minute protective floor. During auth recovery Token Lens does not re-probe the provider API with the same rejected credential. A recent last-good quota may be shown explicitly as **Stale** for a bounded period; expired/reset-past windows are not silently reused.
 
 ---
 

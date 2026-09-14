@@ -80,3 +80,12 @@ test('provider filter and Gemini quota controls remain bounded at narrow window 
   assert.match(v2Css, /@media \(max-width:\s*340px\)[\s\S]*?\.limit-window-text-selectable\s*\{[^}]*display:\s*grid;/s);
   assert.match(v2Css, /\.breakdown \.row-name\s*\{[^}]*overflow:\s*hidden;/s);
 });
+
+test('model and session filters stay outside the scroll list with a compact scrollbar', () => {
+  assert.match(main, /id="breakdownToolbar"[\s\S]*?id="breakdown"/);
+  assert.match(v2Css, /\.provider-filter\s*\{[^}]*position:\s*relative;/s);
+  assert.doesNotMatch(v2Css, /\.provider-filter\s*\{[^}]*position:\s*sticky;/s);
+  assert.match(v2Css, /\.shell\.filtered-breakdown-mode \.breakdown\s*\{[^}]*scrollbar-width:\s*thin;/s);
+  assert.match(v2Css, /\.shell\.filtered-breakdown-mode \.breakdown::\-webkit-scrollbar\s*\{[^}]*width:\s*4px;/s);
+  assert.match(main, /state\.providerFilterMenuOpen = !state\.providerFilterMenuOpen;\s*renderProviderFilterToolbar\(\);/);
+});

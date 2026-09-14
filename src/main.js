@@ -259,6 +259,7 @@ root.innerHTML = `
       <div id="cost" class="cost">$0.00</div>
     </section>
     <section id="homePanel" class="home-panel"></section>
+    <div id="breakdownToolbar" class="breakdown-toolbar hidden"></div>
     <section id="breakdown" class="breakdown hidden"></section>
     <div id="sessionDetailHead" class="detail-head hidden"></div>
     <div id="sessionDetail" class="session-detail hidden"></div>
@@ -286,6 +287,7 @@ const els = {
   monthPeriodTab: document.querySelector('#monthPeriodTab'),
   monthPeriodMenu: document.querySelector('#monthPeriodMenu'),
   homePanel: document.querySelector('#homePanel'),
+  breakdownToolbar: document.querySelector('#breakdownToolbar'),
   breakdown: document.querySelector('#breakdown'),
   sessionDetailHead: document.querySelector('#sessionDetailHead'),
   sessionDetail: document.querySelector('#sessionDetail'),
@@ -1018,7 +1020,7 @@ function renderProviderFilter() {
   button.append(buttonLabel, arrow);
   button.addEventListener('click', () => {
     state.providerFilterMenuOpen = !state.providerFilterMenuOpen;
-    renderBreakdown();
+    renderProviderFilterToolbar();
   });
   wrap.append(button);
   if (state.providerFilterMenuOpen) {
@@ -1046,8 +1048,6 @@ function renderProviderFilter() {
           ? state.providerFilter.filter((value) => value !== provider)
           : [...state.providerFilter, provider];
         setProviderFilter(next);
-        state.providerFilterMenuOpen = true;
-        renderBreakdown();
       });
       menu.append(item);
     }
@@ -1225,21 +1225,26 @@ function renderSessionDetail() {
   els.sessionDetail.replaceChildren(...rows.map((row) => sessionExchangeNode(row, max, color)));
 }
 
+function renderProviderFilterToolbar() {
+  if (!['model', 'session'].includes(state.view)) {
+    els.breakdownToolbar.replaceChildren();
+    return;
+  }
+  els.breakdownToolbar.replaceChildren(renderProviderFilter());
+}
+
 function renderBreakdown() {
+  renderProviderFilterToolbar();
   const rows = rowsForView();
   const max = Math.max(1, ...rows.map((row) => row.value));
-  const nodes = [];
-  if (['model', 'session'].includes(state.view)) nodes.push(renderProviderFilter());
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
     empty.textContent = state.view === 'session' ? t('session.noSessionUsage') : t('common.noUsage');
-    nodes.push(empty);
-    els.breakdown.replaceChildren(...nodes);
+    els.breakdown.replaceChildren(empty);
     return;
   }
-  nodes.push(...rows.map((row) => breakdownRow(row, max, state.view)));
-  els.breakdown.replaceChildren(...nodes);
+  els.breakdown.replaceChildren(...rows.map((row) => breakdownRow(row, max, state.view)));
 }
 
 function hasExplicitHomeQuotaSelection(providerId) {
@@ -1496,10 +1501,12 @@ function renderSurface() {
   els.shell.classList.toggle('settings-open', settingsOpen);
   els.shell.classList.toggle('home-mode', !settingsOpen && state.view === 'home');
   els.shell.classList.toggle('session-mode', !settingsOpen && state.view === 'session');
+  els.shell.classList.toggle('filtered-breakdown-mode', !settingsOpen && !detailOpen && ['model', 'session'].includes(state.view));
   els.settingsPanel.classList.toggle('hidden', !settingsOpen);
   els.settingsPanel.setAttribute('aria-hidden', String(!settingsOpen));
   els.homePanel.classList.toggle('hidden', settingsOpen || state.view !== 'home');
   els.limitsPanel.classList.toggle('hidden', settingsOpen || state.view !== 'limits');
+  els.breakdownToolbar.classList.toggle('hidden', settingsOpen || detailOpen || !['model', 'session'].includes(state.view));
   els.breakdown.classList.toggle('hidden', settingsOpen || detailOpen || !['tool', 'model', 'session'].includes(state.view));
   els.sessionDetailHead.classList.toggle('hidden', !detailOpen);
   els.sessionDetail.classList.toggle('hidden', !detailOpen);
@@ -1839,7 +1846,7 @@ document.addEventListener('click', (event) => {
   }
   if (state.providerFilterMenuOpen && !event.target.closest?.('.provider-filter')) {
     state.providerFilterMenuOpen = false;
-    if (['model', 'session'].includes(state.view)) renderBreakdown();
+    if (['model', 'session'].includes(state.view)) renderProviderFilterToolbar();
   }
 });
 
@@ -1853,7 +1860,7 @@ document.addEventListener('keydown', (event) => {
   if (state.providerFilterMenuOpen) {
     event.preventDefault();
     state.providerFilterMenuOpen = false;
-    renderBreakdown();
+    renderProviderFilterToolbar();
     return;
   }
   if (state.settingsOpen) {

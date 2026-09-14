@@ -250,10 +250,15 @@ html, body, #app {
 
 /* Provider filter shared by Models and Sessions. Keep it compact at the
    300 px minimum window width instead of spreading provider chips across a row. */
+.breakdown-toolbar {
+  position: relative;
+  z-index: 7;
+  flex: 0 0 auto;
+  min-width: 0;
+}
 .provider-filter {
-  position: sticky;
-  top: 0;
-  z-index: 6;
+  position: relative;
+  z-index: 1;
   display: flex;
   width: 100%;
   min-width: 0;
@@ -332,6 +337,24 @@ html, body, #app {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+
+/* Model/Session lists keep scroll position legible without reserving a full
+   platform scrollbar. Other surfaces retain their existing hidden-scrollbar policy. */
+.shell.filtered-breakdown-mode .breakdown {
+  padding-right: 3px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--line-rgb), 0.16) transparent;
+}
+.shell.filtered-breakdown-mode .breakdown::-webkit-scrollbar { width: 4px; height: 4px; }
+.shell.filtered-breakdown-mode .breakdown::-webkit-scrollbar-track { background: transparent; }
+.shell.filtered-breakdown-mode .breakdown::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(var(--line-rgb), 0.14);
+}
+.shell.filtered-breakdown-mode .breakdown:hover::-webkit-scrollbar-thumb {
+  background: rgba(var(--line-rgb), 0.28);
 }
 
 /* Keep breakdown labels shrinkable so long model/session names cannot push the

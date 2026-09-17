@@ -18,7 +18,8 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 ### Usage, quota, and refresh
 
 - Rust owns stable normalized usage/history/quota/session contracts; raw tokScale/provider payloads do not cross into the renderer contract.
-- First launch is progressive: Today renders before slower quota/Month/All-Time work completes. Non-forced duplicate loads share in-flight work; manual refresh starts a fresh read.
+- First launch is progressive: Today renders before slower quota/Month/All-Time work completes. Non-forced duplicate loads join the newest in-flight read, including a manual refresh; only the current request may populate cache. Superseded provider-recovery results cannot overwrite a newer full quota snapshot.
+- Missing quota percentages remain unknown rather than becoming 0%; a supplied used percentage may fill a missing remaining percentage. Genuine zero remains zero.
 - Full quota reads tokScale once, then runs Codex/Claude/Gemini/AGY enrichment concurrently and merges only each adapter's provider row.
 - Claude/Gemini credential recovery is separate from ordinary quota polling. While a credential is rejected, Token Lens does not re-probe the provider API with the same credential; provider-owned credential state must change before direct probing resumes.
 - Provider `Retry-After` deadlines survive restart in `provider-rate-limits.json`; Claude/Gemini also use the bounded in-process 5/15/30/60-minute repeated-429 protection.
@@ -55,11 +56,12 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Installed bundles use Tauri `externalBin` with pinned tokScale 4.15.1. Windows also ships a single-file portable EXE that embeds only compressed `tokscale.exe` and extracts it to an isolated temporary run directory.
 - Windows packaging emits installer, portable EXE, and `SHA256SUMS.txt`; package helpers validate tokScale identity/version and PE expectations.
 - Provider incident logs are sanitized JSONL, capped and retained for up to 3 days. Startup timing retains only the latest 10 launches and records no account/path/credential/provider payload content.
-- Current `main` passes frontend/Rust tests, rustfmt, Clippy with warnings denied, native Tauri debug builds on macOS/Windows, npm audit gate, and Windows installer/portable packaging.
+- tokScale failures expose only coarse failure kind/exit status to the renderer; raw stderr, malformed stdout excerpts, and executable paths are excluded.
+- The 2026-09-18 audit changes pass 84 frontend tests, 132 Rust tests (9 live tests ignored), rustfmt, Clippy with warnings denied, the macOS native Tauri debug build, and npm audit (0 vulnerabilities). Windows CI/packaging and live UI/provider validation are separate gates, not inferred from the macOS run.
 
 ## Next action
 
-Continue ordinary packaged-runtime and visual validation rather than architectural rework. Preserve the validated boundaries: tokScale-first authority, no same-credential provider-API re-probe during recovery, restart-safe provider cooldowns, no Token Lens refresh-token redemption/credential writes, no inference request solely to refresh auth, and strict session-content minimization.
+Follow [the purpose audit](docs/purpose-audit-2026-09-18.md), starting with B1: isolate usage/quota failures and commit successful resources independently. Then address typed freshness/recovery state and bounded cache/session-metadata requests. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
 
 ## Known open items
 

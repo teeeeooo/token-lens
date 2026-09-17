@@ -6,7 +6,8 @@ This directory contains the durable Token Lens v2 documentation. Keep it intenti
 
 1. [`../STATE.md`](../STATE.md) — current engineering state and next action.
 2. [`architecture/v2-architecture.md`](architecture/v2-architecture.md) — durable v2 system contract.
-3. [`migration/v1-porting-map.md`](migration/v1-porting-map.md) — read only when reusing or comparing v1 code.
+3. [`purpose-audit-2026-09-18.md`](purpose-audit-2026-09-18.md) — purpose-alignment findings, applied fixes, and executable follow-up specifications (B1–B5).
+4. [`migration/v1-porting-map.md`](migration/v1-porting-map.md) — read only when reusing or comparing v1 code.
 
 ## Authority
 

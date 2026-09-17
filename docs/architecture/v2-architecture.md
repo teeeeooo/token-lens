@@ -211,7 +211,7 @@ The renderer must run under an explicit Content Security Policy rather than an u
 
 ## Normalization boundary
 
-Raw tokScale JSON and raw provider/RPC responses must not become renderer contracts.
+Raw tokScale JSON and raw provider/RPC responses must not become renderer contracts. This boundary also applies to failures: tokScale stderr, malformed stdout excerpts, and executable paths must not be embedded in renderer-facing errors. Expose only coarse failure kinds or exit status, not content-based redaction of arbitrary CLI output.
 
 The backend owns a small stable domain model with four response families:
 

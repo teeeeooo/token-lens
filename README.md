@@ -103,7 +103,7 @@ Token Lens does not download or update tokScale at runtime.
 
 ## 🔒 Security & Privacy
 
-Token Lens is a **monitor**, not an authentication manager or transcript viewer.
+Token Lens is a **monitor**, not an authentication manager or transcript viewer. This privacy boundary also covers tokScale command failures: raw stderr, malformed stdout excerpts, and executable paths are not forwarded to the renderer.
 
 1. **No Token Lens credential store** — Token Lens does not own provider accounts, provide general account switching, or refresh provider OAuth credentials. It consumes only existing provider-owned state or explicitly supplied read-only credential snapshots where the architecture permits them.
 2. **Content-minimized session processing** — local provider session files may be read in-process to derive approved metadata such as timestamps, token/cache counts, tool names, turn structure, provider-owned titles, and project labels. Prompt/response text, content previews, reasoning summaries, and transcript-derived title fallbacks are excluded from the renderer-facing data model.

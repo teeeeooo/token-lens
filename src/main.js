@@ -94,6 +94,8 @@ const state = {
   historyLoading: false,
   historyError: '',
   historyLoadedAt: 0,
+  historyGeneration: 0,
+  historyResource: { status: 'loading', lastSuccessAtMs: null, error: null },
   historyScrollLeft: null,
   historyFollowEnd: true,
   settings: {
@@ -664,6 +666,16 @@ function renderHeadline() {
   const totals = filterApplies
     ? providerFilteredTotals(period, state.providerFilter)
     : { totalTokens: period.totalTokens, costUsd: period.costUsd };
+  const resource = state.stats?.resources?.[state.period];
+  if (!state.stats?.periods?.[state.period]) {
+    els.totalTokens.textContent = '—';
+    els.totalTokensCompact.textContent = '';
+    els.totalTokensCompact.classList.add('hidden');
+    els.cost.textContent = '—';
+    syncPeriodTabs();
+    return;
+  }
+  els.totalTokens.title = resource?.status === 'stale' ? t('common.stale') : '';
   const total = Math.max(0, Number(totals.totalTokens) || 0);
   els.totalTokens.textContent = formatNumber(total);
   const compactLabel = compactTotalLabel(total, state.settings.showCompactTotalTokens);
@@ -1235,16 +1247,20 @@ function renderProviderFilterToolbar() {
 
 function renderBreakdown() {
   renderProviderFilterToolbar();
+  const scrollTop = els.breakdown.scrollTop;
   const rows = rowsForView();
   const max = Math.max(1, ...rows.map((row) => row.value));
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
-    empty.textContent = state.view === 'session' ? t('session.noSessionUsage') : t('common.noUsage');
+    empty.textContent = !state.stats?.periods?.[state.period]
+      ? t(state.stats?.resources?.[state.period]?.status === 'unavailable' ? 'common.unavailable' : 'common.loading')
+      : state.view === 'session' ? t('session.noSessionUsage') : t('common.noUsage');
     els.breakdown.replaceChildren(empty);
     return;
   }
   els.breakdown.replaceChildren(...rows.map((row) => breakdownRow(row, max, state.view)));
+  els.breakdown.scrollTop = scrollTop;
 }
 
 function hasExplicitHomeQuotaSelection(providerId) {
@@ -1410,6 +1426,7 @@ function statsRequestOptions(force = false, period = state.period) {
   const derived = derivedRequest(period, { locale: currentLocale() });
   return {
     force,
+    period,
     includeSessionMetadata: state.view === 'session',
     ...(derived ? { derived } : {}),
   };
@@ -1476,20 +1493,28 @@ function renderViewSwitcher() {
 }
 
 async function loadDashboardHistory({ force = false } = {}) {
-  if (state.historyLoading) return;
+  if (state.historyLoading && !force) return;
   const recentAttempt = state.historyLoadedAt > 0 && Date.now() - state.historyLoadedAt < HISTORY_REFRESH_MS;
   if (!force && recentAttempt) return;
+  const generation = ++state.historyGeneration;
   state.historyLoading = true;
+  state.historyResource = { ...state.historyResource, status: 'loading', error: null };
   state.historyError = '';
   if (state.view === 'home' && state.stats) renderHome();
   try {
-    state.history = await window.tokenMonitor.getDashboardHistory();
+    const history = await window.tokenMonitor.getDashboardHistory();
+    if (generation !== state.historyGeneration) return;
+    state.history = history;
+    state.historyResource = { status: 'ready', lastSuccessAtMs: history.generatedAtMs || null, error: null };
     state.historyLoadedAt = Date.now();
   } catch (error) {
     console.error(error);
-    state.historyError = error?.message || 'Failed to load usage history';
+    if (generation !== state.historyGeneration) return;
+    state.historyError = 'Failed to load usage history';
+    state.historyResource = { ...state.historyResource, status: state.history ? 'stale' : 'unavailable', error: state.historyError };
     state.historyLoadedAt = Date.now();
   } finally {
+    if (generation !== state.historyGeneration) return;
     state.historyLoading = false;
     if (state.view === 'home' && state.stats) renderHome();
   }
@@ -1532,7 +1557,8 @@ function mergeStatsPatch(patch, generation) {
     ...state.stats,
     ...(patch?.limits ? { limits: patch.limits } : {}),
     periods: { ...state.stats.periods, ...(patch?.periods || {}) },
-    updatedAt: new Date(Math.max(incomingAt, currentAt, Date.now())).toISOString(),
+    resources: { ...state.stats.resources, ...patch?.resources },
+    updatedAt: Math.max(incomingAt, currentAt) > 0 ? new Date(Math.max(incomingAt, currentAt)).toISOString() : '',
   };
   return true;
 }
@@ -1542,7 +1568,7 @@ async function loadPeriodIfMissing(period) {
   const generation = state.statsGeneration;
   try {
     const result = await window.tokenMonitor.getPeriodStats(period);
-    if (!mergeStatsPatch({ periods: { [period]: result.value }, updatedAt: result.updatedAt }, generation)) return;
+    if (!mergeStatsPatch({ periods: { [period]: result.value }, updatedAt: result.updatedAt, resources: result.resources }, generation)) return;
     if (state.period === period) render();
   } catch (error) {
     console.error(error);
@@ -1561,9 +1587,16 @@ async function refresh({ force = false } = {}) {
   els.refreshButton.classList.add('is-refreshing');
   setStatus(t('common.refreshing'));
   try {
-    const nextStats = await window.tokenMonitor.getStats(statsRequestOptions(force, requestPeriod));
+    const nextStats = await window.tokenMonitor.getStats({
+      ...statsRequestOptions(force, requestPeriod),
+      onPatch(patch) {
+        if (!mergeStatsPatch(patch, generation)) return;
+        if (patch.resources?.quota?.status !== 'loading' && patch.resources?.quota) state.quotaLoading = false;
+        render();
+      },
+    });
     if (generation !== state.statsGeneration) return;
-    state.stats = nextStats;
+    mergeStatsPatch(nextStats, generation);
     state.quotaLoading = false;
     if (force) state.historyLoadedAt = 0;
     const today = state.stats?.periods?.today || {};
@@ -1926,6 +1959,9 @@ async function runBootstrapBackground(generation) {
     recordStartupTiming('slow-usage-start');
     try {
       const patch = await window.tokenMonitor.preloadSlowUsage({
+        onPatch(patch) {
+          if (mergeStatsPatch(patch, generation)) render();
+        },
         onProgress(period) {
           if (period === 'month') recordStartupTiming('month-preload-ready');
           if (period === 'allTime') recordStartupTiming('alltime-preload-ready');

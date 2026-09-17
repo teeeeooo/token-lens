@@ -61,7 +61,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 
 ## Next action
 
-Follow [the purpose audit](docs/purpose-audit-2026-09-18.md), starting with B1: isolate usage/quota failures and commit successful resources independently. Then address typed freshness/recovery state and bounded cache/session-metadata requests. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
+B1 resource failure isolation and progressive commits are implemented. Continue [the purpose audit](docs/purpose-audit-2026-09-18.md) with B2 typed freshness/recovery state, then B3/B4 bounded cache/session metadata. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
 
 ## Known open items
 

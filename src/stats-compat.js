@@ -258,6 +258,8 @@ export function createStatsLoader({
 } = {}) {
   const cache = new Map();
   const inFlight = new Map();
+  const resourceOwners = new Map();
+  let refreshGeneration = 0;
 
   async function cached(key, ttlMs, loader, force) {
     // Readers join the newest request, including a forced refresh, before using old cache.
@@ -325,91 +327,127 @@ export function createStatsLoader({
     }
   }
 
-  function partialStats(periods, reports, limitsReport = null) {
+  function partialStats(periods = {}, reports = [], limitsReport = null) {
     const generatedAt = latestGeneratedAt(reports.filter(Boolean));
     return {
-      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
+      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
       periods,
-      limits: quotaReportToCompatLimits(limitsReport || { generatedAtMs: 0, providers: [] }),
+      ...(limitsReport ? { limits: quotaReportToCompatLimits(limitsReport) } : {}),
       devices: [],
       historyAvailable: true,
+      resources: {},
     };
+  }
+
+  async function resource(key, load, convert, onPatch = () => {}) {
+    const owner = {};
+    resourceOwners.set(key, owner);
+    const previous = cache.get(key)?.value;
+    const state = { status: 'loading', lastSuccessAtMs: previous?.generatedAtMs || null, error: null };
+    onPatch({ resources: { [key]: state } });
+    let raw;
+    try {
+      raw = await load();
+      state.status = 'ready';
+      state.lastSuccessAtMs = raw?.generatedAtMs || null;
+    } catch (_) {
+      raw = cache.get(key)?.value;
+      state.status = raw ? 'stale' : 'unavailable';
+      state.lastSuccessAtMs = raw?.generatedAtMs || null;
+      state.error = 'Resource collection failed';
+    }
+    if (resourceOwners.get(key) !== owner) return {};
+    resourceOwners.delete(key);
+    const patch = raw ? convert(raw) : {};
+    if (key === 'quota' && state.status === 'stale') {
+      for (const provider of patch.limits.providers) provider.status = provider.windows.length ? 'stale' : 'unavailable';
+    }
+    patch.resources = { [key]: state };
+    onPatch(patch);
+    return patch;
+  }
+
+  function combine(target, patch) {
+    Object.assign(target, {
+      ...patch,
+      periods: { ...target.periods, ...patch.periods },
+      resources: { ...target.resources, ...patch.resources },
+      updatedAt: [target.updatedAt, patch.updatedAt].filter(Boolean).sort().at(-1) || '',
+    });
+    return target;
+  }
+
+  function periodPatch(period, raw) {
+    return partialStats({ [period]: usageReportToCompatPeriod(raw) }, [raw]);
   }
 
   async function getBootstrapStats(options = {}) {
-    const today = await loadUsagePeriod('today', options?.force === true);
-    return partialStats({ today: usageReportToCompatPeriod(today) }, [today]);
+    const patch = await resource('today', () => loadUsagePeriod('today', options.force === true),
+      (raw) => periodPatch('today', raw));
+    return combine({ ...partialStats(), limits: quotaReportToCompatLimits(null) }, patch);
   }
 
   async function getPeriodStats(period, options = {}) {
-    const raw = await loadUsagePeriod(period, options?.force === true);
-    return {
-      period,
-      value: usageReportToCompatPeriod(raw),
-      updatedAt: raw?.generatedAtMs > 0 ? new Date(raw.generatedAtMs).toISOString() : new Date().toISOString(),
-    };
+    const raw = await loadUsagePeriod(period, options.force === true);
+    return { period, value: usageReportToCompatPeriod(raw),
+      updatedAt: raw?.generatedAtMs > 0 ? new Date(raw.generatedAtMs).toISOString() : '',
+      resources: { [period]: { status: 'ready', lastSuccessAtMs: raw?.generatedAtMs || null, error: null } } };
   }
 
   async function getQuotaLimits(options = {}) {
-    const raw = await loadQuotaReport(options?.force === true);
-    return {
-      limits: quotaReportToCompatLimits(raw),
-      updatedAt: raw?.generatedAtMs > 0 ? new Date(raw.generatedAtMs).toISOString() : new Date().toISOString(),
-    };
+    return resource('quota', () => loadQuotaReport(options.force === true),
+      (raw) => partialStats({}, [raw], raw), options.onPatch);
   }
 
   async function preloadSlowUsage(options = {}) {
-    const force = options?.force === true;
-    const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : () => {};
-    const month = await loadUsagePeriod('month', force);
-    onProgress('month');
-    const allTime = await loadUsagePeriod('allTime', force);
-    onProgress('allTime');
-    const generatedAt = latestGeneratedAt([month, allTime]);
-    return {
-      updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : new Date().toISOString(),
-      periods: { month: usageReportToCompatPeriod(month), allTime: usageReportToCompatPeriod(allTime) },
-    };
+    const result = partialStats();
+    for (const period of ['month', 'allTime']) {
+      const patch = await resource(period, () => loadUsagePeriod(period, options.force === true),
+        (raw) => periodPatch(period, raw), options.onPatch);
+      combine(result, patch);
+      options.onProgress?.(period);
+    }
+    return result;
   }
 
   async function getStats(options = {}) {
-    const force = options?.force === true;
-    const includeSessionMetadata = options?.includeSessionMetadata === true;
-    const derived = options?.derived && typeof options.derived === 'object' ? options.derived : null;
-    // Full refresh preserves the established serial scan order; bootstrap uses the phased helpers below.
-    const today = await loadUsagePeriod('today', force);
-    const month = await loadUsagePeriod('month', force);
-    const allTime = await loadUsagePeriod('allTime', force);
-    let derivedReport = null;
-    if (derived?.key && derived?.since) {
-      const cacheKey = `derived:${derived.key}:${derived.since}`;
-      derivedReport = await cached(cacheKey, DERIVED_CACHE_MS, () => usageSince(derived.since, 'client_session_model'), force);
-    }
-    const limitsReport = await loadQuotaReport(force);
-    const periods = {
-      today: usageReportToCompatPeriod(today),
-      month: usageReportToCompatPeriod(month),
-      allTime: usageReportToCompatPeriod(allTime),
+    const generation = ++refreshGeneration;
+    const force = options.force === true;
+    const result = partialStats();
+    const publish = (patch) => {
+      if (generation !== refreshGeneration) return;
+      combine(result, patch);
+      options.onPatch?.(patch);
     };
-    if (derivedReport) periods[derived.key] = usageReportToCompatPeriod(derivedReport);
-
-    const metadataRefs = includeSessionMetadata ? sessionMetadataRefs(periods) : [];
-    if (metadataRefs.length) {
-      const metadataKey = metadataRefs.map((item) => `${item.client}:${item.sessionId}`).join('|');
-      try {
-        const metadataReport = await cached(
-          `sessionMetadata:${metadataKey}`,
-          SESSION_METADATA_CACHE_MS,
-          () => sessionMetadata(metadataRefs),
-          force,
-        );
-        applySessionMetadata(periods, metadataReport);
-      } catch (_) {
-        // Session titles are optional enrichment; usage/quota must remain available if metadata lookup fails.
-      }
+    // Quota is independent; disk-heavy usage scans remain serial and Today-first.
+    const quotaTask = getQuotaLimits({ force, onPatch: publish });
+    for (const period of ['today', 'month', 'allTime']) {
+      if (generation !== refreshGeneration) break;
+      await resource(period, () => loadUsagePeriod(period, force), (raw) => periodPatch(period, raw), publish);
     }
-
-    return partialStats(periods, [today, month, allTime, limitsReport, derivedReport], limitsReport);
+    const derived = options.derived;
+    if (generation === refreshGeneration && derived?.key && derived?.since) {
+      const key = `derived:${derived.key}:${derived.since}`;
+      await resource(key, () => cached(key, DERIVED_CACHE_MS,
+        () => usageSince(derived.since, 'client_session_model'), force),
+      (raw) => periodPatch(derived.key, raw), (patch) => {
+        if (patch.resources?.[key]) patch.resources = { [derived.key]: patch.resources[key] };
+        publish(patch);
+      });
+    }
+    await quotaTask;
+    const refs = options.includeSessionMetadata ? sessionMetadataRefs(result.periods) : [];
+    if (refs.length && generation === refreshGeneration) {
+      try {
+        const metadata = await cached(`sessionMetadata:${refs.map((ref) => sessionKey(ref.client, ref.sessionId)).join('|')}`,
+          SESSION_METADATA_CACHE_MS, () => sessionMetadata(refs), force);
+        if (generation === refreshGeneration) {
+          applySessionMetadata(result.periods, metadata);
+          publish({ periods: result.periods });
+        }
+      } catch (_) { /* Optional metadata keeps provider basename/id fallbacks. */ }
+    }
+    return result;
   }
 
   getStats.getBootstrapStats = getBootstrapStats;

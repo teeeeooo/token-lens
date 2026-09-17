@@ -292,3 +292,9 @@ Token Lens v2 is an independent downstream application derived from Token Monito
 ## Implementation discipline
 
 When a v1 behavior is needed, identify the smallest semantic or UI unit that owns it and port that unit deliberately. Do not pull transitive v1 infrastructure into v2 unless the architecture contract explicitly requires it.
+
+## Resource refresh contract
+
+Today, Month, All Time, the selected derived period, quota, and history have independent loading/ready/stale/unavailable state, a last-success timestamp, and coarse collection errors. Successful resources commit progressively; failed usage retains its previous successful value or remains unavailable, never a fabricated zero. Quota runs independently of serial Today → Month → All Time disk scans. Request ownership guards both cache writes and progressive patches. Rendering retains the provider filter and list scroll position.
+
+A failed tokScale quota command produces unavailable base rows, then permitted independent provider enrichments run and merge only their own row. No prior-account base report is reused. Without tokScale identity, Codex permits only an OAuth read bound to a known selected workspace, checked before and after collection; App Server supplementation still requires the established account/workspace checks and is skipped for an unidentified base.

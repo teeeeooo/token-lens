@@ -175,6 +175,13 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
+    // Without tokScale identity, only a workspace-bound OAuth read is safe.
+    // App Server cannot prove its workspace solely from an absent email.
+    let unidentified_base = report.providers[index].account_email.is_none()
+        && report.providers[index].windows.is_empty();
+    if unidentified_base && expected_workspace_id.is_none() {
+        return report;
+    }
     let before_workspace = selected_workspace_id(home);
     if before_workspace != expected_workspace_id {
         return report;
@@ -208,6 +215,14 @@ pub(crate) async fn enrich_quota_report(
         return report;
     }
 
+    if unidentified_base {
+        report.providers[index].diagnostic = if diagnostics.is_empty() {
+            None
+        } else {
+            Some(diagnostics.join(" · "))
+        };
+        return report;
+    }
     let expected_email = report.providers[index].account_email.clone();
     let snapshot = match read_app_server_snapshot().await {
         Ok(snapshot) => snapshot,

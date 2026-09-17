@@ -130,6 +130,34 @@ pub async fn get_session_detail(
     .map_err(|error| format!("session detail task failed: {error}"))
 }
 
+fn quota_base(result: Result<QuotaReport, String>) -> QuotaReport {
+    result.unwrap_or_else(|_| QuotaReport {
+        generated_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+        providers: [
+            SupportedProvider::Codex,
+            SupportedProvider::Claude,
+            SupportedProvider::Gemini,
+            SupportedProvider::Antigravity,
+        ]
+        .into_iter()
+        .map(|provider| QuotaProvider {
+            provider,
+            plan: None,
+            account_email: None,
+            diagnostic: Some("Base quota collection unavailable".to_owned()),
+            windows: Vec::new(),
+            reset_credits: None,
+            credit_status: None,
+            spend_control: None,
+        })
+        .collect(),
+        source: "tokscale",
+    })
+}
+
 #[tauri::command]
 pub async fn get_quota_report(
     app: AppHandle,
@@ -141,7 +169,9 @@ pub async fn get_quota_report(
     let expected_workspace_id = home
         .as_deref()
         .and_then(codex_business::selected_workspace_id);
-    let report = adapter.quota_report().await?;
+    // Base failure must not suppress independent provider adapters. Never reuse an
+    // old base here: it may belong to the account selected before this refresh.
+    let report = quota_base(adapter.quota_report().await);
     app.state::<StartupTiming>()
         .record_internal("quota-tokscale-ready");
     let report = match home {
@@ -413,6 +443,27 @@ mod tests {
             credit_status: None,
             spend_control: None,
         }
+    }
+
+    #[test]
+    fn failed_base_keeps_independent_provider_merge_and_sanitizes_error() {
+        let mut base = quota_base(Err("private payload sentinel".to_owned()));
+        let enriched = QuotaReport {
+            generated_at_ms: 2,
+            providers: vec![quota_provider(
+                SupportedProvider::Gemini,
+                "independent result",
+            )],
+            source: "test",
+        };
+        merge_provider_result(&mut base, enriched, SupportedProvider::Gemini);
+        assert_eq!(base.providers.len(), 4);
+        assert_eq!(
+            base.providers[2].diagnostic.as_deref(),
+            Some("independent result")
+        );
+        assert_eq!(base.providers[0].windows.len(), 0);
+        assert!(!serde_json::to_string(&base).unwrap().contains("sentinel"));
     }
 
     #[test]

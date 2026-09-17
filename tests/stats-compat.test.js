@@ -164,10 +164,10 @@ test('getStats compatibility loader keeps tokScale scans serial and exposes v1 p
 
   const stats = await getStats();
   assert.deepEqual(calls, [
+    'quota',
     'usage:today:client_session_model',
     'usage:month:client_session_model',
     'usage:all_time:client_session_model',
-    'quota',
   ]);
   assert.deepEqual(Object.keys(stats.periods), ['today', 'month', 'allTime']);
   assert.equal(stats.historyAvailable, true);
@@ -191,7 +191,7 @@ test('getStats caches slower ranges and refreshes today independently', async ()
   clock += 31_000;
   await getStats();
   assert.deepEqual(calls, [
-    'usage:today', 'usage:month', 'usage:all_time', 'quota',
+    'quota', 'usage:today', 'usage:month', 'usage:all_time',
     'usage:today',
   ]);
 });
@@ -457,4 +457,71 @@ test('late recovery cannot overwrite a newer full quota snapshot', async () => {
   const latest = await stats.getQuotaLimits();
   assert.equal(latest.limits.providers[0].windows[0]?.remainingPercent, 80);
   assert.equal(calls, 2);
+});
+
+test('partial refresh commits Today and quota even when Month fails', async () => {
+  const patches = [];
+  const stats = createStatsLoader({
+    usage: async (period) => { if (period === 'month') throw new Error('private sentinel'); return countedReport(42); },
+    quota: async () => ({ generatedAtMs: 42, providers: [] }),
+  });
+  const result = await stats({ onPatch: (patch) => patches.push(patch) });
+  assert.equal(result.periods.today.totalTokens, 42);
+  assert.equal(result.periods.month, undefined);
+  assert.equal(result.resources.month.status, 'unavailable');
+  assert.equal(result.resources.quota.status, 'ready');
+  assert.ok(patches.some((patch) => patch.periods?.today));
+  assert.ok(!JSON.stringify(result).includes('private sentinel'));
+});
+
+test('quota failure retains stale quota without blocking fresh usage', async () => {
+  let fail = false;
+  const stats = createStatsLoader({ usage: async () => countedReport(fail ? 20 : 10),
+    quota: async () => { if (fail) throw new Error('private'); return { generatedAtMs: 100, providers: [{ provider: 'codex', windows: [{ remainingPercent: 50 }] }] }; },
+  });
+  await stats();
+  fail = true;
+  const result = await stats({ force: true });
+  assert.equal(result.periods.today.totalTokens, 20);
+  assert.equal(result.resources.quota.status, 'stale');
+  assert.equal(result.resources.quota.lastSuccessAtMs, 100);
+  assert.equal(result.limits.providers[0].status, 'stale');
+});
+
+test('Today and quota patches arrive before a delayed Month and All Time stays serial', async () => {
+  const month = deferred();
+  const seen = [];
+  const calls = [];
+  const stats = createStatsLoader({ usage: async (period) => {
+    calls.push(period);
+    if (period === 'month') return month.promise;
+    return countedReport(7);
+  }, quota: async () => ({ generatedAtMs: 1, providers: [] }) });
+  const task = stats({ onPatch: (p) => seen.push(p) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(seen.some((p) => p.periods?.today?.totalTokens === 7));
+  assert.ok(seen.some((p) => p.resources?.quota?.status === 'ready'));
+  assert.deepEqual(calls, ['today', 'month']);
+  month.reject(new Error('timeout'));
+  const result = await task;
+  assert.equal(result.resources.month.status, 'unavailable');
+  assert.deepEqual(calls, ['today', 'month', 'all_time']);
+});
+
+test('superseded full refresh cannot publish late data or start later scans', async () => {
+  const old = deferred();
+  const patches = [];
+  let first = true;
+  const stats = createStatsLoader({ usage: async () => {
+    if (first) { first = false; return old.promise; }
+    return countedReport(20);
+  }, quota: async () => ({ generatedAtMs: 1, providers: [] }) });
+  const earlier = stats({ onPatch: (p) => patches.push(p) });
+  await new Promise((resolve) => setImmediate(resolve));
+  await stats({ force: true });
+  const before = patches.length;
+  old.resolve(countedReport(10));
+  await earlier;
+  assert.equal(patches.length, before);
+  assert.equal((await stats()).periods.today.totalTokens, 20);
 });

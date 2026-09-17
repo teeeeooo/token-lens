@@ -235,13 +235,15 @@ fn finish_attempt(report: &mut QuotaReport, now: u64) {
 }
 
 fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport {
+    // Preserve freshly collected tokScale lanes even when optional spend
+    // enrichment needs credential recovery. Stale input is never re-captured.
+    cache_last_good(&report, now_ms());
     let needs = report
         .providers
         .iter()
         .find(|provider| provider.provider == SupportedProvider::Claude)
         .map_or(true, provider_needs_enrichment);
     if !needs {
-        cache_last_good(&report, now_ms());
         clear_runtime_rate_limit_state();
         clear_auth_recovery();
         AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
@@ -1516,6 +1518,24 @@ mod tests {
             FailurePresentation::Stale
         );
         assert_eq!(report.providers[0].freshness.status, QuotaStatus::Stale);
+        assert_eq!(
+            report.providers[0].freshness.last_success_at_ms,
+            Some(1_000)
+        );
+        runtime_state()
+            .lock()
+            .unwrap()
+            .last_good
+            .as_mut()
+            .unwrap()
+            .provider
+            .windows[0]
+            .resets_at = Some("1970-01-01T00:00:02Z".to_owned());
+        assert_eq!(
+            apply_failure_with_cache(&mut report, "reset passed", 10_001),
+            FailurePresentation::Unavailable
+        );
+        assert!(report.providers[0].windows.is_empty());
         assert_eq!(
             report.providers[0].freshness.last_success_at_ms,
             Some(1_000)

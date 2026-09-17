@@ -60,7 +60,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Windows packaging emits installer, portable EXE, and `SHA256SUMS.txt`; package helpers validate tokScale identity/version and PE expectations.
 - Provider incident logs are sanitized JSONL, capped and retained for up to 3 days. Startup timing retains only the latest 10 launches and records no account/path/credential/provider payload content.
 - tokScale failures expose only coarse failure kind/exit status to the renderer; raw stderr, malformed stdout excerpts, and executable paths are excluded.
-- The B1–B5 automated work passes 97 frontend tests, 137 Rust tests (9 live tests ignored), and 9 Chromium DOM integration tests with a synthetic Tauri backend. rustfmt, Clippy with warnings denied, the macOS native Tauri debug build, and npm audit (0 vulnerabilities) pass. CI runs the DOM suite on macOS and Windows; Windows installer/portable packaging remains an independent workflow. Native Windows behavior and live provider validation are separate gates, never inferred from these results.
+- The B1–B5 automated work passes 97 frontend tests, 138 Rust tests (9 live tests ignored), and 9 Chromium DOM integration tests with a synthetic Tauri backend. rustfmt, Clippy with warnings denied, the macOS native Tauri debug build, and npm audit (0 vulnerabilities) pass. CI runs the DOM suite on macOS and Windows; Windows installer/portable packaging remains an independent workflow. Native Windows behavior and live provider validation are separate gates, never inferred from these results.
 
 ## Next action
 

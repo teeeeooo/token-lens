@@ -58,6 +58,20 @@ fn report_provider_recovery_pending(report: &QuotaReport, provider: SupportedPro
         .is_some_and(provider_auth_recovery_pending)
 }
 
+fn prepare_provider_recovery(report: &mut QuotaReport, provider: SupportedProvider) {
+    if let Some(item) = report
+        .providers
+        .iter_mut()
+        .find(|item| item.provider == provider)
+    {
+        // This row is a previous collection, not fresh tokScale input. Only an
+        // actual successful probe may promote it to ready again.
+        if !item.windows.is_empty() {
+            item.freshness.status = crate::domain::QuotaStatus::Stale;
+        }
+    }
+}
+
 fn merge_provider_result(
     report: &mut QuotaReport,
     enriched: QuotaReport,
@@ -237,10 +251,12 @@ pub async fn get_quota_recovery_report(
     let mut attempted = false;
     if report_provider_recovery_pending(&report, SupportedProvider::Claude) {
         attempted = true;
+        prepare_provider_recovery(&mut report, SupportedProvider::Claude);
         report = claude_quota::enrich_quota_report(&home, report).await;
     }
     if report_provider_recovery_pending(&report, SupportedProvider::Gemini) {
         attempted = true;
+        prepare_provider_recovery(&mut report, SupportedProvider::Gemini);
         report = gemini_quota::enrich_quota_report(&home, report).await;
     }
     if attempted {
@@ -513,6 +529,42 @@ mod tests {
             base.providers[1].diagnostic.as_deref(),
             Some("parallel-gemini")
         );
+    }
+
+    #[test]
+    fn recovery_input_is_stale_without_refreshing_its_capture_time() {
+        let mut provider = quota_provider(SupportedProvider::Claude, "description");
+        provider.windows.push(crate::domain::QuotaWindow {
+            kind: crate::domain::QuotaWindowKind::Session,
+            label: "5h".to_owned(),
+            metric: "quota",
+            additional: false,
+            used: None,
+            limit: None,
+            remaining: None,
+            used_percent: None,
+            remaining_percent: Some(50.0),
+            remaining_label: None,
+            resets_at: None,
+            currency: None,
+            show_meter: true,
+            source: "test",
+        });
+        provider.record_success(100);
+        provider.freshness.recovery_state = crate::domain::RecoveryState::Pending;
+        let mut report = QuotaReport {
+            generated_at_ms: 100,
+            providers: vec![provider],
+            source: "test",
+        };
+        prepare_provider_recovery(&mut report, SupportedProvider::Claude);
+        assert_eq!(
+            report.providers[0].freshness.status,
+            crate::domain::QuotaStatus::Stale
+        );
+        assert_eq!(report.providers[0].freshness.last_success_at_ms, Some(100));
+        assert_eq!(report.providers[0].freshness.last_attempt_at_ms, Some(100));
+        assert!(provider_auth_recovery_pending(&report.providers[0]));
     }
 
     #[test]

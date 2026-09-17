@@ -201,7 +201,7 @@ provider의 `updatedAt`에 공통 보고서 생성 시각을 넣고, provider �
 | B5 자동화 | 가짜 Tauri backend를 주입한 실제 Chromium DOM 테스트 9개. bootstrap 지연/실패, 부분 갱신, 강제 갱신과 오래된 결과, null quota, rolling 날짜 변경, history 요청 세대, filter overlay/scroll 및 metadata 도착 검증. macOS/Windows CI에 추가. |
 | B5 실환경 | Windows taskbar/DPI/drag/tray/Acrylic, 실제 Claude/Gemini 복구, Codex Business/AGY, 설치 패키지 시각 검증은 미실행. 지정 환경이 필요하며 fixture 통과로 대체하지 않음. |
 
-후속 구현 로컬 결과: 프런트엔드 97 PASS, Rust 137 PASS/9 live ignored, DOM 9 PASS, production frontend build/rustfmt/Clippy/macOS native debug build PASS, npm audit 취약점 0. Windows CI와 installer/portable 결과는 해당 revision의 GitHub Actions에서 별도 확인한다.
+후속 구현 로컬 결과: 프런트엔드 97 PASS, Rust 138 PASS/9 live ignored, DOM 9 PASS, production frontend build/rustfmt/Clippy/macOS native debug build PASS, npm audit 취약점 0. Windows CI와 installer/portable 결과는 해당 revision의 GitHub Actions에서 별도 확인한다.
 
 B1 합성 실패를 수정 전 재현했고, B2의 문구 독립성 및 B3/B4의 크기·batch 테스트는 각각 이전 구현(`f84858f`, `8f9fb3b`)에서 실패하는 것을 확인했다. DOM 검증 중 날짜가 바뀐 rolling range의 실패가 이전 날짜 값을 남기는 회귀도 재현·수정했다. Today 미수집이 history/tray의 실제 값을 가짜 0으로 바꾸지 않으며, 강제 history 갱신도 오래된 응답을 차단한다.
 

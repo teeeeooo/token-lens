@@ -1,4 +1,5 @@
 use crate::domain::{QuotaProvider, QuotaReport, QuotaWindow, QuotaWindowKind, SupportedProvider};
+use crate::domain::{QuotaStatus, RecoveryState};
 use crate::gemini_cli;
 use crate::google_code_assist::{self, CodeAssistError, LoadSnapshot, QuotaBucket};
 use crate::provider_error_log::{self, ProviderIncident};
@@ -82,6 +83,7 @@ struct GeminiRuntimeState {
     last_rate_limit_cooldown_ms: u64,
     auth_recovery_baseline: Option<CredentialBaseline>,
     last_good: Option<CachedGeminiProvider>,
+    observed_credential: Option<CredentialBaseline>,
 }
 
 fn runtime_state() -> &'static Mutex<GeminiRuntimeState> {
@@ -182,9 +184,75 @@ fn auth_recovery_fetch_guard(home: &Path, now: u64) -> Option<AuthRecoveryGuard>
 pub(crate) async fn enrich_quota_report(home: &Path, report: QuotaReport) -> QuotaReport {
     let fallback = report.clone();
     let home = home.to_path_buf();
-    tokio::task::spawn_blocking(move || enrich_quota_report_sync(&home, report))
-        .await
-        .unwrap_or(fallback)
+    tokio::task::spawn_blocking(move || {
+        let mut report = report;
+        let current = credential_baseline(read_credential_snapshot(&home).as_ref());
+        reconcile_credential_context(&mut report, current);
+        let mut report = enrich_quota_report_sync(&home, report);
+        finish_attempt(&mut report, now_ms());
+        report
+    })
+    .await
+    .unwrap_or(fallback)
+}
+
+// Fingerprints stay private; conservatively drop last-good data on any credential
+// transition, including token rotation, rather than assume the account is unchanged.
+fn reconcile_credential_context(report: &mut QuotaReport, current: CredentialBaseline) {
+    let mut state = runtime_state().lock().unwrap_or_else(|p| p.into_inner());
+    let changed = state
+        .observed_credential
+        .is_some_and(|previous| previous != current);
+    state.observed_credential = Some(current);
+    if changed {
+        state.last_good = None;
+        for provider in report
+            .providers
+            .iter_mut()
+            .filter(|p| p.provider == SupportedProvider::Gemini)
+        {
+            if provider.freshness.status == QuotaStatus::Stale
+                || provider.freshness.recovery_state != RecoveryState::Idle
+            {
+                provider.windows.clear();
+                provider.account_email = None;
+                provider.plan = None;
+                provider.reset_credits = None;
+                provider.credit_status = None;
+                provider.spend_control = None;
+                provider.freshness = Default::default();
+            }
+        }
+    }
+}
+
+fn finish_attempt(report: &mut QuotaReport, now: u64) {
+    let recovering = runtime_state()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .auth_recovery_baseline
+        .is_some();
+    let retry = AUTH_REFRESH_RETRY_AFTER_MS.load(Ordering::Acquire);
+    let rate_retry =
+        active_cooldown_remaining_ms(now).map(|remaining| now.saturating_add(remaining));
+    if let Some(provider) = report
+        .providers
+        .iter_mut()
+        .find(|p| p.provider == SupportedProvider::Gemini)
+    {
+        provider.freshness.last_attempt_at_ms = Some(now);
+        provider.freshness.recovery_state = if recovering {
+            if AUTH_REFRESH_RUNNING.load(Ordering::Acquire) || retry <= now {
+                RecoveryState::Pending
+            } else {
+                RecoveryState::Cooldown
+            }
+        } else {
+            RecoveryState::Idle
+        };
+        provider.freshness.retry_at_ms =
+            rate_retry.or_else(|| (recovering && retry > now).then_some(retry));
+    }
 }
 
 fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport {
@@ -238,6 +306,15 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     // waits for the CLI to refresh its own credential; it never sends a model prompt or
     // scrapes provider output.
     let attempt = read_provider_with_reloaded_credential(home);
+    if attempt.credential_changed == Some(true) {
+        runtime_state()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_good = None;
+        report
+            .providers
+            .retain(|p| p.provider != SupportedProvider::Gemini);
+    }
     match attempt.result {
         Ok(provider) => {
             apply_success(&mut report, provider, now);
@@ -498,6 +575,7 @@ fn fetch_provider(home: &Path, access_token: &str) -> Result<QuotaProvider, Gemi
         reset_credits: None,
         credit_status: None,
         spend_control: None,
+        freshness: Default::default(),
     })
 }
 
@@ -549,7 +627,7 @@ fn recover_auth_in_background(
         match refresh.result {
             Ok(()) => {
                 AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
-                clear_auth_recovery();
+                // Keep recovery pending until the changed credential yields quota.
                 record_recovery_incident(
                     failure_for_job,
                     "credential_change_observed",
@@ -633,6 +711,13 @@ fn apply_success(report: &mut QuotaReport, provider: QuotaProvider, now: u64) {
     clear_rate_limit_state();
     clear_auth_recovery();
     AUTH_REFRESH_RETRY_AFTER_MS.store(0, Ordering::Release);
+    if let Some(provider) = report
+        .providers
+        .iter_mut()
+        .find(|p| p.provider == SupportedProvider::Gemini)
+    {
+        provider.record_success(now);
+    }
     cache_last_good(report, now);
 }
 
@@ -646,11 +731,7 @@ fn provider_has_usable_quota(provider: &QuotaProvider) -> bool {
 }
 
 fn provider_has_authoritative_quota(provider: &QuotaProvider) -> bool {
-    provider_has_usable_quota(provider)
-        && !provider
-            .diagnostic
-            .as_deref()
-            .is_some_and(|diagnostic| diagnostic.starts_with(STALE_DIAGNOSTIC_PREFIX))
+    provider_has_usable_quota(provider) && provider.freshness.status != QuotaStatus::Stale
 }
 
 fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
@@ -660,6 +741,10 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
         .iter_mut()
         .find(|provider| provider.provider == SupportedProvider::Gemini)
     {
+        if provider.freshness.status == QuotaStatus::Stale {
+            provider.windows.clear();
+            provider.freshness.status = QuotaStatus::Unavailable;
+        }
         provider.diagnostic = Some(detail);
         return;
     }
@@ -672,6 +757,7 @@ fn set_diagnostic(report: &mut QuotaReport, detail: impl Into<String>) {
         reset_credits: None,
         credit_status: None,
         spend_control: None,
+        freshness: Default::default(),
     });
 }
 
@@ -683,6 +769,11 @@ fn cache_last_good(report: &QuotaReport, captured_at_ms: u64) {
     };
     let mut provider = provider.clone();
     provider.diagnostic = None;
+    let captured_at_ms = provider
+        .freshness
+        .last_success_at_ms
+        .unwrap_or(captured_at_ms);
+    provider.freshness.last_success_at_ms = Some(captured_at_ms);
     let mut state = runtime_state()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -805,6 +896,8 @@ fn apply_failure_with_cache(
         return FailurePresentation::Unavailable;
     }
     let stale = format!("{STALE_DIAGNOSTIC_PREFIX} · {detail}");
+    cached.provider.freshness.status = QuotaStatus::Stale;
+    cached.provider.freshness.last_success_at_ms = Some(cached.captured_at_ms);
     cached.provider.diagnostic = Some(stale);
     if let Some(existing) = report
         .providers
@@ -1276,6 +1369,54 @@ mod tests {
     static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn freshness_stays_at_capture_and_credential_change_discards_old_account() {
+        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+        *runtime_state().lock().unwrap() = GeminiRuntimeState::default();
+        let mut provider = provider_fixture("2099-01-01T00:00:00Z");
+        provider.record_success(1_000);
+        let mut report = QuotaReport {
+            generated_at_ms: 2_000,
+            providers: vec![provider],
+            source: "test",
+        };
+        reconcile_credential_context(&mut report, CredentialBaseline::Present(1));
+        cache_last_good(&report, 9_000);
+        assert_eq!(
+            runtime_state()
+                .lock()
+                .unwrap()
+                .last_good
+                .as_ref()
+                .unwrap()
+                .captured_at_ms,
+            1_000
+        );
+        report.providers.clear();
+        assert_eq!(
+            apply_failure_with_cache(&mut report, "다른 설명", 10_000),
+            FailurePresentation::Stale
+        );
+        assert_eq!(report.providers[0].freshness.status, QuotaStatus::Stale);
+        assert_eq!(
+            report.providers[0].freshness.last_success_at_ms,
+            Some(1_000)
+        );
+        report.providers[0].freshness.recovery_state = RecoveryState::Pending;
+        reconcile_credential_context(&mut report, CredentialBaseline::Present(2));
+        assert!(report.providers[0].windows.is_empty());
+        assert!(runtime_state().lock().unwrap().last_good.is_none());
+        assert_eq!(
+            apply_failure_with_cache(&mut report, "new account unavailable", 11_000),
+            FailurePresentation::Unavailable
+        );
+        assert_eq!(report.providers[0].freshness.last_success_at_ms, None);
+        assert!(!serde_json::to_string(&report)
+            .unwrap()
+            .contains("fingerprint"));
+        *runtime_state().lock().unwrap() = GeminiRuntimeState::default();
+    }
+
+    #[test]
     fn cli_recovery_logs_use_recovery_identity_and_preserve_trigger() {
         assert_eq!(
             recovery_log_fields(&GeminiFailure::Unauthorized {
@@ -1359,6 +1500,7 @@ mod tests {
             reset_credits: None,
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         }
     }
 
@@ -1572,6 +1714,7 @@ mod tests {
     fn stale_gemini_quota_is_not_authoritative() {
         let mut provider = provider_fixture("2099-01-01T00:00:00Z");
         assert!(provider_has_authoritative_quota(&provider));
+        provider.freshness.status = QuotaStatus::Stale;
         provider.diagnostic = Some(format!(
             "{STALE_DIAGNOSTIC_PREFIX} · Gemini CLI credential refresh already in progress"
         ));
@@ -1671,6 +1814,7 @@ mod tests {
             reset_credits: None,
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         };
         assert!(provider_has_usable_quota(&provider));
     }

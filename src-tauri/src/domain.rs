@@ -222,9 +222,39 @@ pub struct QuotaReport {
     pub source: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaStatus {
+    Ready,
+    Stale,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryState {
+    #[default]
+    Idle,
+    Pending,
+    Cooldown,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaFreshness {
+    pub status: QuotaStatus,
+    pub recovery_state: RecoveryState,
+    pub last_success_at_ms: Option<u64>,
+    pub last_attempt_at_ms: Option<u64>,
+    pub retry_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaProvider {
+    #[serde(flatten)]
+    pub freshness: QuotaFreshness,
     pub provider: SupportedProvider,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
@@ -239,6 +269,21 @@ pub struct QuotaProvider {
     pub credit_status: Option<CreditStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_control: Option<SpendControl>,
+}
+
+impl QuotaProvider {
+    pub fn record_success(&mut self, at: u64) {
+        self.freshness = QuotaFreshness {
+            status: if self.windows.is_empty() {
+                QuotaStatus::Unavailable
+            } else {
+                QuotaStatus::Ready
+            },
+            last_success_at_ms: (!self.windows.is_empty()).then_some(at),
+            last_attempt_at_ms: Some(at),
+            ..QuotaFreshness::default()
+        };
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

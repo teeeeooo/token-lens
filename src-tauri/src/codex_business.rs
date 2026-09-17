@@ -373,6 +373,14 @@ fn apply_base_rate_limits(
         provider.windows.insert(insert_at, window);
         added += 1;
     }
+    if added > 0 {
+        provider.record_success(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        );
+    }
     added
 }
 
@@ -458,6 +466,12 @@ fn apply_individual_limit(provider: &mut QuotaProvider, raw: &IndividualLimit) -
         .position(|candidate| candidate.additional)
         .unwrap_or(provider.windows.len());
     provider.windows.insert(insert_at, window);
+    provider.record_success(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+    );
     true
 }
 
@@ -1244,6 +1258,7 @@ mod tests {
             }),
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         }
     }
 

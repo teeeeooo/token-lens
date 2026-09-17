@@ -83,7 +83,7 @@ test('quota diagnostics make empty provider failures actionable without changing
   });
   assert.equal(limits.providers[0].status, 'unavailable');
   assert.equal(limits.providers[0].diagnostic, 'Codex App Server: CLI not found');
-  assert.equal(limits.providers[1].status, 'ok');
+  assert.equal(limits.providers[1].status, 'unavailable');
   assert.equal(limits.providers[1].diagnostic, '');
 });
 
@@ -92,6 +92,7 @@ test('stale quota keeps last-good windows visible with an explicit stale status'
     generatedAtMs: 1_700_000_000_000,
     providers: [{
       provider: 'claude',
+      status: 'stale',
       diagnostic: 'Stale Claude quota · Claude usage rate limited',
       windows: [{ kind: 'session', metric: 'quota', label: '5h', remainingPercent: 62 }],
     }],
@@ -205,6 +206,7 @@ test('getStats rechecks only recovering providers after 30s without rerunning fu
     generatedAtMs: clock,
     providers: [{
       provider: 'claude',
+      recoveryState: 'pending',
       diagnostic: 'Claude credential is unavailable; Claude CLI credential refresh started in background',
       windows: [],
     }],
@@ -247,6 +249,7 @@ test('provider-only recovery does not postpone the five-minute full quota refres
     generatedAtMs: clock,
     providers: [{
       provider: 'gemini',
+      recoveryState: 'pending',
       diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
       windows: [],
     }],
@@ -278,6 +281,7 @@ test('failed provider-only recovery remains throttled to the 30s recovery cadenc
       generatedAtMs: clock,
       providers: [{
         provider: 'claude',
+        recoveryState: 'pending',
         diagnostic: 'Claude CLI credential refresh already in progress',
         windows: [],
       }],
@@ -306,6 +310,7 @@ test('quota compatibility keeps 30s polling during CLI refresh backoff', () => {
     generatedAtMs: 1_700_000_000_000,
     providers: [{
       provider: 'gemini',
+      recoveryState: 'pending',
       diagnostic: 'Gemini credential unavailable; Gemini CLI credential refresh cooling down; retry in about 240s',
       windows: [],
     }],
@@ -438,6 +443,7 @@ test('late recovery cannot overwrite a newer full quota snapshot', async () => {
   const recovery = deferred();
   const started = deferred();
   const pending = { generatedAtMs: clock, providers: [{ provider: 'claude',
+    recoveryState: 'pending',
     diagnostic: 'Claude CLI credential refresh cooling down', windows: [],
   }] };
   const fresh = { generatedAtMs: clock + 31_000, providers: [{ provider: 'claude',
@@ -477,7 +483,7 @@ test('partial refresh commits Today and quota even when Month fails', async () =
 test('quota failure retains stale quota without blocking fresh usage', async () => {
   let fail = false;
   const stats = createStatsLoader({ usage: async () => countedReport(fail ? 20 : 10),
-    quota: async () => { if (fail) throw new Error('private'); return { generatedAtMs: 100, providers: [{ provider: 'codex', windows: [{ remainingPercent: 50 }] }] }; },
+    quota: async () => { if (fail) throw new Error('private'); return { generatedAtMs: 100, providers: [{ provider: 'codex', lastSuccessAtMs: 100, windows: [{ remainingPercent: 50 }] }] }; },
   });
   await stats();
   fail = true;
@@ -524,4 +530,20 @@ test('superseded full refresh cannot publish late data or start later scans', as
   await earlier;
   assert.equal(patches.length, before);
   assert.equal((await stats()).periods.today.totalTokens, 20);
+});
+
+test('quota control and success timestamps are independent of report time and diagnostic text', () => {
+  const providers = [
+    { provider: 'codex', status: 'ready', recoveryState: 'idle', lastSuccessAtMs: 1000, windows: [{ remainingPercent: 70 }] },
+    { provider: 'gemini', status: 'stale', recoveryState: 'cooldown', lastSuccessAtMs: 2000, lastAttemptAtMs: 9000, retryAtMs: 15000, windows: [{ remainingPercent: 50 }] },
+  ];
+  const first = quotaReportToCompatLimits({ generatedAtMs: 3000, providers });
+  const later = quotaReportToCompatLimits({ generatedAtMs: 10000, providers: providers.map((p) => ({ ...p, diagnostic: '표현이 바뀌어도 동일' })) });
+  assert.equal(first.refreshMs, later.refreshMs);
+  assert.equal(later.refreshMs, 30000);
+  assert.equal(later.providers[0].updatedAt, new Date(1000).toISOString());
+  assert.equal(later.providers[1].updatedAt, new Date(2000).toISOString());
+  assert.equal(later.providers[1].status, 'stale');
+  assert.equal(later.providers[1].retryAtMs, 15000);
+  assert.equal(later.updatedAt, first.updatedAt);
 });

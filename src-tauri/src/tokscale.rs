@@ -560,9 +560,14 @@ struct RawSpendControl {
 
 fn parse_quota_report(output: &str) -> Result<QuotaReport, String> {
     let raw: Vec<RawQuotaProvider> = parse_json(output)?;
+    let at = generated_at_ms();
     let providers = raw
         .into_iter()
         .filter_map(normalize_quota_provider)
+        .map(|mut provider| {
+            provider.record_success(at);
+            provider
+        })
         .collect();
 
     Ok(QuotaReport {
@@ -607,6 +612,7 @@ fn normalize_quota_provider(raw: RawQuotaProvider) -> Option<QuotaProvider> {
         reset_credits: raw.reset_credits.map(normalize_reset_credits),
         credit_status: raw.credit_status.map(normalize_credit_status),
         spend_control: raw.spend_control.map(normalize_spend_control),
+        freshness: Default::default(),
     })
 }
 

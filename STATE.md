@@ -23,6 +23,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Full quota reads tokScale once, then runs Codex/Claude/Gemini/AGY enrichment concurrently and merges only each adapter's provider row.
 - Claude/Gemini credential recovery is separate from ordinary quota polling. While a credential is rejected, Token Lens does not re-probe the provider API with the same credential; provider-owned credential state must change before direct probing resumes.
 - Provider `Retry-After` deadlines survive restart in `provider-rate-limits.json`; Claude/Gemini also use the bounded in-process 5/15/30/60-minute repeated-429 protection.
+- Provider status/recovery/timestamps are explicit fields; diagnostic wording does not drive polling. Last-good snapshots retain their original capture time and are discarded on observed credential changes.
 - Recovery diagnostics use `CREDENTIAL_RECOVERY` / `credential_recovery`; the originating failure is retained separately as `triggerCode` / `triggerStage`.
 
 ### Provider-specific status
@@ -61,7 +62,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 
 ## Next action
 
-B1 resource failure isolation and progressive commits are implemented. Continue [the purpose audit](docs/purpose-audit-2026-09-18.md) with B2 typed freshness/recovery state, then B3/B4 bounded cache/session metadata. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
+B1/B2 resource failure isolation, progressive commits, and typed provider freshness/recovery are implemented. Continue [the purpose audit](docs/purpose-audit-2026-09-18.md) with B3/B4 bounded cache/session metadata. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
 
 ## Known open items
 

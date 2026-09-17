@@ -47,11 +47,7 @@ impl QuotaSnapshotCache {
 }
 
 fn provider_auth_recovery_pending(provider: &QuotaProvider) -> bool {
-    provider.diagnostic.as_deref().is_some_and(|diagnostic| {
-        diagnostic.contains("CLI credential refresh started in background")
-            || diagnostic.contains("CLI credential refresh already in progress")
-            || diagnostic.contains("CLI credential refresh cooling down")
-    })
+    provider.freshness.recovery_state != crate::domain::RecoveryState::Idle
 }
 
 fn report_provider_recovery_pending(report: &QuotaReport, provider: SupportedProvider) -> bool {
@@ -152,6 +148,7 @@ fn quota_base(result: Result<QuotaReport, String>) -> QuotaReport {
             reset_credits: None,
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         })
         .collect(),
         source: "tokscale",
@@ -442,6 +439,7 @@ mod tests {
             reset_credits: None,
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         }
     }
 
@@ -518,27 +516,38 @@ mod tests {
     }
 
     #[test]
-    fn quota_recovery_detection_is_limited_to_cli_recovery_diagnostics() {
-        let provider = |diagnostic: Option<&str>| QuotaProvider {
-            provider: SupportedProvider::Claude,
-            plan: None,
-            account_email: None,
-            diagnostic: diagnostic.map(str::to_owned),
-            windows: Vec::new(),
-            reset_credits: None,
-            credit_status: None,
-            spend_control: None,
+    fn provider_only_merge_preserves_other_provider_capture_times() {
+        let mut codex = quota_provider(SupportedProvider::Codex, "base");
+        codex.freshness.last_success_at_ms = Some(100);
+        let mut gemini = quota_provider(SupportedProvider::Gemini, "recovered");
+        gemini.freshness.last_success_at_ms = Some(200);
+        let mut report = QuotaReport {
+            generated_at_ms: 999,
+            providers: vec![codex],
+            source: "test",
         };
-        assert!(provider_auth_recovery_pending(&provider(Some(
-            "Stale Claude quota · Claude CLI credential refresh already in progress",
-        ))));
-        assert!(provider_auth_recovery_pending(&provider(Some(
-            "Claude CLI credential refresh cooling down; retry in about 120s",
-        ))));
-        assert!(!provider_auth_recovery_pending(&provider(Some(
-            "Claude usage rate-limit cooldown; retry in about 300s",
-        ))));
-        assert!(!provider_auth_recovery_pending(&provider(None)));
+        merge_provider_result(
+            &mut report,
+            QuotaReport {
+                generated_at_ms: 1000,
+                providers: vec![gemini],
+                source: "test",
+            },
+            SupportedProvider::Gemini,
+        );
+        assert_eq!(report.providers[0].freshness.last_success_at_ms, Some(100));
+        assert_eq!(report.providers[1].freshness.last_success_at_ms, Some(200));
+    }
+
+    #[test]
+    fn quota_recovery_detection_is_independent_of_diagnostic_language() {
+        let mut provider = quota_provider(SupportedProvider::Claude, "다른 문구");
+        assert!(!provider_auth_recovery_pending(&provider));
+        provider.freshness.recovery_state = crate::domain::RecoveryState::Pending;
+        assert!(provider_auth_recovery_pending(&provider));
+        provider.diagnostic = None;
+        provider.freshness.recovery_state = crate::domain::RecoveryState::Cooldown;
+        assert!(provider_auth_recovery_pending(&provider));
     }
 
     #[test]

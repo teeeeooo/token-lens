@@ -204,23 +204,19 @@ function compatibilityWindow(window) {
 }
 
 function quotaAuthRefreshPending(report) {
-  return (report?.providers || []).some((provider) =>
-    /CLI credential refresh (?:started in background|already in progress|cooling down)/.test(
-      String(provider?.diagnostic || ''),
-    ));
+  return (report?.providers || []).some((provider) => ['pending', 'cooldown'].includes(provider.recoveryState));
 }
 
 export function quotaReportToCompatLimits(report) {
-  const generatedAt = finite(report?.generatedAtMs);
+  const generatedAt = Math.max(0, ...(report?.providers || []).map((provider) => finite(provider.lastSuccessAtMs)));
   return {
     updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
     refreshMs: quotaAuthRefreshPending(report) ? AUTH_REFRESH_LIMIT_POLL_MS : DEFAULT_LIMIT_REFRESH_MS,
     providers: (report?.providers || []).map((provider) => {
       const diagnostic = String(provider.diagnostic || '');
       const windows = provider.windows || [];
-      const status = diagnostic.startsWith('Stale ') && windows.length
-        ? 'stale'
-        : diagnostic && !windows.length ? 'unavailable' : 'ok';
+      const status = provider.status === 'stale' ? 'stale'
+        : provider.status === 'unavailable' || !windows.length ? 'unavailable' : 'ok';
       return {
         provider: provider.provider,
         accountKey: '',
@@ -233,7 +229,11 @@ export function quotaReportToCompatLimits(report) {
         diagnostic,
         source: 'api',
         sourceDetail: '',
-        updatedAt: generatedAt > 0 ? new Date(generatedAt).toISOString() : '',
+        updatedAt: provider.lastSuccessAtMs > 0 ? new Date(provider.lastSuccessAtMs).toISOString() : '',
+        lastSuccessAtMs: provider.lastSuccessAtMs ?? null,
+        lastAttemptAtMs: provider.lastAttemptAtMs ?? null,
+        retryAtMs: provider.retryAtMs ?? null,
+        recoveryState: provider.recoveryState || 'idle',
         windows: (provider.windows || []).map(compatibilityWindow),
         balanceUsd: null,
         balance: null,
@@ -342,25 +342,34 @@ export function createStatsLoader({
   async function resource(key, load, convert, onPatch = () => {}) {
     const owner = {};
     resourceOwners.set(key, owner);
+    const successAt = (raw) => key === 'quota'
+      ? Math.max(0, ...(raw?.providers || []).map((provider) => finite(provider.lastSuccessAtMs))) || null
+      : raw?.generatedAtMs || null;
     const previous = cache.get(key)?.value;
-    const state = { status: 'loading', lastSuccessAtMs: previous?.generatedAtMs || null, error: null };
+    const state = { status: 'loading', lastSuccessAtMs: successAt(previous), error: null };
     onPatch({ resources: { [key]: state } });
     let raw;
     try {
       raw = await load();
       state.status = 'ready';
-      state.lastSuccessAtMs = raw?.generatedAtMs || null;
+      state.lastSuccessAtMs = successAt(raw);
     } catch (_) {
       raw = cache.get(key)?.value;
       state.status = raw ? 'stale' : 'unavailable';
-      state.lastSuccessAtMs = raw?.generatedAtMs || null;
+      state.lastSuccessAtMs = successAt(raw);
       state.error = 'Resource collection failed';
     }
     if (resourceOwners.get(key) !== owner) return {};
     resourceOwners.delete(key);
     const patch = raw ? convert(raw) : {};
     if (key === 'quota' && state.status === 'stale') {
-      for (const provider of patch.limits.providers) provider.status = provider.windows.length ? 'stale' : 'unavailable';
+      for (const provider of patch.limits.providers) {
+        provider.windows = provider.windows.filter((window) => {
+          const reset = Date.parse(window.resetsAt || '');
+          return !Number.isFinite(reset) || reset > now();
+        });
+        provider.status = provider.windows.length ? 'stale' : 'unavailable';
+      }
     }
     patch.resources = { [key]: state };
     onPatch(patch);
@@ -396,7 +405,7 @@ export function createStatsLoader({
 
   async function getQuotaLimits(options = {}) {
     return resource('quota', () => loadQuotaReport(options.force === true),
-      (raw) => partialStats({}, [raw], raw), options.onPatch);
+      (raw) => { const patch = partialStats({}, [], raw); patch.updatedAt = patch.limits.updatedAt; return patch; }, options.onPatch);
   }
 
   async function preloadSlowUsage(options = {}) {

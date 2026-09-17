@@ -49,9 +49,10 @@ fn enrich_quota_report_sync(home: &Path, mut report: QuotaReport) -> QuotaReport
     let provider = antigravity_local::probe()
         .map(provider_from_local)
         .or_else(|| probe_external_oauth(home));
-    let Some(provider) = provider else {
+    let Some(mut provider) = provider else {
         return report;
     };
+    provider.record_success(now_ms());
     if let Some(existing) = report
         .providers
         .iter_mut()
@@ -78,6 +79,7 @@ fn provider_from_local(snapshot: antigravity_local::Snapshot) -> QuotaProvider {
         reset_credits: None,
         credit_status: None,
         spend_control: None,
+        freshness: Default::default(),
     }
 }
 
@@ -136,6 +138,7 @@ fn probe_external_oauth(_home: &Path) -> Option<QuotaProvider> {
         reset_credits: None,
         credit_status: None,
         spend_control: None,
+        freshness: Default::default(),
     })
 }
 
@@ -312,6 +315,7 @@ mod tests {
             reset_credits: None,
             credit_status: None,
             spend_control: None,
+            freshness: Default::default(),
         };
         assert!(provider_has_usable_quota(&provider));
     }

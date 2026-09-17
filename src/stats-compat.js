@@ -260,19 +260,21 @@ export function createStatsLoader({
   const inFlight = new Map();
 
   async function cached(key, ttlMs, loader, force) {
+    // Readers join the newest request, including a forced refresh, before using old cache.
+    if (!force && inFlight.has(key)) return inFlight.get(key);
     const current = cache.get(key);
     const timestamp = now();
     const ttl = typeof ttlMs === 'function' ? ttlMs(current?.value) : ttlMs;
-    if (!force && current && timestamp - current.at < ttl) return current.value;
-    if (!force && inFlight.has(key)) return inFlight.get(key);
+    if (!force && current && timestamp - current.at >= 0 && timestamp - current.at < ttl) return current.value;
     const pending = Promise.resolve().then(loader);
-    if (!force) inFlight.set(key, pending);
+    inFlight.set(key, pending);
     try {
       const value = await pending;
-      cache.set(key, { at: now(), value });
+      // A superseded request may finish, but must never make older data fresh again.
+      if (inFlight.get(key) === pending) cache.set(key, { at: now(), value });
       return value;
     } finally {
-      if (!force && inFlight.get(key) === pending) inFlight.delete(key);
+      if (inFlight.get(key) === pending) inFlight.delete(key);
     }
   }
 
@@ -287,14 +289,18 @@ export function createStatsLoader({
     const before = cache.get('quota');
     const report = await cached('quota', DEFAULT_LIMIT_REFRESH_MS, quota, force);
     const fullEntry = cache.get('quota');
+    // An older full request must not change recovery state owned by a newer snapshot.
+    if (fullEntry?.value !== report) return fullEntry?.value ?? report;
     const fullRefreshed = force || !before || fullEntry?.at !== before.at;
 
     if (!quotaAuthRefreshPending(report)) {
       cache.delete('quotaRecovery');
+      inFlight.delete('quotaRecovery');
       return report;
     }
 
     if (fullRefreshed) {
+      inFlight.delete('quotaRecovery');
       cache.set('quotaRecovery', { at: fullEntry?.at ?? now(), value: report });
       return report;
     }
@@ -307,10 +313,13 @@ export function createStatsLoader({
         false,
       );
       const currentFull = cache.get('quota');
+      if (currentFull !== fullEntry) return currentFull?.value ?? recovered;
       if (currentFull) cache.set('quota', { at: currentFull.at, value: recovered });
       if (!quotaAuthRefreshPending(recovered)) cache.delete('quotaRecovery');
       return recovered;
     } catch (_) {
+      const currentFull = cache.get('quota');
+      if (currentFull !== fullEntry) return currentFull?.value ?? report;
       cache.set('quotaRecovery', { at: now(), value: report });
       return report;
     }

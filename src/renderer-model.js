@@ -22,7 +22,8 @@ function finite(value) {
 }
 
 function optionalFinite(value) {
-  if (value === null || value === undefined || value === '') return null;
+  if (value === null || value === undefined
+    || (typeof value === 'string' && value.trim() === '')) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -184,10 +185,10 @@ export function sessionRows(period, clients = []) {
 }
 
 function windowPercent(window) {
-  const remaining = Number(window?.remainingPercent);
-  if (Number.isFinite(remaining)) return Math.max(0, Math.min(100, remaining));
-  const used = Number(window?.usedPercent);
-  return Number.isFinite(used) ? Math.max(0, Math.min(100, 100 - used)) : null;
+  const remaining = optionalFinite(window?.remainingPercent);
+  if (remaining !== null) return Math.max(0, Math.min(100, remaining));
+  const used = optionalFinite(window?.usedPercent);
+  return used !== null ? Math.max(0, Math.min(100, 100 - used)) : null;
 }
 
 function providerRank(id) {

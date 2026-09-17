@@ -378,3 +378,83 @@ test('getStats avoids provider session metadata I/O outside the Sessions view', 
   await getStats();
   assert.equal(metadataCalls, 0);
 });
+
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+const countedReport = (input) => report([{ client: 'codex', model: 'test', input }]);
+
+test('older in-flight usage cannot overwrite a completed forced refresh', async () => {
+  const old = deferred();
+  let calls = 0;
+  const stats = createStatsLoader({ usage: () => ++calls === 1 ? old.promise : countedReport(20) });
+  const pending = stats.getPeriodStats('today');
+  await Promise.resolve();
+  assert.equal((await stats.getPeriodStats('today', { force: true })).value.totalTokens, 20);
+  old.resolve(countedReport(10));
+  await pending;
+  assert.equal((await stats.getPeriodStats('today')).value.totalTokens, 20);
+  assert.equal(calls, 2);
+});
+
+test('ordinary usage readers join the latest forced request rather than stale cache', async () => {
+  const fresh = deferred();
+  let calls = 0;
+  const stats = createStatsLoader({ usage: () => ++calls === 1 ? countedReport(10) : fresh.promise });
+  await stats.getPeriodStats('today');
+  const forced = stats.getPeriodStats('today', { force: true });
+  await Promise.resolve();
+  const ordinary = stats.getPeriodStats('today');
+  fresh.resolve(countedReport(20));
+  assert.equal((await forced).value.totalTokens, 20);
+  assert.equal((await ordinary).value.totalTokens, 20);
+  assert.equal(calls, 2);
+});
+
+test('failed latest request does not let superseded usage poison the cache', async () => {
+  const old = deferred();
+  let calls = 0;
+  const stats = createStatsLoader({ usage: () => {
+    calls += 1;
+    if (calls === 1) return old.promise;
+    if (calls === 2) throw new Error('synthetic failure');
+    return countedReport(30);
+  } });
+  const pending = stats.getPeriodStats('today');
+  await assert.rejects(stats.getPeriodStats('today', { force: true }), /synthetic failure/);
+  old.resolve(countedReport(10));
+  await pending;
+  assert.equal((await stats.getPeriodStats('today')).value.totalTokens, 30);
+});
+
+test('late recovery cannot overwrite a newer full quota snapshot', async () => {
+  let clock = 1_000_000;
+  let calls = 0;
+  const recovery = deferred();
+  const started = deferred();
+  const pending = { generatedAtMs: clock, providers: [{ provider: 'claude',
+    diagnostic: 'Claude CLI credential refresh cooling down', windows: [],
+  }] };
+  const fresh = { generatedAtMs: clock + 31_000, providers: [{ provider: 'claude',
+    windows: [{ kind: 'session', remainingPercent: 80 }],
+  }] };
+  const stats = createStatsLoader({ now: () => clock,
+    quota: async () => ++calls === 1 ? pending : fresh,
+    quotaRecovery: () => { started.resolve(); return recovery.promise; },
+  });
+  await stats.getQuotaLimits();
+  clock += 31_000;
+  const older = stats.getQuotaLimits();
+  await started.promise;
+  await stats.getQuotaLimits({ force: true });
+  recovery.resolve(pending);
+  await older;
+  const latest = await stats.getQuotaLimits();
+  assert.equal(latest.limits.providers[0].windows[0]?.remainingPercent, 80);
+  assert.equal(calls, 2);
+});

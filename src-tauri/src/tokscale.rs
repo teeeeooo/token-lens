@@ -158,32 +158,25 @@ impl TokscaleAdapter {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            // Untrusted CLI diagnostics may contain paths, credentials, or session content.
+            .stderr(Stdio::null())
             .kill_on_drop(true);
         crate::background_process::configure_tokio(&mut command);
 
-        let child = command.spawn().map_err(|error| {
-            format!(
-                "failed to start tokScale from {}: {error}",
-                self.binary.display()
-            )
-        })?;
+        let child = command
+            .spawn()
+            .map_err(|error| format!("failed to start tokScale ({:?})", error.kind()))?;
         let output = timeout(TOKSCALE_TIMEOUT, child.wait_with_output())
             .await
             .map_err(|_| "tokScale command timed out after 30 seconds".to_owned())?
-            .map_err(|error| format!("tokScale command failed: {error}"))?;
+            .map_err(|error| format!("tokScale command failed ({:?})", error.kind()))?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "tokScale exited with {}: {}",
-                output.status,
-                stderr.trim()
-            ));
+            return Err(format!("tokScale exited with {}", output.status));
         }
 
         String::from_utf8(output.stdout)
-            .map_err(|error| format!("tokScale stdout was not valid UTF-8: {error}"))
+            .map_err(|_| "tokScale stdout was not valid UTF-8".to_owned())
     }
 }
 
@@ -718,15 +711,44 @@ where
         }
     }
 
-    Err(format!(
-        "could not parse tokScale JSON output: {}",
-        trimmed.chars().take(240).collect::<String>()
-    ))
+    Err("could not parse tokScale JSON output".to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_json_never_exposes_raw_output_in_renderer_errors() {
+        let error = parse_json::<serde_json::Value>(
+            "SUPER_SECRET_PROMPT /private/project Authorization: Bearer secret-token",
+        )
+        .unwrap_err();
+        assert_eq!(error, "could not parse tokScale JSON output");
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_never_exposes_the_executable_path() {
+        let adapter = TokscaleAdapter::new(
+            PathBuf::from("/TOKEN_LENS_PRIVATE_PATH/nonexistent/tokscale"),
+            "test",
+        );
+        let error = adapter.run(&["--version"]).await.unwrap_err();
+        assert!(error.contains("tokScale"));
+        assert!(!error.contains("TOKEN_LENS_PRIVATE_PATH"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_failure_never_exposes_raw_stderr() {
+        let adapter = TokscaleAdapter::new(PathBuf::from("/bin/sh"), "test");
+        let error = adapter
+            .run(&["-c", "printf SUPER_SECRET_PROMPT >&2; exit 7"])
+            .await
+            .unwrap_err();
+        assert!(error.contains('7'));
+        assert!(!error.contains("SUPER_SECRET_PROMPT"));
+    }
 
     #[test]
     fn bundled_candidate_is_resolved_next_to_the_app_executable() {

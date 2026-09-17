@@ -240,3 +240,28 @@ test('Home treats uncapped Claude spend as usable quota without inventing a perc
   assert.equal(rows.length, 1);
   assert.equal(homeQuotaWindows(rows[0])[0].remainingPercent, null);
 });
+
+
+test('normalized null quota percentages stay unknown across limits, Home, and bubble', async () => {
+  const { quotaReportToCompatLimits } = await import('../src/stats-compat.js');
+  const { floatingBubbleModel } = await import('../src/floating-bubble-model.js');
+  const limits = quotaReportToCompatLimits({ providers: [{
+    provider: 'claude', windows: [{ kind: 'session', metric: 'quota', usedPercent: null, remainingPercent: null }],
+  }] });
+  assert.equal(quotaRows(limits)[1].windows[0].remainingPercent, null);
+  assert.deepEqual(homeQuotaRows(limits), []);
+  assert.deepEqual(floatingBubbleModel(limits, 'limitsAllSessions'), { kind: 'icon' });
+});
+
+test('quota percentages fall back to used only when remaining is actually absent', () => {
+  for (const missing of [null, undefined, '', '   ', NaN, Infinity]) {
+    const rows = quotaRows({ providers: [{ provider: 'codex', windows: [
+      { remainingPercent: missing, usedPercent: 25 },
+      { remainingPercent: missing, usedPercent: missing },
+      { remainingPercent: 0, usedPercent: 25 },
+    ] }] });
+    assert.equal(rows[0].windows[0].remainingPercent, 75);
+    assert.equal(rows[0].windows[1].remainingPercent, null);
+    assert.equal(rows[0].windows[2].remainingPercent, 0);
+  }
+});

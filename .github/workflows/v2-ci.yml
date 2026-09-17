@@ -58,6 +58,12 @@ jobs:
       - name: Check frontend and Rust
         run: npm run check
 
+      - name: Install test browser
+        run: npm exec playwright install chromium
+
+      - name: DOM integration tests
+        run: npm run test:ui
+
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 

@@ -163,13 +163,7 @@ pub(crate) async fn enrich_quota_report(
     expected_workspace_id: Option<String>,
     mut report: QuotaReport,
 ) -> QuotaReport {
-    let Some(index) = report
-        .providers
-        .iter()
-        .position(|provider| provider.provider == SupportedProvider::Codex)
-    else {
-        return report;
-    };
+    let index = ensure_codex_row(&mut report);
 
     if !provider_needs_enrichment(&report.providers[index]) {
         return report;
@@ -274,6 +268,28 @@ pub(crate) async fn enrich_quota_report(
         Some(diagnostics.join(" · "))
     };
     report
+}
+
+fn ensure_codex_row(report: &mut QuotaReport) -> usize {
+    if let Some(index) = report
+        .providers
+        .iter()
+        .position(|p| p.provider == SupportedProvider::Codex)
+    {
+        return index;
+    }
+    report.providers.push(QuotaProvider {
+        provider: SupportedProvider::Codex,
+        plan: None,
+        account_email: None,
+        diagnostic: Some("Codex base quota unavailable".to_owned()),
+        windows: Vec::new(),
+        reset_credits: None,
+        credit_status: None,
+        spend_control: None,
+        freshness: Default::default(),
+    });
+    report.providers.len() - 1
 }
 
 fn provider_needs_enrichment(provider: &QuotaProvider) -> bool {
@@ -1194,6 +1210,24 @@ fn add_codex_bin_candidates(candidates: &mut Vec<PathBuf>, bin: &Path) {
 mod tests {
     use super::*;
     use crate::domain::{QuotaWindow, ResetCredits};
+
+    #[test]
+    fn missing_codex_row_is_unavailable_without_assuming_account_identity() {
+        let mut report = QuotaReport {
+            generated_at_ms: 1,
+            providers: Vec::new(),
+            source: "test",
+        };
+        assert_eq!(ensure_codex_row(&mut report), 0);
+        assert_eq!(ensure_codex_row(&mut report), 0);
+        assert_eq!(report.providers.len(), 1);
+        assert_eq!(
+            report.providers[0].freshness.status,
+            crate::domain::QuotaStatus::Unavailable
+        );
+        assert!(report.providers[0].account_email.is_none());
+        assert!(report.providers[0].windows.is_empty());
+    }
 
     fn provider(plan: &str) -> QuotaProvider {
         QuotaProvider {

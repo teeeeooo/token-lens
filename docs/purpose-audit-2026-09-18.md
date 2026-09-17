@@ -3,7 +3,7 @@
 - 검수일: 2026-09-18 (Asia/Seoul)
 - 검수 기준: `main` / `4bf1e428483c5d3b055029d654e7fc80df6ff272`
 - 직접 수정 커밋: `fb861e7d8e06a0900327d691701fc484239fadb1`
-- 상태: 재현 가능한 소규모 결함 4개 수정. 통합 구조 변경은 아래 명세로 분리.
+- 상태: A1–A4 및 B1–B4 구현 완료. B5의 제어 가능한 DOM 통합 검증 완료; 실제 Windows/계정/패키지 시각 검증은 별도 게이트로 유지.
 - 문서 성격: 이번 검수의 근거와 실행 명세. 장기 제품 계약은 `architecture/v2-architecture.md`, 현재 상태는 `../STATE.md`가 우선한다.
 
 ## 1. 결론과 제품 목적
@@ -190,7 +190,24 @@ provider의 `updatedAt`에 공통 보고서 생성 시각을 넣고, provider �
 
 이 항목들은 이번에 새로 발생한 결함 목록이 아니라 기존 제품 목적을 보장할 검증 범위다. 비용·민감 데이터가 있는 live 검증은 소유자가 지정한 환경에서 진행한다.
 
-## 10. 이번 변경 검증 결과
+### 후속 구현의 현재 수용 상태
+
+| 항목 | 구현 / 검증 |
+|---|---|
+| B1 | 자원별 상태와 부분 patch, quota 독립 실행, 순차 usage 스캔, 실패한 기본 quota에서 독립 adapter 병합. Codex 누락 row를 unavailable로 초기화하고 확인된 workspace의 OAuth만 허용; 식별되지 않은 base의 App Server 보강은 생략. |
+| B2 | status/recovery enum과 실제 제공사별 성공·시도·재시도 시각. diagnostic 문구와 동작 분리. credential 변경 시 last-good 폐기, stale 만료·reset 필터 보존. |
+| B3 | derived 결과 64개 TTL/LRU 제한; 진행 요청의 소유권 분리. 서로 다른 1,000개 key 및 지연·강제 요청/eviction 회귀 검증. |
+| B4 | 선택 기간 참조만 중복 제거, 250개씩 동시성 1로 수집. 4,096개/60초 session 단위 cache. 5,000/5,001/10,001개 참조, 부분 batch 실패, 새 세션, 기간 전환과 개인정보 sentinel 검증. 실 I/O 최적값을 주장하지 않는 보수적 초기값. |
+| B5 자동화 | 가짜 Tauri backend를 주입한 실제 Chromium DOM 테스트 9개. bootstrap 지연/실패, 부분 갱신, 강제 갱신과 오래된 결과, null quota, rolling 날짜 변경, history 요청 세대, filter overlay/scroll 및 metadata 도착 검증. macOS/Windows CI에 추가. |
+| B5 실환경 | Windows taskbar/DPI/drag/tray/Acrylic, 실제 Claude/Gemini 복구, Codex Business/AGY, 설치 패키지 시각 검증은 미실행. 지정 환경이 필요하며 fixture 통과로 대체하지 않음. |
+
+후속 구현 로컬 결과: 프런트엔드 97 PASS, Rust 137 PASS/9 live ignored, DOM 9 PASS, production frontend build/rustfmt/Clippy/macOS native debug build PASS, npm audit 취약점 0. Windows CI와 installer/portable 결과는 해당 revision의 GitHub Actions에서 별도 확인한다.
+
+B1 합성 실패를 수정 전 재현했고, B2의 문구 독립성 및 B3/B4의 크기·batch 테스트는 각각 이전 구현(`f84858f`, `8f9fb3b`)에서 실패하는 것을 확인했다. DOM 검증 중 날짜가 바뀐 rolling range의 실패가 이전 날짜 값을 남기는 회귀도 재현·수정했다. Today 미수집이 history/tray의 실제 값을 가짜 0으로 바꾸지 않으며, 강제 history 갱신도 오래된 응답을 차단한다.
+
+재실행: 기존 `npm run check`에 더해 `npm exec playwright install chromium`, `npm run test:ui`. 브라우저 테스트는 실제 credential이나 제공사 API를 사용하지 않는다.
+
+## 10. 최초 A1–A4 검수 당시 검증 결과
 
 | 항목 | 변경 전 | 변경 후 / 이번 실행 |
 |---|---|---|

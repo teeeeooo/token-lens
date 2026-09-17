@@ -257,8 +257,8 @@ root.innerHTML = `
     </section>
     <section class="total-panel">
       <div class="label-row"><span data-i18n="dashboard.totalTokens">TOTAL TOKENS</span></div>
-      <div class="total-number-row"><div id="totalTokens" class="total-number">0</div><span id="totalTokensCompact" class="total-compact hidden"></span></div>
-      <div id="cost" class="cost">$0.00</div>
+      <div class="total-number-row"><div id="totalTokens" class="total-number">—</div><span id="totalTokensCompact" class="total-compact hidden"></span></div>
+      <div id="cost" class="cost">—</div>
     </section>
     <section id="homePanel" class="home-panel"></section>
     <div id="breakdownToolbar" class="breakdown-toolbar hidden"></div>
@@ -875,7 +875,7 @@ function renderHomeActivity() {
     return module;
   }
 
-  const view = historyViewModel(state.history, state.stats?.periods?.today || {});
+  const view = historyViewModel(state.history, state.stats?.periods?.today);
   meta.textContent = t('home.activeDays', { count: formatNumber(view.activeDays) });
   if (!view.daily.some((day) => Number(day.tokens) > 0)) {
     const empty = document.createElement('div');
@@ -1560,6 +1560,12 @@ function mergeStatsPatch(patch, generation) {
     resources: { ...state.stats.resources, ...patch?.resources },
     updatedAt: Math.max(incomingAt, currentAt) > 0 ? new Date(Math.max(incomingAt, currentAt)).toISOString() : '',
   };
+  for (const [key, resource] of Object.entries(patch?.resources || {})) {
+    if (key !== 'quota' && resource.lastSuccessAtMs == null
+        && ['loading', 'unavailable'].includes(resource.status)) {
+      delete state.stats.periods[key];
+    }
+  }
   return true;
 }
 
@@ -1586,6 +1592,7 @@ async function refresh({ force = false } = {}) {
   const generation = ++state.statsGeneration;
   els.refreshButton.classList.add('is-refreshing');
   setStatus(t('common.refreshing'));
+  void loadDashboardHistory({ force });
   try {
     const nextStats = await window.tokenMonitor.getStats({
       ...statsRequestOptions(force, requestPeriod),
@@ -1598,14 +1605,16 @@ async function refresh({ force = false } = {}) {
     if (generation !== state.statsGeneration) return;
     mergeStatsPatch(nextStats, generation);
     state.quotaLoading = false;
-    if (force) state.historyLoadedAt = 0;
-    const today = state.stats?.periods?.today || {};
-    await window.tokenMonitor.updateTraySummary({
+    const today = state.stats?.periods?.today;
+    if (today) await window.tokenMonitor.updateTraySummary({
       todayTokens: Number(today.totalTokens) || 0,
       todayCostUsd: Number(today.costUsd) || 0,
     });
     state.lastRefreshAt = Date.now();
-    setStatus();
+    const resourceStates = Object.values(state.stats.resources || {});
+    const unavailable = resourceStates.some((resource) => resource.status === 'unavailable');
+    const stale = resourceStates.some((resource) => resource.status === 'stale');
+    setStatus(unavailable ? t('common.unavailable') : stale ? t('common.stale') : '', unavailable);
     render();
     await syncFloatingBubbleWidth();
     els.liveDot.classList.add('pulse');
@@ -2011,8 +2020,8 @@ async function bootstrapShell() {
     render();
     recordStartupTiming('today-first-render');
 
-    const today = state.stats?.periods?.today || {};
-    void window.tokenMonitor.updateTraySummary({
+    const today = state.stats?.periods?.today;
+    if (today) void window.tokenMonitor.updateTraySummary({
       todayTokens: Number(today.totalTokens) || 0,
       todayCostUsd: Number(today.costUsd) || 0,
     }).catch(console.error);

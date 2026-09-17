@@ -24,9 +24,10 @@ function sundayIndex(key) {
   return new Date(Date.parse(`${key}T00:00:00Z`)).getUTCDay();
 }
 
-export function patchToday(daily = [], todayPeriod = {}, now = new Date()) {
+export function patchToday(daily = [], todayPeriod = null, now = new Date()) {
   const date = localDayKey(now);
   const rows = (Array.isArray(daily) ? daily : []).map((row) => ({ ...row }));
+  if (!todayPeriod) return rows.sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const next = {
     date,
     tokens: Math.max(0, number(todayPeriod?.totalTokens)),

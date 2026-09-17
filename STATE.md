@@ -18,6 +18,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 ### Usage, quota, and refresh
 
 - Rust owns stable normalized usage/history/quota/session contracts; raw tokScale/provider payloads do not cross into the renderer contract.
+- Today failure leaves totals unknown and cannot zero the tray or overwrite successfully collected history. Forced history refreshes have independent generation ownership; changed rolling-date ranges cannot reuse the previous range on failure.
 - First launch is progressive: Today renders before slower quota/Month/All-Time work completes. Non-forced duplicate loads join the newest in-flight read, including a manual refresh; only the current request may populate cache. Superseded provider-recovery results cannot overwrite a newer full quota snapshot.
 - Missing quota percentages remain unknown rather than becoming 0%; a supplied used percentage may fill a missing remaining percentage. Genuine zero remains zero.
 - Full quota reads tokScale once, then runs Codex/Claude/Gemini/AGY enrichment concurrently and merges only each adapter's provider row.
@@ -59,11 +60,11 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Windows packaging emits installer, portable EXE, and `SHA256SUMS.txt`; package helpers validate tokScale identity/version and PE expectations.
 - Provider incident logs are sanitized JSONL, capped and retained for up to 3 days. Startup timing retains only the latest 10 launches and records no account/path/credential/provider payload content.
 - tokScale failures expose only coarse failure kind/exit status to the renderer; raw stderr, malformed stdout excerpts, and executable paths are excluded.
-- The 2026-09-18 audit changes pass 84 frontend tests, 132 Rust tests (9 live tests ignored), rustfmt, Clippy with warnings denied, the macOS native Tauri debug build, and npm audit (0 vulnerabilities). Windows CI/packaging and live UI/provider validation are separate gates, not inferred from the macOS run.
+- The B1–B5 automated work passes 97 frontend tests, 137 Rust tests (9 live tests ignored), and 9 Chromium DOM integration tests with a synthetic Tauri backend. rustfmt, Clippy with warnings denied, the macOS native Tauri debug build, and npm audit (0 vulnerabilities) pass. CI runs the DOM suite on macOS and Windows; Windows installer/portable packaging remains an independent workflow. Native Windows behavior and live provider validation are separate gates, never inferred from these results.
 
 ## Next action
 
-B1–B4 are implemented. Complete the controllable DOM integration and build/CI portions of B5 from [the purpose audit](docs/purpose-audit-2026-09-18.md), retaining live Windows/provider gates separately. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
+B1–B4 and the controllable DOM portion of B5 from [the purpose audit](docs/purpose-audit-2026-09-18.md) are implemented. Review the current revision’s CI and Windows packaging checks, then run the remaining B5 native Windows/provider and packaged visual gates on owner-designated environments. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
 
 ## Known open items
 

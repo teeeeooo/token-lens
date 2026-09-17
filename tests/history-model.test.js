@@ -50,3 +50,10 @@ test('trend and combined view expose retained activity summary', () => {
   assert.equal(view.peakDayTokens, 50);
   assert.equal(view.daily.at(-1).tokens, 50);
 });
+
+test('unavailable Today cannot replace successfully collected history with a fabricated zero', () => {
+  const daily = [{ date: '2026-09-18', tokens: 42, cost: 0.5 }];
+  const view = historyViewModel({ daily }, undefined, new Date(2026, 8, 18));
+  assert.deepEqual(view.daily, daily);
+  assert.equal(view.peakDayTokens, 42);
+});

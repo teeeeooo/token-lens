@@ -17,13 +17,15 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:live": "cargo test --manifest-path src-tauri/Cargo.toml live_ -- --ignored",
     "test": "npm run test:frontend && npm run test:rust",
-    "check": "npm run frontend:build && npm run test && cargo fmt --manifest-path src-tauri/Cargo.toml --check"
+    "check": "npm run frontend:build && npm run test && cargo fmt --manifest-path src-tauri/Cargo.toml --check",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
     "tokscale": "4.15.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "2.11.4",
     "vite": "8.2.2"
   }

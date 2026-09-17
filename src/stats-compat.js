@@ -8,6 +8,9 @@ const MONTH_CACHE_MS = 2 * 60 * 1000;
 const ALL_TIME_CACHE_MS = 5 * 60 * 1000;
 const DERIVED_CACHE_MS = 60 * 1000;
 const SESSION_METADATA_CACHE_MS = 60 * 1000;
+const DYNAMIC_CACHE_LIMIT = 64;
+const SESSION_CACHE_LIMIT = 4096;
+const SESSION_BATCH_SIZE = 250;
 
 function finite(value) {
   const number = Number(value);
@@ -255,25 +258,58 @@ export function createStatsLoader({
   quotaRecovery = getQuotaRecoveryReport,
   sessionMetadata = async () => ({ sessions: [] }),
   now = () => Date.now(),
+  observeCache = () => {}, // Constructor-only test observation; not exposed by the facade.
 } = {}) {
   const cache = new Map();
+  const dynamicCache = new Map();
+  const metadataCache = new Map();
+  const metadataBatches = new Map();
   const inFlight = new Map();
+  const invalidated = new WeakSet();
   const resourceOwners = new Map();
   let refreshGeneration = 0;
 
+  function prune(store, limit) {
+    const timestamp = now();
+    for (const [key, entry] of store) {
+      if (timestamp < entry.at || timestamp - entry.at >= entry.ttl) {
+        store.delete(key);
+        if (store === dynamicCache && inFlight.has(key)) invalidated.add(inFlight.get(key));
+      }
+    }
+    while (store.size > limit) {
+      const key = store.keys().next().value;
+      store.delete(key);
+      if (store === dynamicCache && inFlight.has(key)) invalidated.add(inFlight.get(key));
+    }
+    observeCache({ dynamic: dynamicCache.size, sessions: metadataCache.size });
+  }
+
+  function resultStore(key) { return key.startsWith('derived:') ? dynamicCache : cache; }
+
   async function cached(key, ttlMs, loader, force) {
+    prune(dynamicCache, DYNAMIC_CACHE_LIMIT);
+    prune(metadataCache, SESSION_CACHE_LIMIT);
+    const store = resultStore(key);
     // Readers join the newest request, including a forced refresh, before using old cache.
     if (!force && inFlight.has(key)) return inFlight.get(key);
-    const current = cache.get(key);
+    const current = store.get(key);
     const timestamp = now();
     const ttl = typeof ttlMs === 'function' ? ttlMs(current?.value) : ttlMs;
-    if (!force && current && timestamp - current.at >= 0 && timestamp - current.at < ttl) return current.value;
+    if (!force && current && timestamp - current.at >= 0 && timestamp - current.at < ttl) {
+      store.delete(key);
+      store.set(key, current);
+      return current.value;
+    }
     const pending = Promise.resolve().then(loader);
     inFlight.set(key, pending);
     try {
       const value = await pending;
       // A superseded request may finish, but must never make older data fresh again.
-      if (inFlight.get(key) === pending) cache.set(key, { at: now(), value });
+      if (inFlight.get(key) === pending && !invalidated.has(pending)) {
+        store.set(key, { at: now(), ttl, value });
+        prune(dynamicCache, DYNAMIC_CACHE_LIMIT);
+      }
       return value;
     } finally {
       if (inFlight.get(key) === pending) inFlight.delete(key);
@@ -345,7 +381,7 @@ export function createStatsLoader({
     const successAt = (raw) => key === 'quota'
       ? Math.max(0, ...(raw?.providers || []).map((provider) => finite(provider.lastSuccessAtMs))) || null
       : raw?.generatedAtMs || null;
-    const previous = cache.get(key)?.value;
+    const previous = resultStore(key).get(key)?.value;
     const state = { status: 'loading', lastSuccessAtMs: successAt(previous), error: null };
     onPatch({ resources: { [key]: state } });
     let raw;
@@ -354,7 +390,7 @@ export function createStatsLoader({
       state.status = 'ready';
       state.lastSuccessAtMs = successAt(raw);
     } catch (_) {
-      raw = cache.get(key)?.value;
+      raw = resultStore(key).get(key)?.value;
       state.status = raw ? 'stale' : 'unavailable';
       state.lastSuccessAtMs = successAt(raw);
       state.error = 'Resource collection failed';
@@ -419,6 +455,56 @@ export function createStatsLoader({
     return result;
   }
 
+  async function decorateSessions(refs, periods, force, current, publish) {
+    // One bounded batch at a time limits provider filesystem I/O. Cache only
+    // whitelisted normalized metadata per session, never entire reference lists.
+    const missing = [];
+    const hits = [];
+    prune(metadataCache, SESSION_CACHE_LIMIT);
+    for (const ref of refs) {
+      const key = sessionKey(ref.client, ref.sessionId);
+      const entry = metadataCache.get(key);
+      if (!force && entry) {
+        hits.push(entry.value);
+        metadataCache.delete(key);
+        metadataCache.set(key, entry);
+      } else missing.push(ref);
+    }
+    applySessionMetadata(periods, { sessions: hits });
+    for (let offset = 0; offset < missing.length && current(); offset += SESSION_BATCH_SIZE) {
+      const batch = missing.slice(offset, offset + SESSION_BATCH_SIZE);
+      const key = JSON.stringify(batch);
+      let pending = !force && metadataBatches.get(key);
+      if (!pending) {
+        pending = Promise.resolve().then(() => sessionMetadata(batch));
+        metadataBatches.set(key, pending);
+      }
+      try {
+        const report = await pending;
+        if (!current()) return;
+        const allowed = new Set(batch.map((ref) => sessionKey(ref.client, ref.sessionId)));
+        const normalized = new Map();
+        for (const item of report?.sessions || []) {
+          const key = sessionKey(item.client, item.sessionId);
+          if (!allowed.has(key)) continue;
+          normalized.set(key, { client: item.client, sessionId: item.sessionId,
+            sessionTitle: String(item.sessionTitle || '').trim(), projectLabel: String(item.projectLabel || '').trim() });
+        }
+        // Cache safe empty metadata too so absent titles do not trigger repeated I/O.
+        const sessions = batch.map((ref) => normalized.get(sessionKey(ref.client, ref.sessionId)) || { ...ref, sessionTitle: '', projectLabel: '' });
+        if (metadataBatches.get(key) === pending) {
+          for (const item of sessions) metadataCache.set(sessionKey(item.client, item.sessionId),
+            { at: now(), ttl: SESSION_METADATA_CACHE_MS, value: item });
+          prune(metadataCache, SESSION_CACHE_LIMIT);
+        }
+        applySessionMetadata(periods, { sessions });
+        publish({ periods });
+      } catch (_) { /* Isolate failed batches; retain basename/id fallback. */ }
+      finally { if (metadataBatches.get(key) === pending) metadataBatches.delete(key); }
+    }
+    if (current()) publish({ periods });
+  }
+
   async function getStats(options = {}) {
     const generation = ++refreshGeneration;
     const force = options.force === true;
@@ -445,16 +531,10 @@ export function createStatsLoader({
       });
     }
     await quotaTask;
-    const refs = options.includeSessionMetadata ? sessionMetadataRefs(result.periods) : [];
+    const selected = options.period || 'today';
+    const refs = options.includeSessionMetadata ? sessionMetadataRefs({ selected: result.periods[selected] }) : [];
     if (refs.length && generation === refreshGeneration) {
-      try {
-        const metadata = await cached(`sessionMetadata:${refs.map((ref) => sessionKey(ref.client, ref.sessionId)).join('|')}`,
-          SESSION_METADATA_CACHE_MS, () => sessionMetadata(refs), force);
-        if (generation === refreshGeneration) {
-          applySessionMetadata(result.periods, metadata);
-          publish({ periods: result.periods });
-        }
-      } catch (_) { /* Optional metadata keeps provider basename/id fallbacks. */ }
+      await decorateSessions(refs, result.periods, force, () => generation === refreshGeneration, publish);
     }
     return result;
   }

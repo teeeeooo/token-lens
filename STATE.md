@@ -40,6 +40,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 - Appearance is intentionally narrow: Default/Obsidian/Porcelain, 70–160% zoom, optional compact totals, system UI font, OS reduced-motion preference, `Auto (system)` plus EN/KO/JA/ZH-CN/ZH-TW, and Windows Off/Acrylic backdrop.
 - Home exposes compact Limits, Models, Activity, and Trend. Tools, Models, Sessions, and Limits use live normalized data. Unavailable providers stay out of Home Limits but remain inspectable in the dedicated Limits view.
 - Model and Session share a provider filter toolbar outside the scrollable row list. Its dropdown remains an overlay and does not reflow the list; these two views use a compact low-visibility scrollbar so long lists retain position context without consuming meaningful width.
+- Dynamic derived results use TTL eviction and a 64-entry bound. Session metadata reads only selected-period references in serial batches of 250, isolates batch failures, and caches at most 4,096 normalized session metadata records for 60 seconds. Pending request ownership is separate from result retention.
 - Provider-owned session titles/project labels are allowed; fallback order is provider title → project/path basename → session id. Prompt/response-derived titles are prohibited.
 - Codex/Claude session detail exposes only exchange structure, token/cache/reasoning buckets, tool names, timestamps, and proportional cost metadata.
 
@@ -62,7 +63,7 @@ Token Lens v2 is the production line on `main`; the Electron-based v1 implementa
 
 ## Next action
 
-B1/B2 resource failure isolation, progressive commits, and typed provider freshness/recovery are implemented. Continue [the purpose audit](docs/purpose-audit-2026-09-18.md) with B3/B4 bounded cache/session metadata. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
+B1–B4 are implemented. Complete the controllable DOM integration and build/CI portions of B5 from [the purpose audit](docs/purpose-audit-2026-09-18.md), retaining live Windows/provider gates separately. Keep packaged-runtime and visual validation as separate gates; do not redesign the UI or replace the current drag implementation. Preserve tokScale-first authority, provider cooldowns, no same-credential API re-probe during recovery, no Token Lens refresh-token redemption/credential writes, no inference solely for auth refresh, and strict content minimization.
 
 ## Known open items
 

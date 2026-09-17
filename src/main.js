@@ -1441,7 +1441,7 @@ function setPeriod(period) {
   setPeriodMenuOpen(false);
   state.providerFilterMenuOpen = false;
   render();
-  if (derivedRequest(period, { locale: currentLocale() })) void refresh();
+  if (state.view === 'session' || derivedRequest(period, { locale: currentLocale() })) void refresh();
   else if (['month', 'allTime'].includes(period) && !state.stats?.periods?.[period]) void loadPeriodIfMissing(period);
   return changed;
 }

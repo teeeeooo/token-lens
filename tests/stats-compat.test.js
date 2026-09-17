@@ -547,3 +547,115 @@ test('quota control and success timestamps are independent of report time and di
   assert.equal(later.providers[1].retryAtMs, 15000);
   assert.equal(later.updatedAt, first.updatedAt);
 });
+
+test('dynamic results expire and stay within 64 entries across 1000 dates', async () => {
+  let clock = 1000;
+  let derivedCalls = 0;
+  let sizes;
+  const stats = createStatsLoader({ now: () => clock, observeCache: (value) => { sizes = value; assert.ok(value.dynamic <= 64); },
+    usage: async () => report([]), quota: async () => ({ providers: [] }),
+    usageSince: async () => { derivedCalls++; return countedReport(1); },
+  });
+  const options = (n) => ({ derived: { key: 'range', since: String(n) } });
+  for (let n = 0; n < 1000; n++) await stats(options(n));
+  assert.equal(sizes.dynamic, 64);
+  await stats(options(999));
+  assert.equal(derivedCalls, 1000);
+  await stats(options(0));
+  assert.equal(derivedCalls, 1001);
+  clock += 60001;
+  await stats();
+  assert.equal(sizes.dynamic, 0);
+});
+
+for (const count of [5000, 5001, 10001]) {
+  test(`metadata batches keep successful titles across ${count} refs and one failed batch`, async () => {
+    const entries = Array.from({ length: count }, (_, i) => ({ client: 'codex', sessionId: `session-${String(i).padStart(5, '0')}`, input: 1 }));
+    let batches = 0;
+    let inFlight = 0;
+    let lastSizes;
+    const stats = createStatsLoader({ usage: async () => report(entries), quota: async () => ({ providers: [] }),
+      observeCache: (sizes) => { lastSizes = sizes; assert.ok(sizes.sessions <= 4096); },
+      sessionMetadata: async (refs) => {
+        assert.ok(refs.length <= 250);
+        assert.equal(++inFlight, 1);
+        batches++;
+        await Promise.resolve();
+        inFlight--;
+        if (batches === 2) throw new Error('isolated failure');
+        return { sessions: refs.map((ref) => ({ ...ref, sessionTitle: `Title ${ref.sessionId}`, projectLabel: 'project', prompt: 'PROMPT_SENTINEL', response: 'RESPONSE_SENTINEL', path: '/private/PATH_SENTINEL' })) };
+      },
+    });
+    const result = await stats({ includeSessionMetadata: true, period: 'today' });
+    assert.equal(batches, Math.ceil(count / 250));
+    assert.equal(result.periods.today.sessions['codex:session-00000'].sessionTitle, 'Title session-00000');
+    assert.equal(result.periods.today.sessions['codex:session-00250'].sessionTitle, '');
+    assert.equal(result.periods.today.sessions[`codex:session-${String(count - 1).padStart(5, '0')}`].sessionTitle, `Title session-${String(count - 1).padStart(5, '0')}`);
+    assert.equal(lastSizes.sessions, 4096);
+    assert.ok(!JSON.stringify(result).includes('SENTINEL'));
+  });
+}
+
+test('metadata requests only selected period, deduplicates refs, and reuses session cache for new sessions', async () => {
+  let extra = false;
+  const calls = [];
+  const stats = createStatsLoader({ usage: async (period) => report(period === 'today'
+    ? [{ client: 'codex', sessionId: 'a', input: 1 }, { client: 'codex', sessionId: 'a', input: 1 }, { client: 'codex', sessionId: '', input: 1 }, ...(extra ? [{ client: 'codex', sessionId: 'b', input: 1 }] : [])]
+    : [{ client: 'claude', sessionId: 'old', input: 1 }]), quota: async () => ({ providers: [] }),
+    sessionMetadata: async (refs) => { calls.push(refs); return { sessions: refs.map((ref) => ({ ...ref, sessionTitle: ref.sessionId })) }; },
+  });
+  await stats({ includeSessionMetadata: true, period: 'today' });
+  extra = true;
+  await stats.getPeriodStats('today', { force: true });
+  const result = await stats({ includeSessionMetadata: true, period: 'today' });
+  assert.deepEqual(calls, [[{ client: 'codex', sessionId: 'a' }], [{ client: 'codex', sessionId: 'b' }]]);
+  assert.equal(result.periods.today.sessions['codex:a'].sessionTitle, 'a');
+});
+
+test('late metadata cannot contaminate a new period generation', async () => {
+  const old = deferred();
+  const started = deferred();
+  const patches = [];
+  let calls = 0;
+  const stats = createStatsLoader({ usage: async () => report([{ client: 'codex', sessionId: 'same', input: 1 }]),
+    quota: async () => ({ providers: [] }), sessionMetadata: async () => {
+      if (++calls === 1) { started.resolve(); return old.promise; }
+      return { sessions: [{ client: 'codex', sessionId: 'same', sessionTitle: 'new' }] };
+    },
+  });
+  const earlier = stats({ includeSessionMetadata: true, period: 'today', onPatch: (p) => patches.push(p) });
+  await started.promise;
+  const next = await stats({ includeSessionMetadata: true, period: 'month', force: true });
+  const length = patches.length;
+  old.resolve({ sessions: [{ client: 'codex', sessionId: 'same', sessionTitle: 'old' }] });
+  await earlier;
+  assert.equal(patches.length, length);
+  assert.equal(next.periods.month.sessions['codex:same'].sessionTitle, 'new');
+  assert.equal((await stats({ includeSessionMetadata: true, period: 'month' })).periods.month.sessions['codex:same'].sessionTitle, 'new');
+});
+
+test('dynamic eviction cannot let an older forced request resurrect its result', async () => {
+  const old = deferred();
+  const started = deferred();
+  let oldCall = true;
+  let targetCalls = 0;
+  const stats = createStatsLoader({ usage: async () => report([]), quota: async () => ({ providers: [] }),
+    usageSince: async (since) => {
+      if (since === 'target') {
+        targetCalls++;
+        if (oldCall) { oldCall = false; started.resolve(); return old.promise; }
+        return countedReport(20);
+      }
+      return countedReport(1);
+    },
+  });
+  const target = { derived: { key: 'range', since: 'target' } };
+  const earlier = stats(target);
+  await started.promise;
+  for (let i = 0; i < 65; i++) await stats({ derived: { key: 'range', since: String(i) } });
+  await stats({ ...target, force: true });
+  old.resolve(countedReport(10));
+  await earlier;
+  assert.equal((await stats(target)).periods.range.totalTokens, 20);
+  assert.equal(targetCalls, 2);
+});
